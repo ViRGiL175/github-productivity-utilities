@@ -1,0 +1,238 @@
+name: Sync sub-issue sprint from parent
+
+on:
+  workflow_call:
+    inputs:
+      project_owner:
+        description: Login of the organization or user that owns the Project V2 board
+        required: true
+        type: string
+      project_number:
+        description: Project V2 number
+        required: true
+        type: number
+      sprint_field_name:
+        description: Name of the iteration field to copy from parent to sub-issue
+        required: false
+        default: Sprint
+        type: string
+    secrets:
+      project_token:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  sync-sub-issue-sprint:
+    name: Inherit sprint from parent issue
+    if: ${{ github.event.action == 'opened' && github.event.issue && !github.event.issue.pull_request }}
+    runs-on: ubuntu-latest
+    env:
+      PROJECT_OWNER: ${{ inputs.project_owner }}
+      PROJECT_NUMBER: ${{ inputs.project_number }}
+      SPRINT_FIELD_NAME: ${{ inputs.sprint_field_name }}
+    steps:
+      - name: Copy sprint from parent issue
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.project_token }}
+          script: |
+            const projectOwner = process.env.PROJECT_OWNER;
+            const projectNumber = Number(process.env.PROJECT_NUMBER);
+            const sprintFieldName = process.env.SPRINT_FIELD_NAME;
+            const issue = context.payload.issue;
+            const repoOwner = context.repo.owner;
+            const repoName = context.repo.repo;
+
+            function parseRepoFromUrl(repositoryUrl) {
+              const url = new URL(repositoryUrl);
+              const parts = url.pathname.split('/').filter(Boolean);
+              return { owner: parts[0], repo: parts[1] };
+            }
+
+            async function getProjectMetadata(ownerLogin, number, fieldName) {
+              const query = `
+                query($owner: String!, $number: Int!, $fieldName: String!) {
+                  organization(login: $owner) {
+                    projectV2(number: $number) {
+                      id
+                      fields(first: 50) {
+                        nodes {
+                          ... on ProjectV2IterationField {
+                            id
+                            name
+                          }
+                        }
+                      }
+                    }
+                  }
+                  user(login: $owner) {
+                    projectV2(number: $number) {
+                      id
+                      fields(first: 50) {
+                        nodes {
+                          ... on ProjectV2IterationField {
+                            id
+                            name
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              `;
+
+              const data = await github.graphql(query, {
+                owner: ownerLogin,
+                number,
+                fieldName,
+              });
+
+              const project = data.organization?.projectV2 ?? data.user?.projectV2;
+              if (!project) {
+                throw new Error(`Project V2 #${number} was not found for owner ${ownerLogin}.`);
+              }
+
+              const sprintField = project.fields.nodes.find((field) => field?.name === fieldName);
+              if (!sprintField) {
+                throw new Error(`Iteration field \"${fieldName}\" was not found in project ${ownerLogin}#${number}.`);
+              }
+
+              return {
+                projectId: project.id,
+                sprintFieldId: sprintField.id,
+              };
+            }
+
+            async function getIssueProjectItem(issueNodeId, projectId, fieldName) {
+              const query = `
+                query($issueId: ID!, $projectId: ID!, $fieldName: String!) {
+                  node(id: $issueId) {
+                    ... on Issue {
+                      projectItems(first: 100) {
+                        nodes {
+                          id
+                          project {
+                            id
+                          }
+                          fieldValueByName(name: $fieldName) {
+                            ... on ProjectV2ItemFieldIterationValue {
+                              iterationId
+                              title
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              `;
+
+              const data = await github.graphql(query, {
+                issueId: issueNodeId,
+                projectId,
+                fieldName,
+              });
+
+              return data.node?.projectItems?.nodes?.find((item) => item.project?.id === projectId) ?? null;
+            }
+
+            async function addIssueToProject(projectId, issueNodeId) {
+              const mutation = `
+                mutation($projectId: ID!, $contentId: ID!) {
+                  addProjectV2ItemById(input: { projectId: $projectId, contentId: $contentId }) {
+                    item {
+                      id
+                    }
+                  }
+                }
+              `;
+
+              const data = await github.graphql(mutation, {
+                projectId,
+                contentId: issueNodeId,
+              });
+
+              return data.addProjectV2ItemById.item.id;
+            }
+
+            async function setIteration(projectId, itemId, fieldId, iterationId) {
+              const mutation = `
+                mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $iterationId: String!) {
+                  updateProjectV2ItemFieldValue(input: {
+                    projectId: $projectId
+                    itemId: $itemId
+                    fieldId: $fieldId
+                    value: { iterationId: $iterationId }
+                  }) {
+                    projectV2Item {
+                      id
+                    }
+                  }
+                }
+              `;
+
+              await github.graphql(mutation, {
+                projectId,
+                itemId,
+                fieldId,
+                iterationId,
+              });
+            }
+
+            let parentIssue;
+            try {
+              const response = await github.request('GET /repos/{owner}/{repo}/issues/{issue_number}/parent', {
+                owner: repoOwner,
+                repo: repoName,
+                issue_number: issue.number,
+                headers: {
+                  accept: 'application/vnd.github+json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+                },
+              });
+              parentIssue = response.data;
+            } catch (error) {
+              if (error.status === 404) {
+                core.info(`Issue #${issue.number} has no parent issue. Nothing to sync.`);
+                return;
+              }
+              throw error;
+            }
+
+            const { owner: parentOwner, repo: parentRepo } = parseRepoFromUrl(parentIssue.repository_url);
+            core.info(`Found parent issue ${parentOwner}/${parentRepo}#${parentIssue.number}.`);
+
+            const { projectId, sprintFieldId } = await getProjectMetadata(projectOwner, projectNumber, sprintFieldName);
+            const parentProjectItem = await getIssueProjectItem(parentIssue.node_id, projectId, sprintFieldName);
+
+            if (!parentProjectItem) {
+              core.info(`Parent issue ${parentOwner}/${parentRepo}#${parentIssue.number} is not in project ${projectOwner}#${projectNumber}.`);
+              return;
+            }
+
+            const parentIterationId = parentProjectItem.fieldValueByName?.iterationId;
+            const parentIterationTitle = parentProjectItem.fieldValueByName?.title ?? '';
+
+            if (!parentIterationId) {
+              core.info(`Parent issue ${parentOwner}/${parentRepo}#${parentIssue.number} has no value in field ${sprintFieldName}.`);
+              return;
+            }
+
+            let subIssueProjectItem = await getIssueProjectItem(issue.node_id, projectId, sprintFieldName);
+            let subIssueItemId = subIssueProjectItem?.id;
+            const currentIterationId = subIssueProjectItem?.fieldValueByName?.iterationId ?? null;
+
+            if (!subIssueItemId) {
+              core.info(`Sub-issue #${issue.number} is not in project yet. Adding it now.`);
+              subIssueItemId = await addIssueToProject(projectId, issue.node_id);
+            }
+
+            if (currentIterationId === parentIterationId) {
+              core.info(`Sub-issue #${issue.number} already has sprint ${parentIterationTitle || parentIterationId}.`);
+              return;
+            }
+
+            await setIteration(projectId, subIssueItemId, sprintFieldId, parentIterationId);
+            core.info(`Copied sprint ${parentIterationTitle || parentIterationId} from parent issue to sub-issue #${issue.number}.`);
