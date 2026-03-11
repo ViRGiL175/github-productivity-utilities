@@ -48,26 +48,41 @@ jobs:
             function parseRepoFromUrl(repositoryUrl) {
               const url = new URL(repositoryUrl);
               const parts = url.pathname.split('/').filter(Boolean);
-              return { owner: parts[0], repo: parts[1] };
+
+              if (parts[0] === 'repos' && parts.length >= 3) {
+                return { owner: parts[1], repo: parts[2] };
+              }
+
+              if (parts.length >= 2) {
+                return { owner: parts[0], repo: parts[1] };
+              }
+
+              throw new Error(`Could not parse repository URL: ${repositoryUrl}`);
+            }
+
+            async function getProjectOwnerType(ownerLogin) {
+              const response = await github.request('GET /users/{username}', {
+                username: ownerLogin,
+                headers: {
+                  accept: 'application/vnd.github+json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+                },
+              });
+
+              return response.data.type;
             }
 
             async function getProjectMetadata(ownerLogin, number, fieldName) {
+              const ownerType = await getProjectOwnerType(ownerLogin);
+              const rootField = ownerType === 'Organization' ? 'organization' : ownerType === 'User' ? 'user' : null;
+
+              if (!rootField) {
+                throw new Error(`Unsupported project owner type "${ownerType}" for ${ownerLogin}.`);
+              }
+
               const query = `
                 query($owner: String!, $number: Int!) {
-                  organization(login: $owner) {
-                    projectV2(number: $number) {
-                      id
-                      fields(first: 50) {
-                        nodes {
-                          ... on ProjectV2IterationField {
-                            id
-                            name
-                          }
-                        }
-                      }
-                    }
-                  }
-                  user(login: $owner) {
+                  ${rootField}(login: $owner) {
                     projectV2(number: $number) {
                       id
                       fields(first: 50) {
@@ -88,7 +103,7 @@ jobs:
                 number,
               });
 
-              const project = data.organization?.projectV2 ?? data.user?.projectV2;
+              const project = data[rootField]?.projectV2;
               if (!project) {
                 throw new Error(`Project V2 #${number} was not found for owner ${ownerLogin}.`);
               }
