@@ -53,7 +53,7 @@ jobs:
 
             async function getProjectMetadata(ownerLogin, number, fieldName) {
               const query = `
-                query($owner: String!, $number: Int!, $fieldName: String!) {
+                query($owner: String!, $number: Int!) {
                   organization(login: $owner) {
                     projectV2(number: $number) {
                       id
@@ -86,7 +86,6 @@ jobs:
               const data = await github.graphql(query, {
                 owner: ownerLogin,
                 number,
-                fieldName,
               });
 
               const project = data.organization?.projectV2 ?? data.user?.projectV2;
@@ -96,7 +95,7 @@ jobs:
 
               const sprintField = project.fields.nodes.find((field) => field?.name === fieldName);
               if (!sprintField) {
-                throw new Error(`Iteration field \"${fieldName}\" was not found in project ${ownerLogin}#${number}.`);
+                throw new Error(`Iteration field "${fieldName}" was not found in project ${ownerLogin}#${number}.`);
               }
 
               return {
@@ -107,7 +106,7 @@ jobs:
 
             async function getIssueProjectItem(issueNodeId, projectId, fieldName) {
               const query = `
-                query($issueId: ID!, $projectId: ID!, $fieldName: String!) {
+                query($issueId: ID!, $fieldName: String!) {
                   node(id: $issueId) {
                     ... on Issue {
                       projectItems(first: 100) {
@@ -131,7 +130,6 @@ jobs:
 
               const data = await github.graphql(query, {
                 issueId: issueNodeId,
-                projectId,
                 fieldName,
               });
 
@@ -220,7 +218,7 @@ jobs:
               return;
             }
 
-            let subIssueProjectItem = await getIssueProjectItem(issue.node_id, projectId, sprintFieldName);
+            const subIssueProjectItem = await getIssueProjectItem(issue.node_id, projectId, sprintFieldName);
             let subIssueItemId = subIssueProjectItem?.id;
             const currentIterationId = subIssueProjectItem?.fieldValueByName?.iterationId ?? null;
 
