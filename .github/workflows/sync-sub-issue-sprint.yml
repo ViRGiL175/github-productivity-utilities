@@ -11,7 +11,7 @@ on:
         description: Project V2 number
         required: true
         type: number
-      sprint_field_name:
+      iteration_field_name:
         description: Name of the iteration field to copy from parent to sub-issue
         required: false
         default: Sprint
@@ -31,7 +31,7 @@ jobs:
     env:
       PROJECT_OWNER: ${{ inputs.project_owner }}
       PROJECT_NUMBER: ${{ inputs.project_number }}
-      SPRINT_FIELD_NAME: ${{ inputs.sprint_field_name }}
+      ITERATION_FIELD_NAME: ${{ inputs.iteration_field_name }}
     steps:
       - name: Copy sprint from parent issue
         uses: actions/github-script@v8
@@ -40,7 +40,7 @@ jobs:
           script: |
             const projectOwner = process.env.PROJECT_OWNER;
             const projectNumber = Number(process.env.PROJECT_NUMBER);
-            const sprintFieldName = process.env.SPRINT_FIELD_NAME;
+            const iterationFieldName = process.env.ITERATION_FIELD_NAME;
             const issue = context.payload.issue;
             const repoOwner = context.repo.owner;
             const repoName = context.repo.repo;
@@ -93,14 +93,14 @@ jobs:
                 throw new Error(`Project V2 #${number} was not found for owner ${ownerLogin}.`);
               }
 
-              const sprintField = project.fields.nodes.find((field) => field?.name === fieldName);
-              if (!sprintField) {
+              const iterationField = project.fields.nodes.find((field) => field?.name === fieldName);
+              if (!iterationField) {
                 throw new Error(`Iteration field "${fieldName}" was not found in project ${ownerLogin}#${number}.`);
               }
 
               return {
                 projectId: project.id,
-                sprintFieldId: sprintField.id,
+                iterationFieldId: iterationField.id,
               };
             }
 
@@ -202,8 +202,8 @@ jobs:
             const { owner: parentOwner, repo: parentRepo } = parseRepoFromUrl(parentIssue.repository_url);
             core.info(`Found parent issue ${parentOwner}/${parentRepo}#${parentIssue.number}.`);
 
-            const { projectId, sprintFieldId } = await getProjectMetadata(projectOwner, projectNumber, sprintFieldName);
-            const parentProjectItem = await getIssueProjectItem(parentIssue.node_id, projectId, sprintFieldName);
+            const { projectId, iterationFieldId } = await getProjectMetadata(projectOwner, projectNumber, iterationFieldName);
+            const parentProjectItem = await getIssueProjectItem(parentIssue.node_id, projectId, iterationFieldName);
 
             if (!parentProjectItem) {
               core.info(`Parent issue ${parentOwner}/${parentRepo}#${parentIssue.number} is not in project ${projectOwner}#${projectNumber}.`);
@@ -214,11 +214,11 @@ jobs:
             const parentIterationTitle = parentProjectItem.fieldValueByName?.title ?? '';
 
             if (!parentIterationId) {
-              core.info(`Parent issue ${parentOwner}/${parentRepo}#${parentIssue.number} has no value in field ${sprintFieldName}.`);
+              core.info(`Parent issue ${parentOwner}/${parentRepo}#${parentIssue.number} has no value in field ${iterationFieldName}.`);
               return;
             }
 
-            const subIssueProjectItem = await getIssueProjectItem(issue.node_id, projectId, sprintFieldName);
+            const subIssueProjectItem = await getIssueProjectItem(issue.node_id, projectId, iterationFieldName);
             let subIssueItemId = subIssueProjectItem?.id;
             const currentIterationId = subIssueProjectItem?.fieldValueByName?.iterationId ?? null;
 
@@ -232,5 +232,5 @@ jobs:
               return;
             }
 
-            await setIteration(projectId, subIssueItemId, sprintFieldId, parentIterationId);
+            await setIteration(projectId, subIssueItemId, iterationFieldId, parentIterationId);
             core.info(`Copied sprint ${parentIterationTitle || parentIterationId} from parent issue to sub-issue #${issue.number}.`);
