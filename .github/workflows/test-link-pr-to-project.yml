@@ -1,0 +1,791 @@
+name: Test link-pr-to-project
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/link-pr-to-project.yml'
+      - '.github/workflows/test-link-pr-to-project.yml'
+
+permissions:
+  contents: read
+
+env:
+  PROJECT_OWNER: ViRGiL175
+  PROJECT_NUMBER: '10'
+  ITERATION_FIELD_NAME: Sprint
+  STATUS_FIELD_NAME: Status
+  STATUS_DONE_VALUE: Done
+  REPO_OWNER: ViRGiL175
+  REPO_NAME: github-productivity-utilities
+  DEFAULT_BRANCH: main
+
+jobs:
+  prepare-link-scenario:
+    name: Prepare link PR scenario
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    outputs:
+      project_id: ${{ steps.prepare.outputs.project_id }}
+      target_iteration_id: ${{ steps.prepare.outputs.target_iteration_id }}
+      issue_number: ${{ steps.prepare.outputs.issue_number }}
+      issue_node_id: ${{ steps.prepare.outputs.issue_node_id }}
+      pull_number: ${{ steps.prepare.outputs.pull_number }}
+      pull_node_id: ${{ steps.prepare.outputs.pull_node_id }}
+      branch_name: ${{ steps.prepare.outputs.branch_name }}
+      closes_ref: ${{ steps.prepare.outputs.closes_ref }}
+    steps:
+      - name: Create issue, project item, branch, and PR
+        id: prepare
+        uses: actions/github-script@v8
+        env:
+          PROJECT_OWNER: ${{ env.PROJECT_OWNER }}
+          PROJECT_NUMBER: ${{ env.PROJECT_NUMBER }}
+          ITERATION_FIELD_NAME: ${{ env.ITERATION_FIELD_NAME }}
+          REPO_OWNER: ${{ env.REPO_OWNER }}
+          REPO_NAME: ${{ env.REPO_NAME }}
+          DEFAULT_BRANCH: ${{ env.DEFAULT_BRANCH }}
+          ISSUE_TITLE: ITEST-${{ github.run_id }} link issue
+          PR_TITLE: ITEST-${{ github.run_id }} link PR
+          FILE_PATH: itest/link-${{ github.run_id }}.txt
+        with:
+          github-token: ${{ secrets.ORG_PROJECT_TOKEN }}
+          script: |
+            const projectOwner = process.env.PROJECT_OWNER;
+            const projectNumber = Number(process.env.PROJECT_NUMBER);
+            const iterationFieldName = process.env.ITERATION_FIELD_NAME;
+            const owner = process.env.REPO_OWNER;
+            const repo = process.env.REPO_NAME;
+            const defaultBranch = process.env.DEFAULT_BRANCH;
+            const issueTitle = process.env.ISSUE_TITLE;
+            const prTitle = process.env.PR_TITLE;
+            const filePath = process.env.FILE_PATH;
+
+            const headers = {
+              accept: 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+            };
+
+            const ORGANIZATION_PROJECT_QUERY = `
+              query($owner: String!, $number: Int!) {
+                organization(login: $owner) {
+                  projectV2(number: $number) {
+                    id
+                    fields(first: 100) {
+                      nodes {
+                        __typename
+                        ... on ProjectV2FieldCommon {
+                          id
+                          name
+                        }
+                        ... on ProjectV2IterationField {
+                          configuration {
+                            completedIterations {
+                              id
+                              title
+                              startDate
+                              duration
+                            }
+                            iterations {
+                              id
+                              title
+                              startDate
+                              duration
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+                user(login: $owner) {
+                  projectV2(number: $number) {
+                    id
+                    fields(first: 100) {
+                      nodes {
+                        __typename
+                        ... on ProjectV2FieldCommon {
+                          id
+                          name
+                        }
+                        ... on ProjectV2IterationField {
+                          configuration {
+                            completedIterations {
+                              id
+                              title
+                              startDate
+                              duration
+                            }
+                            iterations {
+                              id
+                              title
+                              startDate
+                              duration
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const ADD_PROJECT_ITEM_MUTATION = `
+              mutation($projectId: ID!, $contentId: ID!) {
+                addProjectV2ItemById(input: { projectId: $projectId, contentId: $contentId }) {
+                  item {
+                    id
+                  }
+                }
+              }
+            `;
+
+            const UPDATE_ITERATION_MUTATION = `
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $iterationId: String!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $projectId
+                  itemId: $itemId
+                  fieldId: $fieldId
+                  value: { iterationId: $iterationId }
+                }) {
+                  projectV2Item {
+                    id
+                  }
+                }
+              }
+            `;
+
+            function toUtcDate(value) {
+              return new Date(`${value}T00:00:00Z`);
+            }
+
+            function sortIterations(iterations) {
+              return [...iterations].sort((a, b) => toUtcDate(a.startDate) - toUtcDate(b.startDate));
+            }
+
+            async function getProjectMetadata() {
+              const data = await github.graphql(ORGANIZATION_PROJECT_QUERY, {
+                owner: projectOwner,
+                number: projectNumber,
+              });
+
+              const project = data.organization?.projectV2 ?? data.user?.projectV2;
+              if (!project) {
+                throw new Error(`Project ${projectOwner}#${projectNumber} was not found.`);
+              }
+
+              const iterationField = project.fields.nodes.find((field) =>
+                field?.__typename === 'ProjectV2IterationField' && field.name === iterationFieldName,
+              );
+              if (!iterationField) {
+                throw new Error(`Iteration field "${iterationFieldName}" was not found in project ${projectOwner}#${projectNumber}.`);
+              }
+
+              const iterations = sortIterations([
+                ...(iterationField.configuration?.iterations ?? []),
+                ...(iterationField.configuration?.completedIterations ?? []),
+              ]).filter((iteration) => iteration.startDate);
+
+              if (iterations.length === 0) {
+                throw new Error('Need at least one iteration in the sandbox project to run link-pr-to-project integration tests.');
+              }
+
+              return {
+                projectId: project.id,
+                iterationFieldId: iterationField.id,
+                targetIterationId: iterations[0].id,
+              };
+            }
+
+            async function addIssueToProject(projectId, issueNodeId) {
+              const data = await github.graphql(ADD_PROJECT_ITEM_MUTATION, {
+                projectId,
+                contentId: issueNodeId,
+              });
+
+              return data.addProjectV2ItemById.item.id;
+            }
+
+            async function setIteration(projectId, itemId, fieldId, iterationId) {
+              await github.graphql(UPDATE_ITERATION_MUTATION, {
+                projectId,
+                itemId,
+                fieldId,
+                iterationId,
+              });
+            }
+
+            const project = await getProjectMetadata();
+
+            const issueResponse = await github.request('POST /repos/{owner}/{repo}/issues', {
+              owner,
+              repo,
+              title: issueTitle,
+              body: `ITEST run ${context.runId} for link-pr-to-project issue`,
+              headers,
+            });
+            const issue = issueResponse.data;
+
+            const issueProjectItemId = await addIssueToProject(project.projectId, issue.node_id);
+            await setIteration(project.projectId, issueProjectItemId, project.iterationFieldId, project.targetIterationId);
+
+            const branchName = `${issue.number}-itest-${context.runId}`;
+            const baseRef = await github.request('GET /repos/{owner}/{repo}/git/ref/{ref}', {
+              owner,
+              repo,
+              ref: `heads/${defaultBranch}`,
+              headers,
+            });
+
+            await github.request('POST /repos/{owner}/{repo}/git/refs', {
+              owner,
+              repo,
+              ref: `refs/heads/${branchName}`,
+              sha: baseRef.data.object.sha,
+              headers,
+            });
+
+            await github.request('PUT /repos/{owner}/{repo}/contents/{path}', {
+              owner,
+              repo,
+              path: filePath,
+              message: `ITEST link fixture ${context.runId}`,
+              content: Buffer.from(`link fixture for run ${context.runId}\n`).toString('base64'),
+              branch: branchName,
+              headers,
+            });
+
+            const pullResponse = await github.request('POST /repos/{owner}/{repo}/pulls', {
+              owner,
+              repo,
+              title: prTitle,
+              head: branchName,
+              base: defaultBranch,
+              body: `ITEST run ${context.runId} for link-pr-to-project`,
+              headers,
+            });
+            const pullRequest = pullResponse.data;
+
+            core.setOutput('project_id', project.projectId);
+            core.setOutput('target_iteration_id', project.targetIterationId);
+            core.setOutput('issue_number', String(issue.number));
+            core.setOutput('issue_node_id', issue.node_id);
+            core.setOutput('pull_number', String(pullRequest.number));
+            core.setOutput('pull_node_id', pullRequest.node_id);
+            core.setOutput('branch_name', branchName);
+            core.setOutput('closes_ref', `Closes ${owner}/${repo}#${issue.number}`);
+
+  run-link-open-scenario:
+    name: Run link PR open scenario
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs: prepare-link-scenario
+    uses: ./.github/workflows/link-pr-to-project.yml
+    with:
+      project_owner: ViRGiL175
+      project_number: 10
+      backlog_repo: github-productivity-utilities
+      iteration_field_name: Sprint
+      status_field_name: Status
+      status_done_value: Done
+      pull_request_node_id: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
+      pull_request_number: ${{ needs.prepare-link-scenario.outputs.pull_number }}
+      head_ref: ${{ needs.prepare-link-scenario.outputs.branch_name }}
+      action: opened
+    secrets:
+      project_token: ${{ secrets.ORG_PROJECT_TOKEN }}
+
+  assert-link-open-scenario:
+    name: Assert link PR open scenario
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs:
+      - prepare-link-scenario
+      - run-link-open-scenario
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assert PR was linked to project and issue sprint
+        uses: actions/github-script@v8
+        env:
+          PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
+          ITERATION_FIELD_NAME: ${{ env.ITERATION_FIELD_NAME }}
+          TARGET_ITERATION_ID: ${{ needs.prepare-link-scenario.outputs.target_iteration_id }}
+          PULL_NODE_ID: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
+          PULL_NUMBER: ${{ needs.prepare-link-scenario.outputs.pull_number }}
+          REPO_OWNER: ${{ env.REPO_OWNER }}
+          REPO_NAME: ${{ env.REPO_NAME }}
+          CLOSES_REF: ${{ needs.prepare-link-scenario.outputs.closes_ref }}
+        with:
+          github-token: ${{ secrets.ORG_PROJECT_TOKEN }}
+          script: |
+            const projectId = process.env.PROJECT_ID;
+            const iterationFieldName = process.env.ITERATION_FIELD_NAME;
+            const targetIterationId = process.env.TARGET_ITERATION_ID;
+            const pullNodeId = process.env.PULL_NODE_ID;
+            const pullNumber = Number(process.env.PULL_NUMBER);
+            const owner = process.env.REPO_OWNER;
+            const repo = process.env.REPO_NAME;
+            const closesRef = process.env.CLOSES_REF;
+            const headers = {
+              accept: 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+            };
+
+            const PULL_REQUEST_PROJECT_ITEMS_QUERY = `
+              query($nodeId: ID!, $fieldName: String!) {
+                node(id: $nodeId) {
+                  ... on PullRequest {
+                    projectItems(first: 100) {
+                      nodes {
+                        id
+                        project {
+                          id
+                        }
+                        fieldValueByName(name: $fieldName) {
+                          ... on ProjectV2ItemFieldIterationValue {
+                            iterationId
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const projectData = await github.graphql(PULL_REQUEST_PROJECT_ITEMS_QUERY, {
+              nodeId: pullNodeId,
+              fieldName: iterationFieldName,
+            });
+
+            const projectItems = projectData.node?.projectItems?.nodes?.filter((item) => item.project?.id === projectId) ?? [];
+            if (projectItems.length !== 1) {
+              throw new Error(`Expected exactly one PR project item, got ${projectItems.length}.`);
+            }
+
+            const iterationId = projectItems[0].fieldValueByName?.iterationId ?? null;
+            if (iterationId !== targetIterationId) {
+              throw new Error(`Expected PR iteration ${targetIterationId}, got ${iterationId || 'none'}.`);
+            }
+
+            const pullResponse = await github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+              owner,
+              repo,
+              pull_number: pullNumber,
+              headers,
+            });
+            const body = pullResponse.data.body || '';
+
+            if (!body.includes(closesRef)) {
+              throw new Error(`Expected PR body to contain "${closesRef}".`);
+            }
+
+            core.info(`PR #${pullNumber} is in the project, has iteration ${targetIterationId}, and includes the closing reference.`);
+
+  rerun-link-open-scenario:
+    name: Rerun link PR open scenario for idempotency
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs:
+      - prepare-link-scenario
+      - assert-link-open-scenario
+    uses: ./.github/workflows/link-pr-to-project.yml
+    with:
+      project_owner: ViRGiL175
+      project_number: 10
+      backlog_repo: github-productivity-utilities
+      iteration_field_name: Sprint
+      status_field_name: Status
+      status_done_value: Done
+      pull_request_node_id: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
+      pull_request_number: ${{ needs.prepare-link-scenario.outputs.pull_number }}
+      head_ref: ${{ needs.prepare-link-scenario.outputs.branch_name }}
+      action: opened
+    secrets:
+      project_token: ${{ secrets.ORG_PROJECT_TOKEN }}
+
+  assert-link-idempotency-scenario:
+    name: Assert link PR idempotency scenario
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs:
+      - prepare-link-scenario
+      - rerun-link-open-scenario
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assert rerun did not duplicate project item or closes line
+        uses: actions/github-script@v8
+        env:
+          PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
+          ITERATION_FIELD_NAME: ${{ env.ITERATION_FIELD_NAME }}
+          TARGET_ITERATION_ID: ${{ needs.prepare-link-scenario.outputs.target_iteration_id }}
+          PULL_NODE_ID: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
+          PULL_NUMBER: ${{ needs.prepare-link-scenario.outputs.pull_number }}
+          REPO_OWNER: ${{ env.REPO_OWNER }}
+          REPO_NAME: ${{ env.REPO_NAME }}
+          CLOSES_REF: ${{ needs.prepare-link-scenario.outputs.closes_ref }}
+        with:
+          github-token: ${{ secrets.ORG_PROJECT_TOKEN }}
+          script: |
+            const projectId = process.env.PROJECT_ID;
+            const iterationFieldName = process.env.ITERATION_FIELD_NAME;
+            const targetIterationId = process.env.TARGET_ITERATION_ID;
+            const pullNodeId = process.env.PULL_NODE_ID;
+            const pullNumber = Number(process.env.PULL_NUMBER);
+            const owner = process.env.REPO_OWNER;
+            const repo = process.env.REPO_NAME;
+            const closesRef = process.env.CLOSES_REF;
+            const headers = {
+              accept: 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+            };
+
+            const PULL_REQUEST_PROJECT_ITEMS_QUERY = `
+              query($nodeId: ID!, $fieldName: String!) {
+                node(id: $nodeId) {
+                  ... on PullRequest {
+                    projectItems(first: 100) {
+                      nodes {
+                        id
+                        project {
+                          id
+                        }
+                        fieldValueByName(name: $fieldName) {
+                          ... on ProjectV2ItemFieldIterationValue {
+                            iterationId
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const projectData = await github.graphql(PULL_REQUEST_PROJECT_ITEMS_QUERY, {
+              nodeId: pullNodeId,
+              fieldName: iterationFieldName,
+            });
+
+            const projectItems = projectData.node?.projectItems?.nodes?.filter((item) => item.project?.id === projectId) ?? [];
+            if (projectItems.length !== 1) {
+              throw new Error(`Expected exactly one PR project item after rerun, got ${projectItems.length}.`);
+            }
+
+            const iterationId = projectItems[0].fieldValueByName?.iterationId ?? null;
+            if (iterationId !== targetIterationId) {
+              throw new Error(`Expected PR iteration ${targetIterationId} after rerun, got ${iterationId || 'none'}.`);
+            }
+
+            const pullResponse = await github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+              owner,
+              repo,
+              pull_number: pullNumber,
+              headers,
+            });
+            const body = pullResponse.data.body || '';
+            const occurrenceCount = body.split(closesRef).length - 1;
+            if (occurrenceCount !== 1) {
+              throw new Error(`Expected exactly one occurrence of "${closesRef}", got ${occurrenceCount}.`);
+            }
+
+            core.info(`PR #${pullNumber} rerun stayed idempotent.`);
+
+  close-pr-before-status-check:
+    name: Close PR before status check
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs:
+      - prepare-link-scenario
+      - assert-link-idempotency-scenario
+    runs-on: ubuntu-latest
+    steps:
+      - name: Close temporary PR
+        uses: actions/github-script@v8
+        env:
+          REPO_OWNER: ${{ env.REPO_OWNER }}
+          REPO_NAME: ${{ env.REPO_NAME }}
+          PULL_NUMBER: ${{ needs.prepare-link-scenario.outputs.pull_number }}
+        with:
+          github-token: ${{ secrets.ORG_PROJECT_TOKEN }}
+          script: |
+            const owner = process.env.REPO_OWNER;
+            const repo = process.env.REPO_NAME;
+            const pullNumber = Number(process.env.PULL_NUMBER);
+            const headers = {
+              accept: 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+            };
+
+            await github.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', {
+              owner,
+              repo,
+              pull_number: pullNumber,
+              state: 'closed',
+              headers,
+            });
+
+  run-link-closed-scenario:
+    name: Run link PR closed scenario
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs:
+      - prepare-link-scenario
+      - close-pr-before-status-check
+    uses: ./.github/workflows/link-pr-to-project.yml
+    with:
+      project_owner: ViRGiL175
+      project_number: 10
+      backlog_repo: github-productivity-utilities
+      iteration_field_name: Sprint
+      status_field_name: Status
+      status_done_value: Done
+      pull_request_node_id: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
+      pull_request_number: ${{ needs.prepare-link-scenario.outputs.pull_number }}
+      head_ref: ${{ needs.prepare-link-scenario.outputs.branch_name }}
+      action: closed
+    secrets:
+      project_token: ${{ secrets.ORG_PROJECT_TOKEN }}
+
+  assert-link-closed-scenario:
+    name: Assert link PR closed scenario
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs:
+      - prepare-link-scenario
+      - run-link-closed-scenario
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assert PR status is Done in project
+        uses: actions/github-script@v8
+        env:
+          PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
+          STATUS_FIELD_NAME: ${{ env.STATUS_FIELD_NAME }}
+          STATUS_DONE_VALUE: ${{ env.STATUS_DONE_VALUE }}
+          PULL_NODE_ID: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
+        with:
+          github-token: ${{ secrets.ORG_PROJECT_TOKEN }}
+          script: |
+            const projectId = process.env.PROJECT_ID;
+            const statusFieldName = process.env.STATUS_FIELD_NAME;
+            const statusDoneValue = process.env.STATUS_DONE_VALUE;
+            const pullNodeId = process.env.PULL_NODE_ID;
+
+            const PULL_REQUEST_STATUS_QUERY = `
+              query($nodeId: ID!, $statusFieldName: String!) {
+                node(id: $nodeId) {
+                  ... on PullRequest {
+                    projectItems(first: 100) {
+                      nodes {
+                        id
+                        project {
+                          id
+                        }
+                        fieldValueByName(name: $statusFieldName) {
+                          ... on ProjectV2ItemFieldSingleSelectValue {
+                            name
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const data = await github.graphql(PULL_REQUEST_STATUS_QUERY, {
+              nodeId: pullNodeId,
+              statusFieldName,
+            });
+
+            const projectItem = data.node?.projectItems?.nodes?.find((item) => item.project?.id === projectId) ?? null;
+            if (!projectItem) {
+              throw new Error('PR project item is missing during closed-state assertion.');
+            }
+
+            const statusValue = projectItem.fieldValueByName?.name ?? null;
+            if (statusValue !== statusDoneValue) {
+              throw new Error(`Expected PR status ${statusDoneValue}, got ${statusValue || 'none'}.`);
+            }
+
+            core.info(`PR project item ${projectItem.id} is marked as ${statusDoneValue}.`);
+
+  cleanup-link-scenario:
+    name: Cleanup link PR scenario
+    if: ${{ always() && needs.prepare-link-scenario.outputs.issue_number != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    needs:
+      - prepare-link-scenario
+      - run-link-open-scenario
+      - assert-link-open-scenario
+      - rerun-link-open-scenario
+      - assert-link-idempotency-scenario
+      - close-pr-before-status-check
+      - run-link-closed-scenario
+      - assert-link-closed-scenario
+    runs-on: ubuntu-latest
+    steps:
+      - name: Remove project items, close issue, and delete branch
+        uses: actions/github-script@v8
+        env:
+          PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
+          ITERATION_FIELD_NAME: ${{ env.ITERATION_FIELD_NAME }}
+          REPO_OWNER: ${{ env.REPO_OWNER }}
+          REPO_NAME: ${{ env.REPO_NAME }}
+          ISSUE_NUMBER: ${{ needs.prepare-link-scenario.outputs.issue_number }}
+          ISSUE_NODE_ID: ${{ needs.prepare-link-scenario.outputs.issue_node_id }}
+          PULL_NUMBER: ${{ needs.prepare-link-scenario.outputs.pull_number }}
+          PULL_NODE_ID: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
+          BRANCH_NAME: ${{ needs.prepare-link-scenario.outputs.branch_name }}
+        with:
+          github-token: ${{ secrets.ORG_PROJECT_TOKEN }}
+          script: |
+            const projectId = process.env.PROJECT_ID;
+            const iterationFieldName = process.env.ITERATION_FIELD_NAME;
+            const owner = process.env.REPO_OWNER;
+            const repo = process.env.REPO_NAME;
+            const issueNumber = Number(process.env.ISSUE_NUMBER);
+            const issueNodeId = process.env.ISSUE_NODE_ID;
+            const pullNumber = Number(process.env.PULL_NUMBER);
+            const pullNodeId = process.env.PULL_NODE_ID;
+            const branchName = process.env.BRANCH_NAME;
+            const headers = {
+              accept: 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+            };
+
+            const ISSUE_PROJECT_ITEMS_QUERY = `
+              query($issueId: ID!, $fieldName: String!) {
+                node(id: $issueId) {
+                  ... on Issue {
+                    projectItems(first: 100) {
+                      nodes {
+                        id
+                        project {
+                          id
+                        }
+                        fieldValueByName(name: $fieldName) {
+                          ... on ProjectV2ItemFieldIterationValue {
+                            iterationId
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const PULL_REQUEST_PROJECT_ITEMS_QUERY = `
+              query($nodeId: ID!, $fieldName: String!) {
+                node(id: $nodeId) {
+                  ... on PullRequest {
+                    projectItems(first: 100) {
+                      nodes {
+                        id
+                        project {
+                          id
+                        }
+                        fieldValueByName(name: $fieldName) {
+                          ... on ProjectV2ItemFieldIterationValue {
+                            iterationId
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const DELETE_ITEM_MUTATION = `
+              mutation($input: DeleteProjectV2ItemInput!) {
+                deleteProjectV2Item(input: $input) {
+                  deletedItemId
+                }
+              }
+            `;
+
+            async function deleteIssueProjectItem() {
+              if (!issueNodeId || !projectId) {
+                return;
+              }
+
+              const data = await github.graphql(ISSUE_PROJECT_ITEMS_QUERY, {
+                issueId: issueNodeId,
+                fieldName: iterationFieldName,
+              });
+              const item = data.node?.projectItems?.nodes?.find((projectItem) => projectItem.project?.id === projectId) ?? null;
+              if (!item) {
+                return;
+              }
+
+              await github.graphql(DELETE_ITEM_MUTATION, {
+                input: {
+                  projectId,
+                  itemId: item.id,
+                },
+              });
+            }
+
+            async function deletePullRequestProjectItem() {
+              if (!pullNodeId || !projectId) {
+                return;
+              }
+
+              const data = await github.graphql(PULL_REQUEST_PROJECT_ITEMS_QUERY, {
+                nodeId: pullNodeId,
+                fieldName: iterationFieldName,
+              });
+              const item = data.node?.projectItems?.nodes?.find((projectItem) => projectItem.project?.id === projectId) ?? null;
+              if (!item) {
+                return;
+              }
+
+              await github.graphql(DELETE_ITEM_MUTATION, {
+                input: {
+                  projectId,
+                  itemId: item.id,
+                },
+              });
+            }
+
+            await deletePullRequestProjectItem();
+            await deleteIssueProjectItem();
+
+            if (pullNumber > 0) {
+              await github.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', {
+                owner,
+                repo,
+                pull_number: pullNumber,
+                state: 'closed',
+                headers,
+              });
+            }
+
+            if (issueNumber > 0) {
+              await github.request('PATCH /repos/{owner}/{repo}/issues/{issue_number}', {
+                owner,
+                repo,
+                issue_number: issueNumber,
+                state: 'closed',
+                headers,
+              });
+            }
+
+            if (branchName) {
+              try {
+                await github.request('DELETE /repos/{owner}/{repo}/git/refs/{ref}', {
+                  owner,
+                  repo,
+                  ref: `heads/${branchName}`,
+                  headers,
+                });
+              } catch (error) {
+                if (error.status !== 404) {
+                  throw error;
+                }
+                core.info(`Branch ${branchName} is already absent.`);
+              }
+            }
+
+  test-skipped-for-fork-pr:
+    name: Test skipped for fork PR
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Explain why test is skipped
+        run: echo "Skipping integration test for fork pull requests because repository secrets are unavailable."

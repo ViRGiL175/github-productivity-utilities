@@ -15,6 +15,9 @@ on:
       reminder_title:
         required: true
         type: string
+      current_date_override:
+        required: false
+        type: string
     secrets:
       project_token:
         required: true
@@ -35,6 +38,7 @@ jobs:
           PROJECT_NUMBER: ${{ inputs.project_number }}
           ITERATION_FIELD_NAME: ${{ inputs.iteration_field_name }}
           REMINDER_TITLE: ${{ inputs.reminder_title }}
+          CURRENT_DATE_OVERRIDE: ${{ inputs.current_date_override }}
         with:
           github-token: ${{ secrets.project_token }}
           script: |
@@ -42,7 +46,24 @@ jobs:
             const projectNumber = Number(process.env.PROJECT_NUMBER);
             const iterationFieldName = process.env.ITERATION_FIELD_NAME;
             const reminderTitle = process.env.REMINDER_TITLE;
-            const today = new Date();
+            const currentDateOverride = process.env.CURRENT_DATE_OVERRIDE;
+
+            function parseCurrentDate(value) {
+              if (!value) {
+                return new Date();
+              }
+
+              const normalizedValue = value.includes('T') ? value : `${value}T00:00:00Z`;
+              const parsed = new Date(normalizedValue);
+
+              if (Number.isNaN(parsed.getTime())) {
+                throw new Error(`Invalid current_date_override value: ${value}`);
+              }
+
+              return parsed;
+            }
+
+            const today = parseCurrentDate(currentDateOverride);
             const todayIso = today.toISOString().slice(0, 10);
 
             const ORGANIZATION_PROJECT_QUERY = `
