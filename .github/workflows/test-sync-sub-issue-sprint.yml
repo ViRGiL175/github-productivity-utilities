@@ -9,6 +9,8 @@ on:
 
 permissions:
   contents: read
+  issues: read
+  pull-requests: read
 
 env:
   PROJECT_OWNER: ViRGiL175
@@ -90,6 +92,11 @@ jobs:
                     }
                   }
                 }
+              }
+            `;
+
+            const USER_PROJECT_QUERY = `
+              query($owner: String!, $number: Int!) {
                 user(login: $owner) {
                   projectV2(number: $number) {
                     id
@@ -156,13 +163,31 @@ jobs:
               return [...iterations].sort((a, b) => toUtcDate(a.startDate) - toUtcDate(b.startDate));
             }
 
+            async function getProjectOwnerType(login) {
+              const response = await github.request('GET /users/{username}', {
+                username: login,
+                headers: {
+                  accept: 'application/vnd.github+json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+                },
+              });
+
+              return response.data.type;
+            }
+
             async function getProjectMetadata() {
-              const data = await github.graphql(ORGANIZATION_PROJECT_QUERY, {
+              const ownerType = await getProjectOwnerType(projectOwner);
+              const query = ownerType === 'Organization' ? ORGANIZATION_PROJECT_QUERY : USER_PROJECT_QUERY;
+
+              const data = await github.graphql(query, {
                 owner: projectOwner,
                 number: projectNumber,
               });
 
-              const project = data.organization?.projectV2 ?? data.user?.projectV2;
+              const project = ownerType === 'Organization'
+                ? data.organization?.projectV2
+                : data.user?.projectV2;
+
               if (!project) {
                 throw new Error(`Project ${projectOwner}#${projectNumber} was not found.`);
               }
