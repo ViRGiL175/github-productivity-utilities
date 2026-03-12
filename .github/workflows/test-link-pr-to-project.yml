@@ -15,7 +15,7 @@ permissions:
 env:
   PROJECT_OWNER: ViRGiL175
   PROJECT_NUMBER: '10'
-  ITERATION_FIELD_NAME: Sprint
+  ITERATION_FIELD_NAME: Iteration
   STATUS_FIELD_NAME: Status
   STATUS_DONE_VALUE: Done
   REPO_OWNER: ViRGiL175
@@ -310,7 +310,7 @@ jobs:
       project_owner: ViRGiL175
       project_number: 10
       backlog_repo: github-productivity-utilities
-      iteration_field_name: Sprint
+      iteration_field_name: Iteration
       status_field_name: Status
       status_done_value: Done
       pull_request_node_id: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
@@ -417,7 +417,7 @@ jobs:
       project_owner: ViRGiL175
       project_number: 10
       backlog_repo: github-productivity-utilities
-      iteration_field_name: Sprint
+      iteration_field_name: Iteration
       status_field_name: Status
       status_done_value: Done
       pull_request_node_id: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
@@ -557,7 +557,7 @@ jobs:
       project_owner: ViRGiL175
       project_number: 10
       backlog_repo: github-productivity-utilities
-      iteration_field_name: Sprint
+      iteration_field_name: Iteration
       status_field_name: Status
       status_done_value: Done
       pull_request_node_id: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
