@@ -1,0 +1,306 @@
+name: Ensure next iteration reminder
+
+on:
+  workflow_call:
+    inputs:
+      project_owner:
+        required: true
+        type: string
+      project_number:
+        required: true
+        type: number
+      iteration_field_name:
+        required: true
+        type: string
+      reminder_title:
+        required: true
+        type: string
+      reminder_body:
+        required: false
+        type: string
+        default: ''
+      reminder_marker:
+        required: true
+        type: string
+    secrets:
+      project_token:
+        required: true
+
+jobs:
+  ensure-next-iteration-reminder:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+
+    steps:
+      - name: Ensure reminder draft exists in next iteration
+        uses: actions/github-script@v8
+        env:
+          PROJECT_OWNER: ${{ inputs.project_owner }}
+          PROJECT_NUMBER: ${{ inputs.project_number }}
+          ITERATION_FIELD_NAME: ${{ inputs.iteration_field_name }}
+          REMINDER_TITLE: ${{ inputs.reminder_title }}
+          REMINDER_BODY: ${{ inputs.reminder_body }}
+          REMINDER_MARKER: ${{ inputs.reminder_marker }}
+        with:
+          github-token: ${{ secrets.project_token }}
+          script: |
+            const core = require('@actions/core');
+
+            const ownerLogin = process.env.PROJECT_OWNER;
+            const projectNumber = Number(process.env.PROJECT_NUMBER);
+            const iterationFieldName = process.env.ITERATION_FIELD_NAME;
+            const reminderTitle = process.env.REMINDER_TITLE;
+            const reminderBody = process.env.REMINDER_BODY || '';
+            const reminderMarker = process.env.REMINDER_MARKER;
+            const markerToken = `<!-- ${reminderMarker} -->`;
+            const today = new Date();
+            const todayIso = today.toISOString().slice(0, 10);
+
+            function toUtcDate(value) {
+              return new Date(`${value}T00:00:00Z`);
+            }
+
+            function addDays(date, days) {
+              const result = new Date(date);
+              result.setUTCDate(result.getUTCDate() + days);
+              return result;
+            }
+
+            function sortIterations(iterations) {
+              return [...iterations].sort((a, b) => {
+                const dateCompare = toUtcDate(a.startDate) - toUtcDate(b.startDate);
+                if (dateCompare !== 0) {
+                  return dateCompare;
+                }
+
+                return a.title.localeCompare(b.title);
+              });
+            }
+
+            async function getProjectOwnerType(login) {
+              const response = await github.request('GET /users/{username}', {
+                username: login,
+              });
+
+              return response.data.type === 'Organization' ? 'organization' : 'user';
+            }
+
+            async function getProjectMetadata(ownerType) {
+              const ownerQuery = ownerType === 'organization'
+                ? `organization(login: $owner) {\n                    projectV2(number: $number) {\n                      id\n                      title\n                      fields(first: 100) {\n                        nodes {\n                          __typename\n                          ... on ProjectV2FieldCommon {\n                            id\n                            name\n                          }\n                          ... on ProjectV2IterationField {\n                            configuration {\n                              completedIterations {\n                                id\n                                title\n                                startDate\n                                duration\n                              }\n                              iterations {\n                                id\n                                title\n                                startDate\n                                duration\n                              }\n                            }\n                          }\n                        }\n                      }\n                    }\n                  }`
+                : `user(login: $owner) {\n                    projectV2(number: $number) {\n                      id\n                      title\n                      fields(first: 100) {\n                        nodes {\n                          __typename\n                          ... on ProjectV2FieldCommon {\n                            id\n                            name\n                          }\n                          ... on ProjectV2IterationField {\n                            configuration {\n                              completedIterations {\n                                id\n                                title\n                                startDate\n                                duration\n                              }\n                              iterations {\n                                id\n                                title\n                                startDate\n                                duration\n                              }\n                            }\n                          }\n                        }\n                      }\n                    }\n                  }`;
+
+              const query = `query($owner: String!, $number: Int!) {\n${ownerQuery}\n}`;
+              const data = await github.graphql(query, {
+                owner: ownerLogin,
+                number: projectNumber,
+              });
+
+              const project = ownerType === 'organization'
+                ? data.organization?.projectV2
+                : data.user?.projectV2;
+
+              if (!project) {
+                throw new Error(`Project ${ownerLogin}#${projectNumber} was not found.`);
+              }
+
+              const iterationField = project.fields.nodes.find((field) =>
+                field.__typename === 'ProjectV2IterationField' && field.name === iterationFieldName,
+              );
+
+              if (!iterationField) {
+                throw new Error(`Iteration field \"${iterationFieldName}\" was not found in project ${ownerLogin}#${projectNumber}.`);
+              }
+
+              const iterations = sortIterations([
+                ...(iterationField.configuration?.completedIterations ?? []),
+                ...(iterationField.configuration?.iterations ?? []),
+              ]);
+
+              return {
+                projectId: project.id,
+                projectTitle: project.title,
+                iterationFieldId: iterationField.id,
+                iterations,
+              };
+            }
+
+            async function getProjectItems(projectId) {
+              const items = [];
+              let hasNextPage = true;
+              let cursor = null;
+
+              while (hasNextPage) {
+                const data = await github.graphql(
+                  `query($projectId: ID!, $after: String) {\n  node(id: $projectId) {\n    ... on ProjectV2 {\n      items(first: 100, after: $after) {\n        pageInfo {\n          hasNextPage\n          endCursor\n        }\n        nodes {\n          id\n          content {\n            __typename\n            ... on DraftIssue {\n              id\n              title\n              body\n            }\n            ... on Issue {\n              id\n              number\n              title\n            }\n            ... on PullRequest {\n              id\n              number\n              title\n            }\n          }\n          fieldValues(first: 20) {\n            nodes {\n              __typename\n              ... on ProjectV2ItemFieldIterationValue {\n                iterationId\n                title\n                startDate\n                duration\n                field {\n                  ... on ProjectV2FieldCommon {\n                    id\n                    name\n                  }\n                }\n              }\n            }\n          }\n        }\n      }\n    }\n  }\n}`,
+                  {
+                    projectId,
+                    after: cursor,
+                  },
+                );
+
+                const connection = data.node?.items;
+                if (!connection) {
+                  throw new Error(`Unable to read items for project ${projectId}.`);
+                }
+
+                items.push(...connection.nodes);
+                hasNextPage = connection.pageInfo.hasNextPage;
+                cursor = connection.pageInfo.endCursor;
+              }
+
+              return items;
+            }
+
+            function findCurrentIteration(iterations) {
+              return iterations.find((iteration) => {
+                const start = toUtcDate(iteration.startDate);
+                const end = addDays(start, iteration.duration);
+                return today >= start && today < end;
+              });
+            }
+
+            function findNextIteration(iterations, currentIteration) {
+              if (currentIteration) {
+                return iterations.find((iteration) => toUtcDate(iteration.startDate) > toUtcDate(currentIteration.startDate));
+              }
+
+              return iterations.find((iteration) => toUtcDate(iteration.startDate) > today);
+            }
+
+            function getItemIterationId(item, iterationFieldId) {
+              const value = item.fieldValues?.nodes?.find((fieldValue) =>
+                fieldValue.__typename === 'ProjectV2ItemFieldIterationValue'
+                && fieldValue.field?.id === iterationFieldId,
+              );
+
+              return value?.iterationId ?? null;
+            }
+
+            function isReminderDraft(item) {
+              if (item.content?.__typename !== 'DraftIssue') {
+                return false;
+              }
+
+              const draftTitle = item.content.title || '';
+              const draftBody = item.content.body || '';
+
+              return draftBody.includes(markerToken)
+                || draftTitle === reminderTitle;
+            }
+
+            async function createReminderDraft(projectId) {
+              const response = await github.graphql(
+                `mutation($input: AddProjectV2DraftIssueInput!) {\n  addProjectV2DraftIssue(input: $input) {\n    projectItem {\n      id\n    }\n  }\n}`,
+                {
+                  input: {
+                    projectId,
+                    title: reminderTitle,
+                    body: reminderBody,
+                  },
+                },
+              );
+
+              return response.addProjectV2DraftIssue.projectItem.id;
+            }
+
+            async function updateReminderDraft(draftIssueId) {
+              await github.graphql(
+                `mutation($input: UpdateProjectV2DraftIssueInput!) {\n  updateProjectV2DraftIssue(input: $input) {\n    draftIssue {\n      id\n    }\n  }\n}`,
+                {
+                  input: {
+                    draftIssueId,
+                    title: reminderTitle,
+                    body: reminderBody,
+                  },
+                },
+              );
+            }
+
+            async function setReminderIteration(projectId, itemId, iterationFieldId, iterationId) {
+              await github.graphql(
+                `mutation($input: UpdateProjectV2ItemFieldValueInput!) {\n  updateProjectV2ItemFieldValue(input: $input) {\n    projectV2Item {\n      id\n    }\n  }\n}`,
+                {
+                  input: {
+                    projectId,
+                    itemId,
+                    fieldId: iterationFieldId,
+                    value: {
+                      iterationId,
+                    },
+                  },
+                },
+              );
+            }
+
+            async function deleteProjectItem(projectId, itemId) {
+              await github.graphql(
+                `mutation($input: DeleteProjectV2ItemInput!) {\n  deleteProjectV2Item(input: $input) {\n    deletedItemId\n  }\n}`,
+                {
+                  input: {
+                    projectId,
+                    itemId,
+                  },
+                },
+              );
+            }
+
+            const ownerType = await getProjectOwnerType(ownerLogin);
+            core.info(`Resolved project owner type: ${ownerType}`);
+
+            const project = await getProjectMetadata(ownerType);
+            const currentIteration = findCurrentIteration(project.iterations);
+            const nextIteration = findNextIteration(project.iterations, currentIteration);
+
+            if (!currentIteration) {
+              core.notice(`No active iteration found for ${todayIso}. Will use the first future iteration as next if available.`);
+            } else {
+              core.info(`Current iteration: ${currentIteration.title} (${currentIteration.startDate})`);
+            }
+
+            if (!nextIteration) {
+              core.notice(`No next iteration found in field \"${iterationFieldName}\" for project ${ownerLogin}#${projectNumber}. Nothing to do.`);
+              return;
+            }
+
+            core.info(`Target next iteration: ${nextIteration.title} (${nextIteration.startDate})`);
+
+            const items = await getProjectItems(project.projectId);
+            const reminderItems = items.filter(isReminderDraft);
+
+            let canonicalItem = reminderItems.find((item) =>
+              getItemIterationId(item, project.iterationFieldId) === nextIteration.id,
+            ) ?? reminderItems[0];
+
+            if (!canonicalItem) {
+              const itemId = await createReminderDraft(project.projectId);
+              await setReminderIteration(project.projectId, itemId, project.iterationFieldId, nextIteration.id);
+              core.info(`Created reminder draft item in next iteration \"${nextIteration.title}\".`);
+              return;
+            }
+
+            if (canonicalItem.content?.__typename !== 'DraftIssue') {
+              throw new Error('Canonical reminder item is not a draft issue.');
+            }
+
+            if (canonicalItem.content.title !== reminderTitle || (canonicalItem.content.body || '') !== reminderBody) {
+              await updateReminderDraft(canonicalItem.content.id);
+              core.info(`Updated reminder draft content for item ${canonicalItem.id}.`);
+            }
+
+            const canonicalIterationId = getItemIterationId(canonicalItem, project.iterationFieldId);
+            if (canonicalIterationId !== nextIteration.id) {
+              await setReminderIteration(project.projectId, canonicalItem.id, project.iterationFieldId, nextIteration.id);
+              core.info(`Moved reminder draft to next iteration \"${nextIteration.title}\".`);
+            }
+
+            const duplicateItems = reminderItems.filter((item) => item.id !== canonicalItem.id);
+            for (const duplicateItem of duplicateItems) {
+              await deleteProjectItem(project.projectId, duplicateItem.id);
+              core.info(`Deleted duplicate reminder item ${duplicateItem.id}.`);
+            }
+
+            core.info(`Reminder reconciled successfully in project \"${project.projectTitle}\".`);
