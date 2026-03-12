@@ -15,92 +15,111 @@ on:
       project_token:
         required: true
 
-env:
-  ORG: ${{ inputs.project_owner }}
-  BACKLOG_REPO: ${{ inputs.backlog_repo }}
-
 jobs:
   check-and-reopen:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+
     steps:
       - name: Check linked open PRs and reopen if needed
+        uses: actions/github-script@v8
         env:
-          GH_TOKEN: ${{ secrets.project_token }}
+          PROJECT_OWNER: ${{ inputs.project_owner }}
+          BACKLOG_REPO: ${{ inputs.backlog_repo }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
-        run: |
-          echo "::group::Query timeline for issue #$ISSUE_NUMBER"
+        with:
+          github-token: ${{ secrets.project_token }}
+          script: |
+            const projectOwner = process.env.PROJECT_OWNER;
+            const backlogRepo = process.env.BACKLOG_REPO;
+            const issueNumber = Number(process.env.ISSUE_NUMBER);
 
-          QUERY='query($owner: String!, $repo: String!, $number: Int!) {
-            repository(owner: $owner, name: $repo) {
-              issue(number: $number) {
-                timelineItems(itemTypes: [CROSS_REFERENCED_EVENT], first: 100) {
-                  nodes {
-                    ... on CrossReferencedEvent {
-                      source {
-                        __typename
-                        ... on PullRequest {
-                          number
-                          state
-                          url
-                          title
-                          body
-                          repository { nameWithOwner }
+            const ISSUE_TIMELINE_QUERY = `
+              query($owner: String!, $repo: String!, $number: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  issue(number: $number) {
+                    timelineItems(itemTypes: [CROSS_REFERENCED_EVENT], first: 100) {
+                      nodes {
+                        ... on CrossReferencedEvent {
+                          source {
+                            __typename
+                            ... on PullRequest {
+                              number
+                              state
+                              title
+                              body
+                              repository {
+                                nameWithOwner
+                              }
+                            }
+                          }
                         }
                       }
                     }
                   }
                 }
               }
+            `;
+
+            function escapeRegExp(value) {
+              return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
             }
-          }'
 
-          RESULT=$(gh api graphql \
-            -f query="$QUERY" \
-            -f owner="$ORG" \
-            -f repo="$BACKLOG_REPO" \
-            -F number="$ISSUE_NUMBER")
+            const data = await github.graphql(ISSUE_TIMELINE_QUERY, {
+              owner: projectOwner,
+              repo: backlogRepo,
+              number: issueNumber,
+            });
 
-          echo "$RESULT" | jq '.data.repository.issue.timelineItems'
-          echo "::endgroup::"
+            const timelineNodes = data.repository?.issue?.timelineItems?.nodes ?? [];
+            const targetRef = `${projectOwner}/${backlogRepo}#${issueNumber}`;
+            const closingPattern = new RegExp(`\\b(?:closes|fixes|resolves)\\s+${escapeRegExp(targetRef)}\\b`, 'i');
 
-          CLOSE_PATTERN="(closes|fixes|resolves)\\s+${ORG}/${BACKLOG_REPO}#${ISSUE_NUMBER}\\b"
+            const openPullRequests = timelineNodes
+              .map((node) => node?.source)
+              .filter((source) => source?.__typename === 'PullRequest')
+              .filter((pullRequest) => pullRequest.state === 'OPEN')
+              .filter((pullRequest) => closingPattern.test(pullRequest.body || ''));
 
-          OPEN_PRS=$(echo "$RESULT" | jq -r --arg pattern "$CLOSE_PATTERN" '
-            [
-              .data.repository.issue.timelineItems.nodes[]
-              | select(
-                  .source.__typename == "PullRequest"
-                  and .source.state == "OPEN"
-                  and (.source.body | test($pattern; "i"))
-                )
-              | "- \(.source.repository.nameWithOwner)#\(.source.number) — \(.source.title)"
-            ] | join("\n")
-          ')
+            if (openPullRequests.length === 0) {
+              core.info('No open linked PRs with closing keywords. Issue stays closed.');
+              return;
+            }
 
-          if [ -z "$OPEN_PRS" ]; then
-            echo "No open linked PRs with closing keywords. Issue stays closed."
-            exit 0
-          fi
+            const pullRequestLines = openPullRequests.map((pullRequest) =>
+              `- ${pullRequest.repository.nameWithOwner}#${pullRequest.number} — ${pullRequest.title}`,
+            );
 
-          echo "Open linked PRs found:"
-          echo -e "$OPEN_PRS"
+            core.info(`Open linked PRs found:\n${pullRequestLines.join('\n')}`);
 
-          gh issue reopen "$ISSUE_NUMBER" --repo "$ORG/$BACKLOG_REPO"
+            await github.request('PATCH /repos/{owner}/{repo}/issues/{issue_number}', {
+              owner: projectOwner,
+              repo: backlogRepo,
+              issue_number: issueNumber,
+              state: 'open',
+            });
 
-          BODY=$(cat <<EOF
-          🔁 **Issue переоткрыта автоматически.**
+            const body = [
+              '🔁 **Issue переоткрыта автоматически.**',
+              '',
+              'К ней привязаны открытые PR:',
+              '',
+              ...pullRequestLines,
+              '',
+              'Чтобы закрыть Issue, выберите один из вариантов для каждого PR:',
+              '1. **Мёрдж PR** — Issue закроется сама через `Closes`.',
+              '2. **Закрыть PR без мёрджа** — Issue больше не будет переоткрываться из-за него.',
+              `3. **Отвязать PR от Issue** — уберите строку \`Closes ${targetRef}\` из тела PR, затем закройте Issue вручную.`,
+            ].join('\n');
 
-          К ней привязаны открытые PR:
+            await github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+              owner: projectOwner,
+              repo: backlogRepo,
+              issue_number: issueNumber,
+              body,
+            });
 
-          $(echo -e "$OPEN_PRS")
-
-          Чтобы закрыть Issue, выберите один из вариантов для каждого PR:
-          1. **Мёрдж PR** — Issue закроется сама через \`Closes\`.
-          2. **Закрыть PR без мёрджа** — Issue больше не будет переоткрываться из-за него.
-          3. **Отвязать PR от Issue** — уберите строку \`Closes ${ORG}/${BACKLOG_REPO}#${ISSUE_NUMBER}\` из тела PR, затем закройте Issue вручную.
-          EOF
-          )
-
-          BODY=$(echo "$BODY" | sed 's/^          //')
-
-          gh issue comment "$ISSUE_NUMBER" --repo "$ORG/$BACKLOG_REPO" --body "$BODY"
+            core.info(`Issue #${issueNumber} was reopened and commented successfully.`);

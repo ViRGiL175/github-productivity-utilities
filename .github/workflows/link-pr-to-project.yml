@@ -34,114 +34,106 @@ on:
       project_token:
         required: true
 
-env:
-  ORG: ${{ inputs.project_owner }}
-  PROJECT_NUMBER: ${{ inputs.project_number }}
-  BACKLOG_REPO: ${{ inputs.backlog_repo }}
-  SPRINT_FIELD_NAME: ${{ inputs.iteration_field_name }}
-  STATUS_FIELD_NAME: ${{ inputs.status_field_name }}
-  STATUS_DONE_VALUE: ${{ inputs.status_done_value }}
-
 jobs:
-  link-on-open:
-    name: Add PR to project and link to issue
-    if: ${{ github.event.action == 'opened' || github.event.action == 'reopened' || github.event.action == 'edited' || github.event.action == 'synchronize' || github.event.action == 'ready_for_review' }}
+  sync-pr-with-project:
+    name: Sync PR with project
     runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ secrets.project_token }}
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
 
     steps:
-      - name: Fetch project metadata
-        id: project
-        if: ${{ github.event.action != 'edited' }}
-        run: |
-          DATA=$(gh api graphql -f query='
-            query($org: String!, $num: Int!) {
-              organization(login: $org) {
-                projectV2(number: $num) {
-                  id
-                  fields(first: 30) {
-                    nodes {
-                      ... on ProjectV2SingleSelectField {
-                        id name
-                        options { id name }
-                      }
-                      ... on ProjectV2IterationField {
-                        id name
-                        configuration {
-                          iterations { id title }
-                          completedIterations { id title }
+      - name: Sync PR metadata with project
+        uses: actions/github-script@v8
+        env:
+          PROJECT_OWNER: ${{ inputs.project_owner }}
+          PROJECT_NUMBER: ${{ inputs.project_number }}
+          BACKLOG_REPO: ${{ inputs.backlog_repo }}
+          ITERATION_FIELD_NAME: ${{ inputs.iteration_field_name }}
+          STATUS_FIELD_NAME: ${{ inputs.status_field_name }}
+          STATUS_DONE_VALUE: ${{ inputs.status_done_value }}
+        with:
+          github-token: ${{ secrets.project_token }}
+          script: |
+            const projectOwner = process.env.PROJECT_OWNER;
+            const projectNumber = Number(process.env.PROJECT_NUMBER);
+            const backlogRepo = process.env.BACKLOG_REPO;
+            const iterationFieldName = process.env.ITERATION_FIELD_NAME;
+            const statusFieldName = process.env.STATUS_FIELD_NAME;
+            const statusDoneValue = process.env.STATUS_DONE_VALUE;
+
+            const action = context.payload.action;
+            const pullRequest = context.payload.pull_request;
+
+            if (!pullRequest) {
+              throw new Error('This workflow must run on pull_request events.');
+            }
+
+            const ORGANIZATION_PROJECT_QUERY = `
+              query($owner: String!, $number: Int!) {
+                organization(login: $owner) {
+                  projectV2(number: $number) {
+                    id
+                    title
+                    fields(first: 100) {
+                      nodes {
+                        __typename
+                        ... on ProjectV2FieldCommon {
+                          id
+                          name
+                        }
+                        ... on ProjectV2SingleSelectField {
+                          options {
+                            id
+                            name
+                          }
                         }
                       }
                     }
                   }
                 }
               }
-            }
-          ' -f org="$ORG" -F num="$PROJECT_NUMBER")
+            `;
 
-          PROJECT_ID=$(echo "$DATA" | jq -r '.data.organization.projectV2.id')
-          SPRINT_FIELD_ID=$(echo "$DATA" | jq -r \
-            --arg name "$SPRINT_FIELD_NAME" \
-            '.data.organization.projectV2.fields.nodes[] | select(.name == $name) | .id')
-          STATUS_FIELD_ID=$(echo "$DATA" | jq -r \
-            --arg name "$STATUS_FIELD_NAME" \
-            '.data.organization.projectV2.fields.nodes[] | select(.name == $name) | .id')
-          DONE_OPTION_ID=$(echo "$DATA" | jq -r \
-            --arg name "$STATUS_FIELD_NAME" --arg val "$STATUS_DONE_VALUE" \
-            '.data.organization.projectV2.fields.nodes[] | select(.name == $name) | .options[] | select(.name == $val) | .id')
-
-          echo "project_id=$PROJECT_ID" >> "$GITHUB_OUTPUT"
-          echo "sprint_field_id=$SPRINT_FIELD_ID" >> "$GITHUB_OUTPUT"
-          echo "status_field_id=$STATUS_FIELD_ID" >> "$GITHUB_OUTPUT"
-          echo "done_option_id=$DONE_OPTION_ID" >> "$GITHUB_OUTPUT"
-
-      - name: Add PR to project
-        id: add_pr
-        if: ${{ github.event.action != 'edited' }}
-        run: |
-          ITEM_ID=$(gh api graphql -f query='
-            mutation($projectId: ID!, $contentId: ID!) {
-              addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
-                item { id }
-              }
-            }
-          ' \
-          -f projectId="${{ steps.project.outputs.project_id }}" \
-          -f contentId="${{ github.event.pull_request.node_id }}" \
-          | jq -r '.data.addProjectV2ItemById.item.id')
-
-          echo "item_id=$ITEM_ID" >> "$GITHUB_OUTPUT"
-
-      - name: Extract issue number from branch
-        id: extract
-        run: |
-          BRANCH="${{ github.head_ref }}"
-          if [[ "$BRANCH" =~ ^([0-9]+)- ]]; then
-            echo "issue_number=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
-            echo "found=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "found=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Find issue in project and get sprint
-        id: issue
-        if: ${{ steps.extract.outputs.found == 'true' && github.event.action != 'edited' }}
-        run: |
-          ISSUE_NUM="${{ steps.extract.outputs.issue_number }}"
-          PROJECT_ID="${{ steps.project.outputs.project_id }}"
-
-          DATA=$(gh api graphql -f query="
-            query(\$org: String!, \$repo: String!, \$issueNum: Int!) {
-              organization(login: \$org) {
-                repository(name: \$repo) {
-                  issue(number: \$issueNum) {
+            const USER_PROJECT_QUERY = `
+              query($owner: String!, $number: Int!) {
+                user(login: $owner) {
+                  projectV2(number: $number) {
                     id
-                    projectItems(first: 20) {
+                    title
+                    fields(first: 100) {
+                      nodes {
+                        __typename
+                        ... on ProjectV2FieldCommon {
+                          id
+                          name
+                        }
+                        ... on ProjectV2SingleSelectField {
+                          options {
+                            id
+                            name
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const ISSUE_PROJECT_ITEMS_QUERY = `
+              query($owner: String!, $repo: String!, $issueNum: Int!, $fieldName: String!) {
+                repository(owner: $owner, name: $repo) {
+                  issue(number: $issueNum) {
+                    id
+                    projectItems(first: 100) {
                       nodes {
                         id
-                        project { id }
-                        fieldValueByName(name: \"$SPRINT_FIELD_NAME\") {
+                        project {
+                          id
+                        }
+                        fieldValueByName(name: $fieldName) {
                           ... on ProjectV2ItemFieldIterationValue {
                             iterationId
                             title
@@ -152,148 +144,267 @@ jobs:
                   }
                 }
               }
-            }
-          " -f org="$ORG" -f repo="$BACKLOG_REPO" -F issueNum="$ISSUE_NUM")
+            `;
 
-          ISSUE_ITEM=$(echo "$DATA" | jq -c \
-            --arg pid "$PROJECT_ID" \
-            '.data.organization.repository.issue.projectItems.nodes[]? | select(.project.id == $pid)')
-
-          if [ -z "$ISSUE_ITEM" ]; then
-            echo "in_project=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "in_project=true" >> "$GITHUB_OUTPUT"
-            ITERATION_ID=$(echo "$ISSUE_ITEM" | jq -r '.fieldValueByName.iterationId // ""')
-            echo "iteration_id=$ITERATION_ID" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Set sprint on PR item
-        if: ${{ steps.extract.outputs.found == 'true' && steps.issue.outputs.in_project == 'true' && steps.issue.outputs.iteration_id != '' && github.event.action != 'edited' }}
-        run: |
-          gh api graphql -f query='
-            mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $iterationId: String!) {
-              updateProjectV2ItemFieldValue(input: {
-                projectId: $projectId
-                itemId:    $itemId
-                fieldId:   $fieldId
-                value:     { iterationId: $iterationId }
-              }) {
-                projectV2Item { id }
-              }
-            }
-          ' \
-          -f projectId="${{ steps.project.outputs.project_id }}" \
-          -f itemId="${{ steps.add_pr.outputs.item_id }}" \
-          -f fieldId="${{ steps.project.outputs.sprint_field_id }}" \
-          -f iterationId="${{ steps.issue.outputs.iteration_id }}"
-
-      - name: Append closing reference to PR body
-        if: steps.extract.outputs.found == 'true'
-        env:
-          ISSUE_NUMBER: ${{ steps.extract.outputs.issue_number }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          REPO: ${{ github.repository }}
-        run: |
-          CURRENT_BODY=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.body // ""')
-
-          CLOSES_REF="Closes $ORG/$BACKLOG_REPO#$ISSUE_NUMBER"
-
-          if echo "$CURRENT_BODY" | grep -qF "$CLOSES_REF"; then
-            echo "Closing reference already present, skipping."
-            exit 0
-          fi
-
-          SUFFIX=$'\n\n<!-- auto-linked -->\n'"$CLOSES_REF"
-          NEW_BODY="${CURRENT_BODY}${SUFFIX}"
-
-          gh api "repos/$REPO/pulls/$PR_NUMBER" -X PATCH -f body="$NEW_BODY"
-
-  mark-done-on-close:
-    name: Set PR status to Done
-    if: ${{ github.event.action == 'closed' }}
-    runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ secrets.project_token }}
-
-    steps:
-      - name: Fetch project metadata
-        id: project
-        run: |
-          DATA=$(gh api graphql -f query='
-            query($org: String!, $num: Int!) {
-              organization(login: $org) {
-                projectV2(number: $num) {
-                  id
-                  fields(first: 30) {
-                    nodes {
-                      ... on ProjectV2SingleSelectField {
-                        id name
-                        options { id name }
+            const PULL_REQUEST_PROJECT_ITEMS_QUERY = `
+              query($nodeId: ID!, $fieldName: String!) {
+                node(id: $nodeId) {
+                  ... on PullRequest {
+                    projectItems(first: 100) {
+                      nodes {
+                        id
+                        project {
+                          id
+                        }
+                        fieldValueByName(name: $fieldName) {
+                          ... on ProjectV2ItemFieldIterationValue {
+                            iterationId
+                            title
+                          }
+                        }
                       }
                     }
                   }
                 }
               }
-            }
-          ' -f org="$ORG" -F num="$PROJECT_NUMBER")
+            `;
 
-          PROJECT_ID=$(echo "$DATA" | jq -r '.data.organization.projectV2.id')
-          STATUS_FIELD_ID=$(echo "$DATA" | jq -r \
-            --arg name "$STATUS_FIELD_NAME" \
-            '.data.organization.projectV2.fields.nodes[] | select(.name == $name) | .id')
-          DONE_OPTION_ID=$(echo "$DATA" | jq -r \
-            --arg name "$STATUS_FIELD_NAME" --arg val "$STATUS_DONE_VALUE" \
-            '.data.organization.projectV2.fields.nodes[] | select(.name == $name) | .options[] | select(.name == $val) | .id')
-
-          echo "project_id=$PROJECT_ID" >> "$GITHUB_OUTPUT"
-          echo "status_field_id=$STATUS_FIELD_ID" >> "$GITHUB_OUTPUT"
-          echo "done_option_id=$DONE_OPTION_ID" >> "$GITHUB_OUTPUT"
-
-      - name: Find PR item in project
-        id: find_item
-        run: |
-          PROJECT_ID="${{ steps.project.outputs.project_id }}"
-
-          ITEM_ID=$(gh api graphql -f query='
-            query($nodeId: ID!) {
-              node(id: $nodeId) {
-                ... on PullRequest {
-                  projectItems(first: 20) {
-                    nodes {
-                      id
-                      project { id }
-                    }
+            const ADD_PROJECT_ITEM_MUTATION = `
+              mutation($projectId: ID!, $contentId: ID!) {
+                addProjectV2ItemById(input: { projectId: $projectId, contentId: $contentId }) {
+                  item {
+                    id
                   }
                 }
               }
+            `;
+
+            const UPDATE_ITERATION_MUTATION = `
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $iterationId: String!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $projectId
+                  itemId: $itemId
+                  fieldId: $fieldId
+                  value: { iterationId: $iterationId }
+                }) {
+                  projectV2Item {
+                    id
+                  }
+                }
+              }
+            `;
+
+            const UPDATE_STATUS_MUTATION = `
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $projectId
+                  itemId: $itemId
+                  fieldId: $fieldId
+                  value: { singleSelectOptionId: $optionId }
+                }) {
+                  projectV2Item {
+                    id
+                  }
+                }
+              }
+            `;
+
+            function extractIssueNumber(branchName) {
+              const match = /^([0-9]+)-/.exec(branchName || '');
+              return match ? Number(match[1]) : null;
             }
-          ' -f nodeId="${{ github.event.pull_request.node_id }}" \
-          | jq -r --arg pid "$PROJECT_ID" \
-            '.data.node.projectItems.nodes[]? | select(.project.id == $pid) | .id')
 
-          if [ -z "$ITEM_ID" ]; then
-            echo "found=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "found=true" >> "$GITHUB_OUTPUT"
-            echo "item_id=$ITEM_ID" >> "$GITHUB_OUTPUT"
-          fi
+            async function getProjectOwnerType(ownerLogin) {
+              const response = await github.request('GET /users/{username}', {
+                username: ownerLogin,
+                headers: {
+                  accept: 'application/vnd.github+json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+                },
+              });
 
-      - name: Set status to Done
-        if: steps.find_item.outputs.found == 'true'
-        run: |
-          gh api graphql -f query='
-            mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
-              updateProjectV2ItemFieldValue(input: {
-                projectId: $projectId
-                itemId:    $itemId
-                fieldId:   $fieldId
-                value:     { singleSelectOptionId: $optionId }
-              }) {
-                projectV2Item { id }
+              return response.data.type;
+            }
+
+            async function getProjectMetadata() {
+              const ownerType = await getProjectOwnerType(projectOwner);
+              const isOrganization = ownerType === 'Organization';
+              const isUser = ownerType === 'User';
+
+              if (!isOrganization && !isUser) {
+                throw new Error(`Unsupported project owner type "${ownerType}" for ${projectOwner}.`);
+              }
+
+              const query = isOrganization ? ORGANIZATION_PROJECT_QUERY : USER_PROJECT_QUERY;
+              const data = await github.graphql(query, {
+                owner: projectOwner,
+                number: projectNumber,
+              });
+
+              const project = isOrganization
+                ? data.organization?.projectV2
+                : data.user?.projectV2;
+
+              if (!project) {
+                throw new Error(`Project ${projectOwner}#${projectNumber} was not found.`);
+              }
+
+              const iterationField = project.fields.nodes.find((field) =>
+                field?.__typename === 'ProjectV2IterationField' && field.name === iterationFieldName,
+              );
+              if (!iterationField) {
+                throw new Error(`Iteration field "${iterationFieldName}" was not found in project ${projectOwner}#${projectNumber}.`);
+              }
+
+              const statusField = project.fields.nodes.find((field) =>
+                field?.__typename === 'ProjectV2SingleSelectField' && field.name === statusFieldName,
+              );
+              if (!statusField) {
+                throw new Error(`Status field "${statusFieldName}" was not found in project ${projectOwner}#${projectNumber}.`);
+              }
+
+              const doneOption = statusField.options?.find((option) => option.name === statusDoneValue);
+              if (!doneOption) {
+                throw new Error(`Status option "${statusDoneValue}" was not found in field ${statusFieldName} of project ${projectOwner}#${projectNumber}.`);
+              }
+
+              return {
+                projectId: project.id,
+                projectTitle: project.title,
+                iterationFieldId: iterationField.id,
+                statusFieldId: statusField.id,
+                doneOptionId: doneOption.id,
+              };
+            }
+
+            async function getPullRequestProjectItem(projectId) {
+              const data = await github.graphql(PULL_REQUEST_PROJECT_ITEMS_QUERY, {
+                nodeId: pullRequest.node_id,
+                fieldName: iterationFieldName,
+              });
+
+              return data.node?.projectItems?.nodes?.find((item) => item.project?.id === projectId) ?? null;
+            }
+
+            async function getIssueProjectItem(projectId, issueNumber) {
+              const data = await github.graphql(ISSUE_PROJECT_ITEMS_QUERY, {
+                owner: projectOwner,
+                repo: backlogRepo,
+                issueNum: issueNumber,
+                fieldName: iterationFieldName,
+              });
+
+              return data.repository?.issue?.projectItems?.nodes?.find((item) => item.project?.id === projectId) ?? null;
+            }
+
+            async function addPullRequestToProject(projectId) {
+              const data = await github.graphql(ADD_PROJECT_ITEM_MUTATION, {
+                projectId,
+                contentId: pullRequest.node_id,
+              });
+
+              return data.addProjectV2ItemById.item.id;
+            }
+
+            async function setIteration(projectId, itemId, iterationId) {
+              await github.graphql(UPDATE_ITERATION_MUTATION, {
+                projectId,
+                itemId,
+                fieldId: project.iterationFieldId,
+                iterationId,
+              });
+            }
+
+            async function setDoneStatus(projectId, itemId) {
+              await github.graphql(UPDATE_STATUS_MUTATION, {
+                projectId,
+                itemId,
+                fieldId: project.statusFieldId,
+                optionId: project.doneOptionId,
+              });
+            }
+
+            async function appendClosingReferenceIfMissing(issueNumber) {
+              const closesRef = `Closes ${projectOwner}/${backlogRepo}#${issueNumber}`;
+              const response = await github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pullRequest.number,
+                headers: {
+                  accept: 'application/vnd.github+json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+                },
+              });
+
+              const currentBody = response.data.body || '';
+              if (currentBody.includes(closesRef)) {
+                core.info('Closing reference already present, skipping.');
+                return;
+              }
+
+              const suffix = `\n\n<!-- auto-linked -->\n${closesRef}`;
+              await github.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pullRequest.number,
+                body: `${currentBody}${suffix}`,
+                headers: {
+                  accept: 'application/vnd.github+json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+                },
+              });
+
+              core.info(`Appended closing reference ${closesRef} to PR #${pullRequest.number}.`);
+            }
+
+            const project = await getProjectMetadata();
+            core.info(`Resolved project "${project.projectTitle}" (${projectOwner}#${projectNumber}).`);
+
+            if (action === 'closed') {
+              const pullRequestProjectItem = await getPullRequestProjectItem(project.projectId);
+              if (!pullRequestProjectItem) {
+                core.info(`Pull request #${pullRequest.number} is not in project ${projectOwner}#${projectNumber}. Nothing to mark as done.`);
+                return;
+              }
+
+              await setDoneStatus(project.projectId, pullRequestProjectItem.id);
+              core.info(`Set status ${statusFieldName}=${statusDoneValue} for PR #${pullRequest.number}.`);
+              return;
+            }
+
+            let pullRequestProjectItem = await getPullRequestProjectItem(project.projectId);
+            let pullRequestItemId = pullRequestProjectItem?.id;
+
+            if (!pullRequestItemId) {
+              pullRequestItemId = await addPullRequestToProject(project.projectId);
+              core.info(`Added PR #${pullRequest.number} to project ${projectOwner}#${projectNumber}.`);
+              pullRequestProjectItem = { id: pullRequestItemId, fieldValueByName: null };
+            } else {
+              core.info(`PR #${pullRequest.number} is already in project ${projectOwner}#${projectNumber}.`);
+            }
+
+            const issueNumber = extractIssueNumber(pullRequest.head?.ref || '');
+            if (!issueNumber) {
+              core.info(`Could not extract issue number from branch "${pullRequest.head?.ref || ''}". Skipping sprint sync and closing reference.`);
+              return;
+            }
+
+            const issueProjectItem = await getIssueProjectItem(project.projectId, issueNumber);
+            if (!issueProjectItem) {
+              core.info(`Issue #${issueNumber} is not in project ${projectOwner}#${projectNumber}.`);
+            } else {
+              const issueIterationId = issueProjectItem.fieldValueByName?.iterationId ?? null;
+              const issueIterationTitle = issueProjectItem.fieldValueByName?.title ?? '';
+              const currentIterationId = pullRequestProjectItem?.fieldValueByName?.iterationId ?? null;
+
+              if (!issueIterationId) {
+                core.info(`Issue #${issueNumber} has no value in field ${iterationFieldName}.`);
+              } else if (currentIterationId === issueIterationId) {
+                core.info(`PR #${pullRequest.number} already has sprint ${issueIterationTitle || issueIterationId}.`);
+              } else {
+                await setIteration(project.projectId, pullRequestItemId, issueIterationId);
+                core.info(`Copied sprint ${issueIterationTitle || issueIterationId} from issue #${issueNumber} to PR #${pullRequest.number}.`);
               }
             }
-          ' \
-          -f projectId="${{ steps.project.outputs.project_id }}" \
-          -f itemId="${{ steps.find_item.outputs.item_id }}" \
-          -f fieldId="${{ steps.project.outputs.status_field_id }}" \
-          -f optionId="${{ steps.project.outputs.done_option_id }}"
+
+            await appendClosingReferenceIfMissing(issueNumber);
