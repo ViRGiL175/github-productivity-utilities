@@ -1,0 +1,305 @@
+name: Test reopen-issue-if-pr-open
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/reopen-issue-if-pr-open.yml'
+      - '.github/workflows/test-reopen-issue-if-pr-open.yml'
+
+permissions:
+  contents: read
+
+env:
+  REPO_OWNER: ViRGiL175
+  REPO_NAME: github-productivity-utilities
+  DEFAULT_BRANCH: main
+
+jobs:
+  prepare-reopen-scenario:
+    name: Prepare reopen scenario
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    outputs:
+      issue_number: ${{ steps.prepare.outputs.issue_number }}
+      pull_number: ${{ steps.prepare.outputs.pull_number }}
+      branch_name: ${{ steps.prepare.outputs.branch_name }}
+    steps:
+      - name: Create issue and linked PR
+        id: prepare
+        uses: actions/github-script@v8
+        env:
+          REPO_OWNER: ${{ env.REPO_OWNER }}
+          REPO_NAME: ${{ env.REPO_NAME }}
+          DEFAULT_BRANCH: ${{ env.DEFAULT_BRANCH }}
+          ISSUE_TITLE: ITEST-${{ github.run_id }} reopen issue
+          PR_TITLE: ITEST-${{ github.run_id }} reopen PR
+          BRANCH_NAME: itest-reopen-${{ github.run_id }}
+          FILE_PATH: itest/reopen-${{ github.run_id }}.txt
+        with:
+          github-token: ${{ secrets.ORG_PROJECT_TOKEN }}
+          script: |
+            const owner = process.env.REPO_OWNER;
+            const repo = process.env.REPO_NAME;
+            const defaultBranch = process.env.DEFAULT_BRANCH;
+            const issueTitle = process.env.ISSUE_TITLE;
+            const prTitle = process.env.PR_TITLE;
+            const branchName = process.env.BRANCH_NAME;
+            const filePath = process.env.FILE_PATH;
+
+            const headers = {
+              accept: 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+            };
+
+            function sleep(ms) {
+              return new Promise((resolve) => setTimeout(resolve, ms));
+            }
+
+            const ISSUE_TIMELINE_QUERY = `
+              query($owner: String!, $repo: String!, $number: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  issue(number: $number) {
+                    timelineItems(itemTypes: [CROSS_REFERENCED_EVENT], first: 100) {
+                      nodes {
+                        ... on CrossReferencedEvent {
+                          source {
+                            __typename
+                            ... on PullRequest {
+                              number
+                              state
+                              body
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const issueResponse = await github.request('POST /repos/{owner}/{repo}/issues', {
+              owner,
+              repo,
+              title: issueTitle,
+              body: `ITEST run ${context.runId} for reopen-issue-if-pr-open`,
+              headers,
+            });
+            const issue = issueResponse.data;
+            const closingRef = `Closes ${owner}/${repo}#${issue.number}`;
+
+            const baseRef = await github.request('GET /repos/{owner}/{repo}/git/ref/{ref}', {
+              owner,
+              repo,
+              ref: `heads/${defaultBranch}`,
+              headers,
+            });
+
+            await github.request('POST /repos/{owner}/{repo}/git/refs', {
+              owner,
+              repo,
+              ref: `refs/heads/${branchName}`,
+              sha: baseRef.data.object.sha,
+              headers,
+            });
+
+            await github.request('PUT /repos/{owner}/{repo}/contents/{path}', {
+              owner,
+              repo,
+              path: filePath,
+              message: `ITEST reopen fixture ${context.runId}`,
+              content: Buffer.from(`reopen fixture for run ${context.runId}\n`).toString('base64'),
+              branch: branchName,
+              headers,
+            });
+
+            const pullResponse = await github.request('POST /repos/{owner}/{repo}/pulls', {
+              owner,
+              repo,
+              title: prTitle,
+              head: branchName,
+              base: defaultBranch,
+              body: `ITEST run ${context.runId}\n\n${closingRef}`,
+              headers,
+            });
+            const pullRequest = pullResponse.data;
+
+            let timelineLinked = false;
+            for (let attempt = 1; attempt <= 12; attempt += 1) {
+              const timelineData = await github.graphql(ISSUE_TIMELINE_QUERY, {
+                owner,
+                repo,
+                number: issue.number,
+              });
+
+              const openPullRequests = timelineData.repository?.issue?.timelineItems?.nodes
+                ?.map((node) => node?.source)
+                ?.filter((source) => source?.__typename === 'PullRequest') ?? [];
+
+              if (openPullRequests.some((pr) => pr.number === pullRequest.number && (pr.body || '').includes(closingRef))) {
+                timelineLinked = true;
+                break;
+              }
+
+              core.info(`Waiting for issue timeline to include PR #${pullRequest.number} (attempt ${attempt}/12)...`);
+              await sleep(5000);
+            }
+
+            if (!timelineLinked) {
+              throw new Error(`Issue timeline did not include linked PR #${pullRequest.number} in time.`);
+            }
+
+            await github.request('PATCH /repos/{owner}/{repo}/issues/{issue_number}', {
+              owner,
+              repo,
+              issue_number: issue.number,
+              state: 'closed',
+              headers,
+            });
+
+            core.setOutput('issue_number', String(issue.number));
+            core.setOutput('pull_number', String(pullRequest.number));
+            core.setOutput('branch_name', branchName);
+
+  run-reopen-scenario:
+    name: Run reopen scenario
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs: prepare-reopen-scenario
+    uses: ./.github/workflows/reopen-issue-if-pr-open.yml
+    with:
+      project_owner: ViRGiL175
+      backlog_repo: github-productivity-utilities
+      issue_number: ${{ needs.prepare-reopen-scenario.outputs.issue_number }}
+    secrets:
+      project_token: ${{ secrets.ORG_PROJECT_TOKEN }}
+
+  assert-reopen-scenario:
+    name: Assert reopen scenario
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs:
+      - prepare-reopen-scenario
+      - run-reopen-scenario
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assert issue reopened and comment was added
+        uses: actions/github-script@v8
+        env:
+          REPO_OWNER: ${{ env.REPO_OWNER }}
+          REPO_NAME: ${{ env.REPO_NAME }}
+          ISSUE_NUMBER: ${{ needs.prepare-reopen-scenario.outputs.issue_number }}
+          PULL_NUMBER: ${{ needs.prepare-reopen-scenario.outputs.pull_number }}
+        with:
+          github-token: ${{ secrets.ORG_PROJECT_TOKEN }}
+          script: |
+            const owner = process.env.REPO_OWNER;
+            const repo = process.env.REPO_NAME;
+            const issueNumber = Number(process.env.ISSUE_NUMBER);
+            const pullNumber = Number(process.env.PULL_NUMBER);
+            const headers = {
+              accept: 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+            };
+
+            const issueResponse = await github.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
+              owner,
+              repo,
+              issue_number: issueNumber,
+              headers,
+            });
+
+            if (issueResponse.data.state !== 'open') {
+              throw new Error(`Expected issue #${issueNumber} to be open, got ${issueResponse.data.state}.`);
+            }
+
+            const commentsResponse = await github.request('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+              owner,
+              repo,
+              issue_number: issueNumber,
+              headers,
+            });
+
+            const matchingComment = commentsResponse.data.find((comment) =>
+              comment.body?.includes('Issue переоткрыта автоматически')
+              && comment.body?.includes(`${owner}/${repo}#${pullNumber}`),
+            );
+
+            if (!matchingComment) {
+              throw new Error(`Could not find reopen comment mentioning PR #${pullNumber} on issue #${issueNumber}.`);
+            }
+
+            core.info(`Issue #${issueNumber} is reopened and comment ${matchingComment.id} references PR #${pullNumber}.`);
+
+  cleanup-reopen-scenario:
+    name: Cleanup reopen scenario
+    if: ${{ always() && needs.prepare-reopen-scenario.outputs.issue_number != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    needs:
+      - prepare-reopen-scenario
+      - run-reopen-scenario
+      - assert-reopen-scenario
+    runs-on: ubuntu-latest
+    steps:
+      - name: Close issue and PR, then delete branch
+        uses: actions/github-script@v8
+        env:
+          REPO_OWNER: ${{ env.REPO_OWNER }}
+          REPO_NAME: ${{ env.REPO_NAME }}
+          ISSUE_NUMBER: ${{ needs.prepare-reopen-scenario.outputs.issue_number }}
+          PULL_NUMBER: ${{ needs.prepare-reopen-scenario.outputs.pull_number }}
+          BRANCH_NAME: ${{ needs.prepare-reopen-scenario.outputs.branch_name }}
+        with:
+          github-token: ${{ secrets.ORG_PROJECT_TOKEN }}
+          script: |
+            const owner = process.env.REPO_OWNER;
+            const repo = process.env.REPO_NAME;
+            const issueNumber = Number(process.env.ISSUE_NUMBER);
+            const pullNumber = Number(process.env.PULL_NUMBER);
+            const branchName = process.env.BRANCH_NAME;
+            const headers = {
+              accept: 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+            };
+
+            if (pullNumber > 0) {
+              await github.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', {
+                owner,
+                repo,
+                pull_number: pullNumber,
+                state: 'closed',
+                headers,
+              });
+            }
+
+            if (issueNumber > 0) {
+              await github.request('PATCH /repos/{owner}/{repo}/issues/{issue_number}', {
+                owner,
+                repo,
+                issue_number: issueNumber,
+                state: 'closed',
+                headers,
+              });
+            }
+
+            if (branchName) {
+              try {
+                await github.request('DELETE /repos/{owner}/{repo}/git/refs/{ref}', {
+                  owner,
+                  repo,
+                  ref: `heads/${branchName}`,
+                  headers,
+                });
+              } catch (error) {
+                if (error.status !== 404) {
+                  throw error;
+                }
+                core.info(`Branch ${branchName} is already absent.`);
+              }
+            }
+
+  test-skipped-for-fork-pr:
+    name: Test skipped for fork PR
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Explain why test is skipped
+        run: echo "Skipping integration test for fork pull requests because repository secrets are unavailable."

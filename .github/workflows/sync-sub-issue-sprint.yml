@@ -16,6 +16,22 @@ on:
         required: false
         default: Sprint
         type: string
+      issue_number:
+        description: Issue number override; falls back to github.event.issue.number when omitted
+        required: false
+        type: string
+      repo_owner:
+        description: Repository owner override; falls back to context.repo.owner when omitted
+        required: false
+        type: string
+      repo_name:
+        description: Repository name override; falls back to context.repo.repo when omitted
+        required: false
+        type: string
+      action:
+        description: Action override; falls back to github.event.action when omitted
+        required: false
+        type: string
     secrets:
       project_token:
         required: true
@@ -26,12 +42,15 @@ permissions:
 jobs:
   sync-sub-issue-sprint:
     name: Inherit sprint from parent issue
-    if: ${{ github.event.action == 'opened' && github.event.issue && !github.event.issue.pull_request }}
     runs-on: ubuntu-latest
     env:
       PROJECT_OWNER: ${{ inputs.project_owner }}
       PROJECT_NUMBER: ${{ inputs.project_number }}
       ITERATION_FIELD_NAME: ${{ inputs.iteration_field_name }}
+      ISSUE_NUMBER: ${{ inputs.issue_number }}
+      REPO_OWNER: ${{ inputs.repo_owner }}
+      REPO_NAME: ${{ inputs.repo_name }}
+      ACTION: ${{ inputs.action }}
 
     steps:
       - name: Copy sprint from parent issue
@@ -42,10 +61,10 @@ jobs:
             const projectOwner = process.env.PROJECT_OWNER;
             const projectNumber = Number(process.env.PROJECT_NUMBER);
             const iterationFieldName = process.env.ITERATION_FIELD_NAME;
-
-            const issue = context.payload.issue;
-            const repoOwner = context.repo.owner;
-            const repoName = context.repo.repo;
+            const issueNumber = Number(process.env.ISSUE_NUMBER || context.payload.issue?.number || '');
+            const repoOwner = process.env.REPO_OWNER || context.repo.owner;
+            const repoName = process.env.REPO_NAME || context.repo.repo;
+            const action = process.env.ACTION || context.payload.action || 'opened';
 
             const ORGANIZATION_PROJECT_QUERY = `
               query($owner: String!, $number: Int!) {
@@ -217,6 +236,32 @@ jobs:
                 fieldId,
                 iterationId,
               });
+            }
+
+            if (action !== 'opened') {
+              core.info(`Action is "${action}", so sprint sync is skipped.`);
+              return;
+            }
+
+            if (!Number.isInteger(issueNumber) || issueNumber <= 0) {
+              throw new Error('A valid issue_number input or github.event.issue.number is required.');
+            }
+
+            const issueResponse = await github.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
+              owner: repoOwner,
+              repo: repoName,
+              issue_number: issueNumber,
+              headers: {
+                accept: 'application/vnd.github+json',
+                'X-GitHub-Api-Version': '2022-11-28',
+              },
+            });
+
+            const issue = issueResponse.data;
+
+            if (issue.pull_request) {
+              core.info(`Issue #${issue.number} is a pull request. Nothing to sync.`);
+              return;
             }
 
             let parentIssue;

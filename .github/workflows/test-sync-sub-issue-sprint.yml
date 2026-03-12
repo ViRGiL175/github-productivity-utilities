@@ -1,0 +1,466 @@
+name: Test sync-sub-issue-sprint
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/sync-sub-issue-sprint.yml'
+      - '.github/workflows/test-sync-sub-issue-sprint.yml'
+
+permissions:
+  contents: read
+
+env:
+  PROJECT_OWNER: ViRGiL175
+  PROJECT_NUMBER: '10'
+  ITERATION_FIELD_NAME: Sprint
+  REPO_OWNER: ViRGiL175
+  REPO_NAME: github-productivity-utilities
+
+jobs:
+  prepare-sync-scenario:
+    name: Prepare sub-issue sync scenario
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    outputs:
+      project_id: ${{ steps.prepare.outputs.project_id }}
+      target_iteration_id: ${{ steps.prepare.outputs.target_iteration_id }}
+      parent_number: ${{ steps.prepare.outputs.parent_number }}
+      parent_node_id: ${{ steps.prepare.outputs.parent_node_id }}
+      child_number: ${{ steps.prepare.outputs.child_number }}
+      child_node_id: ${{ steps.prepare.outputs.child_node_id }}
+      child_id: ${{ steps.prepare.outputs.child_id }}
+    steps:
+      - name: Create parent and child issues
+        id: prepare
+        uses: actions/github-script@v8
+        env:
+          PROJECT_OWNER: ${{ env.PROJECT_OWNER }}
+          PROJECT_NUMBER: ${{ env.PROJECT_NUMBER }}
+          ITERATION_FIELD_NAME: ${{ env.ITERATION_FIELD_NAME }}
+          REPO_OWNER: ${{ env.REPO_OWNER }}
+          REPO_NAME: ${{ env.REPO_NAME }}
+          PARENT_TITLE: ITEST-${{ github.run_id }} parent issue
+          CHILD_TITLE: ITEST-${{ github.run_id }} child issue
+        with:
+          github-token: ${{ secrets.ORG_PROJECT_TOKEN }}
+          script: |
+            const projectOwner = process.env.PROJECT_OWNER;
+            const projectNumber = Number(process.env.PROJECT_NUMBER);
+            const iterationFieldName = process.env.ITERATION_FIELD_NAME;
+            const owner = process.env.REPO_OWNER;
+            const repo = process.env.REPO_NAME;
+            const parentTitle = process.env.PARENT_TITLE;
+            const childTitle = process.env.CHILD_TITLE;
+
+            const headers = {
+              accept: 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+            };
+
+            const ORGANIZATION_PROJECT_QUERY = `
+              query($owner: String!, $number: Int!) {
+                organization(login: $owner) {
+                  projectV2(number: $number) {
+                    id
+                    fields(first: 100) {
+                      nodes {
+                        __typename
+                        ... on ProjectV2FieldCommon {
+                          id
+                          name
+                        }
+                        ... on ProjectV2IterationField {
+                          configuration {
+                            completedIterations {
+                              id
+                              title
+                              startDate
+                              duration
+                            }
+                            iterations {
+                              id
+                              title
+                              startDate
+                              duration
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+                user(login: $owner) {
+                  projectV2(number: $number) {
+                    id
+                    fields(first: 100) {
+                      nodes {
+                        __typename
+                        ... on ProjectV2FieldCommon {
+                          id
+                          name
+                        }
+                        ... on ProjectV2IterationField {
+                          configuration {
+                            completedIterations {
+                              id
+                              title
+                              startDate
+                              duration
+                            }
+                            iterations {
+                              id
+                              title
+                              startDate
+                              duration
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const ADD_PROJECT_ITEM_MUTATION = `
+              mutation($projectId: ID!, $contentId: ID!) {
+                addProjectV2ItemById(input: { projectId: $projectId, contentId: $contentId }) {
+                  item {
+                    id
+                  }
+                }
+              }
+            `;
+
+            const UPDATE_ITERATION_MUTATION = `
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $iterationId: String!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $projectId
+                  itemId: $itemId
+                  fieldId: $fieldId
+                  value: { iterationId: $iterationId }
+                }) {
+                  projectV2Item {
+                    id
+                  }
+                }
+              }
+            `;
+
+            function toUtcDate(value) {
+              return new Date(`${value}T00:00:00Z`);
+            }
+
+            function sortIterations(iterations) {
+              return [...iterations].sort((a, b) => toUtcDate(a.startDate) - toUtcDate(b.startDate));
+            }
+
+            async function getProjectMetadata() {
+              const data = await github.graphql(ORGANIZATION_PROJECT_QUERY, {
+                owner: projectOwner,
+                number: projectNumber,
+              });
+
+              const project = data.organization?.projectV2 ?? data.user?.projectV2;
+              if (!project) {
+                throw new Error(`Project ${projectOwner}#${projectNumber} was not found.`);
+              }
+
+              const iterationField = project.fields.nodes.find((field) =>
+                field?.__typename === 'ProjectV2IterationField' && field.name === iterationFieldName,
+              );
+              if (!iterationField) {
+                throw new Error(`Iteration field "${iterationFieldName}" was not found in project ${projectOwner}#${projectNumber}.`);
+              }
+
+              const iterations = sortIterations([
+                ...(iterationField.configuration?.iterations ?? []),
+                ...(iterationField.configuration?.completedIterations ?? []),
+              ]).filter((iteration) => iteration.startDate);
+
+              if (iterations.length === 0) {
+                throw new Error('Need at least one iteration in the sandbox project to run sync-sub-issue-sprint integration tests.');
+              }
+
+              return {
+                projectId: project.id,
+                iterationFieldId: iterationField.id,
+                targetIterationId: iterations[0].id,
+              };
+            }
+
+            async function addIssueToProject(projectId, issueNodeId) {
+              const data = await github.graphql(ADD_PROJECT_ITEM_MUTATION, {
+                projectId,
+                contentId: issueNodeId,
+              });
+
+              return data.addProjectV2ItemById.item.id;
+            }
+
+            async function setIteration(projectId, itemId, fieldId, iterationId) {
+              await github.graphql(UPDATE_ITERATION_MUTATION, {
+                projectId,
+                itemId,
+                fieldId,
+                iterationId,
+              });
+            }
+
+            const project = await getProjectMetadata();
+
+            const parentResponse = await github.request('POST /repos/{owner}/{repo}/issues', {
+              owner,
+              repo,
+              title: parentTitle,
+              body: `ITEST run ${context.runId} for sync-sub-issue-sprint parent`,
+              headers,
+            });
+            const parentIssue = parentResponse.data;
+
+            const childResponse = await github.request('POST /repos/{owner}/{repo}/issues', {
+              owner,
+              repo,
+              title: childTitle,
+              body: `ITEST run ${context.runId} for sync-sub-issue-sprint child`,
+              headers,
+            });
+            const childIssue = childResponse.data;
+
+            const parentProjectItemId = await addIssueToProject(project.projectId, parentIssue.node_id);
+            await setIteration(project.projectId, parentProjectItemId, project.iterationFieldId, project.targetIterationId);
+
+            await github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues', {
+              owner,
+              repo,
+              issue_number: parentIssue.number,
+              sub_issue_id: childIssue.id,
+              headers,
+            });
+
+            core.setOutput('project_id', project.projectId);
+            core.setOutput('target_iteration_id', project.targetIterationId);
+            core.setOutput('parent_number', String(parentIssue.number));
+            core.setOutput('parent_node_id', parentIssue.node_id);
+            core.setOutput('child_number', String(childIssue.number));
+            core.setOutput('child_node_id', childIssue.node_id);
+            core.setOutput('child_id', String(childIssue.id));
+
+  run-sync-scenario:
+    name: Run sub-issue sync scenario
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs: prepare-sync-scenario
+    uses: ./.github/workflows/sync-sub-issue-sprint.yml
+    with:
+      project_owner: ViRGiL175
+      project_number: 10
+      iteration_field_name: Sprint
+      issue_number: ${{ needs.prepare-sync-scenario.outputs.child_number }}
+      repo_owner: ViRGiL175
+      repo_name: github-productivity-utilities
+      action: opened
+    secrets:
+      project_token: ${{ secrets.ORG_PROJECT_TOKEN }}
+
+  assert-sync-scenario:
+    name: Assert sub-issue sync scenario
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs:
+      - prepare-sync-scenario
+      - run-sync-scenario
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assert child issue inherited sprint
+        uses: actions/github-script@v8
+        env:
+          PROJECT_ID: ${{ needs.prepare-sync-scenario.outputs.project_id }}
+          ITERATION_FIELD_NAME: ${{ env.ITERATION_FIELD_NAME }}
+          TARGET_ITERATION_ID: ${{ needs.prepare-sync-scenario.outputs.target_iteration_id }}
+          CHILD_NODE_ID: ${{ needs.prepare-sync-scenario.outputs.child_node_id }}
+        with:
+          github-token: ${{ secrets.ORG_PROJECT_TOKEN }}
+          script: |
+            const projectId = process.env.PROJECT_ID;
+            const iterationFieldName = process.env.ITERATION_FIELD_NAME;
+            const targetIterationId = process.env.TARGET_ITERATION_ID;
+            const childNodeId = process.env.CHILD_NODE_ID;
+
+            const ISSUE_PROJECT_ITEMS_QUERY = `
+              query($issueId: ID!, $fieldName: String!) {
+                node(id: $issueId) {
+                  ... on Issue {
+                    projectItems(first: 100) {
+                      nodes {
+                        id
+                        project {
+                          id
+                        }
+                        fieldValueByName(name: $fieldName) {
+                          ... on ProjectV2ItemFieldIterationValue {
+                            iterationId
+                            title
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const data = await github.graphql(ISSUE_PROJECT_ITEMS_QUERY, {
+              issueId: childNodeId,
+              fieldName: iterationFieldName,
+            });
+
+            const projectItem = data.node?.projectItems?.nodes?.find((item) => item.project?.id === projectId) ?? null;
+            if (!projectItem) {
+              throw new Error('Child issue was not added to the project.');
+            }
+
+            const iterationId = projectItem.fieldValueByName?.iterationId ?? null;
+            if (iterationId !== targetIterationId) {
+              throw new Error(`Expected child issue iteration ${targetIterationId}, got ${iterationId || 'none'}.`);
+            }
+
+            core.info(`Child issue project item ${projectItem.id} inherited iteration ${targetIterationId}.`);
+
+  cleanup-sync-scenario:
+    name: Cleanup sub-issue sync scenario
+    if: ${{ always() && needs.prepare-sync-scenario.outputs.parent_number != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    needs:
+      - prepare-sync-scenario
+      - run-sync-scenario
+      - assert-sync-scenario
+    runs-on: ubuntu-latest
+    steps:
+      - name: Remove project items and close issues
+        uses: actions/github-script@v8
+        env:
+          PROJECT_ID: ${{ needs.prepare-sync-scenario.outputs.project_id }}
+          ITERATION_FIELD_NAME: ${{ env.ITERATION_FIELD_NAME }}
+          REPO_OWNER: ${{ env.REPO_OWNER }}
+          REPO_NAME: ${{ env.REPO_NAME }}
+          PARENT_NUMBER: ${{ needs.prepare-sync-scenario.outputs.parent_number }}
+          PARENT_NODE_ID: ${{ needs.prepare-sync-scenario.outputs.parent_node_id }}
+          CHILD_NUMBER: ${{ needs.prepare-sync-scenario.outputs.child_number }}
+          CHILD_NODE_ID: ${{ needs.prepare-sync-scenario.outputs.child_node_id }}
+          CHILD_ID: ${{ needs.prepare-sync-scenario.outputs.child_id }}
+        with:
+          github-token: ${{ secrets.ORG_PROJECT_TOKEN }}
+          script: |
+            const projectId = process.env.PROJECT_ID;
+            const owner = process.env.REPO_OWNER;
+            const repo = process.env.REPO_NAME;
+            const parentNumber = Number(process.env.PARENT_NUMBER);
+            const parentNodeId = process.env.PARENT_NODE_ID;
+            const childNumber = Number(process.env.CHILD_NUMBER);
+            const childNodeId = process.env.CHILD_NODE_ID;
+            const childId = Number(process.env.CHILD_ID);
+            const iterationFieldName = process.env.ITERATION_FIELD_NAME;
+            const headers = {
+              accept: 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+            };
+
+            const ISSUE_PROJECT_ITEMS_QUERY = `
+              query($issueId: ID!, $fieldName: String!) {
+                node(id: $issueId) {
+                  ... on Issue {
+                    projectItems(first: 100) {
+                      nodes {
+                        id
+                        project {
+                          id
+                        }
+                        fieldValueByName(name: $fieldName) {
+                          ... on ProjectV2ItemFieldIterationValue {
+                            iterationId
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const DELETE_ITEM_MUTATION = `
+              mutation($input: DeleteProjectV2ItemInput!) {
+                deleteProjectV2Item(input: $input) {
+                  deletedItemId
+                }
+              }
+            `;
+
+            async function deleteProjectItemForNode(nodeId) {
+              if (!nodeId || !projectId) {
+                return;
+              }
+
+              const data = await github.graphql(ISSUE_PROJECT_ITEMS_QUERY, {
+                issueId: nodeId,
+                fieldName: iterationFieldName,
+              });
+
+              const item = data.node?.projectItems?.nodes?.find((projectItem) => projectItem.project?.id === projectId) ?? null;
+              if (!item) {
+                return;
+              }
+
+              await github.graphql(DELETE_ITEM_MUTATION, {
+                input: {
+                  projectId,
+                  itemId: item.id,
+                },
+              });
+            }
+
+            if (parentNumber > 0 && childId > 0) {
+              try {
+                await github.request('DELETE /repos/{owner}/{repo}/issues/{issue_number}/sub_issue', {
+                  owner,
+                  repo,
+                  issue_number: parentNumber,
+                  sub_issue_id: childId,
+                  headers,
+                });
+              } catch (error) {
+                if (error.status !== 404) {
+                  throw error;
+                }
+                core.info('Sub-issue relation is already absent.');
+              }
+            }
+
+            await deleteProjectItemForNode(childNodeId);
+            await deleteProjectItemForNode(parentNodeId);
+
+            if (childNumber > 0) {
+              await github.request('PATCH /repos/{owner}/{repo}/issues/{issue_number}', {
+                owner,
+                repo,
+                issue_number: childNumber,
+                state: 'closed',
+                headers,
+              });
+            }
+
+            if (parentNumber > 0) {
+              await github.request('PATCH /repos/{owner}/{repo}/issues/{issue_number}', {
+                owner,
+                repo,
+                issue_number: parentNumber,
+                state: 'closed',
+                headers,
+              });
+            }
+
+  test-skipped-for-fork-pr:
+    name: Test skipped for fork PR
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Explain why test is skipped
+        run: echo "Skipping integration test for fork pull requests because repository secrets are unavailable."

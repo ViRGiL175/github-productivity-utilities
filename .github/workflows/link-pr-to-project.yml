@@ -30,6 +30,26 @@ on:
         required: false
         default: Done
         type: string
+      pull_request_node_id:
+        description: Pull request node ID override; falls back to github.event.pull_request.node_id when omitted
+        required: false
+        type: string
+      pull_request_number:
+        description: Pull request number override; falls back to github.event.pull_request.number when omitted
+        required: false
+        type: string
+      pull_request_body:
+        description: Pull request body override hint; falls back to the live API body when omitted
+        required: false
+        type: string
+      head_ref:
+        description: Head ref override; falls back to github.event.pull_request.head.ref when omitted
+        required: false
+        type: string
+      action:
+        description: Action override; falls back to github.event.action when omitted
+        required: false
+        type: string
     secrets:
       project_token:
         required: true
@@ -53,6 +73,11 @@ jobs:
           ITERATION_FIELD_NAME: ${{ inputs.iteration_field_name }}
           STATUS_FIELD_NAME: ${{ inputs.status_field_name }}
           STATUS_DONE_VALUE: ${{ inputs.status_done_value }}
+          PULL_REQUEST_NODE_ID: ${{ inputs.pull_request_node_id }}
+          PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
+          PULL_REQUEST_BODY: ${{ inputs.pull_request_body }}
+          HEAD_REF: ${{ inputs.head_ref }}
+          ACTION: ${{ inputs.action }}
         with:
           github-token: ${{ secrets.project_token }}
           script: |
@@ -62,13 +87,24 @@ jobs:
             const iterationFieldName = process.env.ITERATION_FIELD_NAME;
             const statusFieldName = process.env.STATUS_FIELD_NAME;
             const statusDoneValue = process.env.STATUS_DONE_VALUE;
+            const pullRequestFromEvent = context.payload.pull_request ?? null;
+            const action = process.env.ACTION || context.payload.action || 'opened';
+            const pullRequestBodyHint = process.env.PULL_REQUEST_BODY;
+            const pullRequestNodeId = process.env.PULL_REQUEST_NODE_ID || pullRequestFromEvent?.node_id || '';
+            const pullRequestNumber = Number(process.env.PULL_REQUEST_NUMBER || pullRequestFromEvent?.number || '');
+            const headRef = process.env.HEAD_REF || pullRequestFromEvent?.head?.ref || '';
 
-            const action = context.payload.action;
-            const pullRequest = context.payload.pull_request;
-
-            if (!pullRequest) {
-              throw new Error('This workflow must run on pull_request events.');
+            if (!pullRequestNodeId || !Number.isInteger(pullRequestNumber) || pullRequestNumber <= 0) {
+              throw new Error('Pull request context is required. Pass pull_request_node_id and pull_request_number, or run from a pull_request event.');
             }
+
+            const pullRequest = {
+              node_id: pullRequestNodeId,
+              number: pullRequestNumber,
+              head: {
+                ref: headRef,
+              },
+            };
 
             const ORGANIZATION_PROJECT_QUERY = `
               query($owner: String!, $number: Int!) {
@@ -336,7 +372,7 @@ jobs:
                 },
               });
 
-              const currentBody = response.data.body || '';
+              const currentBody = response.data.body || pullRequestBodyHint || '';
               if (currentBody.includes(closesRef)) {
                 core.info('Closing reference already present, skipping.');
                 return;
@@ -383,9 +419,9 @@ jobs:
               core.info(`PR #${pullRequest.number} is already in project ${projectOwner}#${projectNumber}.`);
             }
 
-            const issueNumber = extractIssueNumber(pullRequest.head?.ref || '');
+            const issueNumber = extractIssueNumber(headRef);
             if (!issueNumber) {
-              core.info(`Could not extract issue number from branch "${pullRequest.head?.ref || ''}". Skipping sprint sync and closing reference.`);
+              core.info(`Could not extract issue number from branch "${headRef}". Skipping sprint sync and closing reference.`);
               return;
             }
 

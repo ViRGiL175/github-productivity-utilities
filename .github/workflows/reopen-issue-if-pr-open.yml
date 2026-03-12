@@ -11,6 +11,10 @@ on:
         description: Repository name where backlog issues live
         required: true
         type: string
+      issue_number:
+        description: Issue number override; falls back to github.event.issue.number when omitted
+        required: false
+        type: string
     secrets:
       project_token:
         required: true
@@ -29,13 +33,17 @@ jobs:
         env:
           PROJECT_OWNER: ${{ inputs.project_owner }}
           BACKLOG_REPO: ${{ inputs.backlog_repo }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_NUMBER: ${{ inputs.issue_number || github.event.issue.number }}
         with:
           github-token: ${{ secrets.project_token }}
           script: |
             const projectOwner = process.env.PROJECT_OWNER;
             const backlogRepo = process.env.BACKLOG_REPO;
             const issueNumber = Number(process.env.ISSUE_NUMBER);
+
+            if (!Number.isInteger(issueNumber) || issueNumber <= 0) {
+              throw new Error('A valid issue_number input or github.event.issue.number is required.');
+            }
 
             const ISSUE_TIMELINE_QUERY = `
               query($owner: String!, $repo: String!, $number: Int!) {
