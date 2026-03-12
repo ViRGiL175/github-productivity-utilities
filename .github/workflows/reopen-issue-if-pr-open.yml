@@ -1,0 +1,106 @@
+name: Reopen issue if linked PRs are open
+
+on:
+  workflow_call:
+    inputs:
+      project_owner:
+        description: Organization or user login that owns the backlog repository
+        required: true
+        type: string
+      backlog_repo:
+        description: Repository name where backlog issues live
+        required: true
+        type: string
+    secrets:
+      project_token:
+        required: true
+
+env:
+  ORG: ${{ inputs.project_owner }}
+  BACKLOG_REPO: ${{ inputs.backlog_repo }}
+
+jobs:
+  check-and-reopen:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check linked open PRs and reopen if needed
+        env:
+          GH_TOKEN: ${{ secrets.project_token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          echo "::group::Query timeline for issue #$ISSUE_NUMBER"
+
+          QUERY='query($owner: String!, $repo: String!, $number: Int!) {
+            repository(owner: $owner, name: $repo) {
+              issue(number: $number) {
+                timelineItems(itemTypes: [CROSS_REFERENCED_EVENT], first: 100) {
+                  nodes {
+                    ... on CrossReferencedEvent {
+                      source {
+                        __typename
+                        ... on PullRequest {
+                          number
+                          state
+                          url
+                          title
+                          body
+                          repository { nameWithOwner }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }'
+
+          RESULT=$(gh api graphql \
+            -f query="$QUERY" \
+            -f owner="$ORG" \
+            -f repo="$BACKLOG_REPO" \
+            -F number="$ISSUE_NUMBER")
+
+          echo "$RESULT" | jq '.data.repository.issue.timelineItems'
+          echo "::endgroup::"
+
+          CLOSE_PATTERN="(closes|fixes|resolves)\\s+${ORG}/${BACKLOG_REPO}#${ISSUE_NUMBER}\\b"
+
+          OPEN_PRS=$(echo "$RESULT" | jq -r --arg pattern "$CLOSE_PATTERN" '
+            [
+              .data.repository.issue.timelineItems.nodes[]
+              | select(
+                  .source.__typename == "PullRequest"
+                  and .source.state == "OPEN"
+                  and (.source.body | test($pattern; "i"))
+                )
+              | "- \(.source.repository.nameWithOwner)#\(.source.number) — \(.source.title)"
+            ] | join("\n")
+          ')
+
+          if [ -z "$OPEN_PRS" ]; then
+            echo "No open linked PRs with closing keywords. Issue stays closed."
+            exit 0
+          fi
+
+          echo "Open linked PRs found:"
+          echo -e "$OPEN_PRS"
+
+          gh issue reopen "$ISSUE_NUMBER" --repo "$ORG/$BACKLOG_REPO"
+
+          BODY=$(cat <<EOF
+          🔁 **Issue переоткрыта автоматически.**
+
+          К ней привязаны открытые PR:
+
+          $(echo -e "$OPEN_PRS")
+
+          Чтобы закрыть Issue, выберите один из вариантов для каждого PR:
+          1. **Мёрдж PR** — Issue закроется сама через \`Closes\`.
+          2. **Закрыть PR без мёрджа** — Issue больше не будет переоткрываться из-за него.
+          3. **Отвязать PR от Issue** — уберите строку \`Closes ${ORG}/${BACKLOG_REPO}#${ISSUE_NUMBER}\` из тела PR, затем закройте Issue вручную.
+          EOF
+          )
+
+          BODY=$(echo "$BODY" | sed 's/^          //')
+
+          gh issue comment "$ISSUE_NUMBER" --repo "$ORG/$BACKLOG_REPO" --body "$BODY"
