@@ -1,0 +1,299 @@
+name: Link PR to Project
+
+on:
+  workflow_call:
+    inputs:
+      project_owner:
+        description: Login of the organization or user that owns the Project V2 board
+        required: true
+        type: string
+      project_number:
+        description: Project V2 number
+        required: true
+        type: number
+      backlog_repo:
+        description: Repository name where backlog issues live
+        required: true
+        type: string
+      iteration_field_name:
+        description: Name of the iteration field in the project
+        required: false
+        default: Sprint
+        type: string
+      status_field_name:
+        description: Name of the status field in the project
+        required: false
+        default: Status
+        type: string
+      status_done_value:
+        description: Status value to set when the PR is closed
+        required: false
+        default: Done
+        type: string
+    secrets:
+      project_token:
+        required: true
+
+env:
+  ORG: ${{ inputs.project_owner }}
+  PROJECT_NUMBER: ${{ inputs.project_number }}
+  BACKLOG_REPO: ${{ inputs.backlog_repo }}
+  SPRINT_FIELD_NAME: ${{ inputs.iteration_field_name }}
+  STATUS_FIELD_NAME: ${{ inputs.status_field_name }}
+  STATUS_DONE_VALUE: ${{ inputs.status_done_value }}
+
+jobs:
+  link-on-open:
+    name: Add PR to project and link to issue
+    if: ${{ github.event.action == 'opened' || github.event.action == 'reopened' || github.event.action == 'edited' || github.event.action == 'synchronize' || github.event.action == 'ready_for_review' }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.project_token }}
+
+    steps:
+      - name: Fetch project metadata
+        id: project
+        if: ${{ github.event.action != 'edited' }}
+        run: |
+          DATA=$(gh api graphql -f query='
+            query($org: String!, $num: Int!) {
+              organization(login: $org) {
+                projectV2(number: $num) {
+                  id
+                  fields(first: 30) {
+                    nodes {
+                      ... on ProjectV2SingleSelectField {
+                        id name
+                        options { id name }
+                      }
+                      ... on ProjectV2IterationField {
+                        id name
+                        configuration {
+                          iterations { id title }
+                          completedIterations { id title }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ' -f org="$ORG" -F num="$PROJECT_NUMBER")
+
+          PROJECT_ID=$(echo "$DATA" | jq -r '.data.organization.projectV2.id')
+          SPRINT_FIELD_ID=$(echo "$DATA" | jq -r \
+            --arg name "$SPRINT_FIELD_NAME" \
+            '.data.organization.projectV2.fields.nodes[] | select(.name == $name) | .id')
+          STATUS_FIELD_ID=$(echo "$DATA" | jq -r \
+            --arg name "$STATUS_FIELD_NAME" \
+            '.data.organization.projectV2.fields.nodes[] | select(.name == $name) | .id')
+          DONE_OPTION_ID=$(echo "$DATA" | jq -r \
+            --arg name "$STATUS_FIELD_NAME" --arg val "$STATUS_DONE_VALUE" \
+            '.data.organization.projectV2.fields.nodes[] | select(.name == $name) | .options[] | select(.name == $val) | .id')
+
+          echo "project_id=$PROJECT_ID" >> "$GITHUB_OUTPUT"
+          echo "sprint_field_id=$SPRINT_FIELD_ID" >> "$GITHUB_OUTPUT"
+          echo "status_field_id=$STATUS_FIELD_ID" >> "$GITHUB_OUTPUT"
+          echo "done_option_id=$DONE_OPTION_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Add PR to project
+        id: add_pr
+        if: ${{ github.event.action != 'edited' }}
+        run: |
+          ITEM_ID=$(gh api graphql -f query='
+            mutation($projectId: ID!, $contentId: ID!) {
+              addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
+                item { id }
+              }
+            }
+          ' \
+          -f projectId="${{ steps.project.outputs.project_id }}" \
+          -f contentId="${{ github.event.pull_request.node_id }}" \
+          | jq -r '.data.addProjectV2ItemById.item.id')
+
+          echo "item_id=$ITEM_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Extract issue number from branch
+        id: extract
+        run: |
+          BRANCH="${{ github.head_ref }}"
+          if [[ "$BRANCH" =~ ^([0-9]+)- ]]; then
+            echo "issue_number=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Find issue in project and get sprint
+        id: issue
+        if: ${{ steps.extract.outputs.found == 'true' && github.event.action != 'edited' }}
+        run: |
+          ISSUE_NUM="${{ steps.extract.outputs.issue_number }}"
+          PROJECT_ID="${{ steps.project.outputs.project_id }}"
+
+          DATA=$(gh api graphql -f query="
+            query(\$org: String!, \$repo: String!, \$issueNum: Int!) {
+              organization(login: \$org) {
+                repository(name: \$repo) {
+                  issue(number: \$issueNum) {
+                    id
+                    projectItems(first: 20) {
+                      nodes {
+                        id
+                        project { id }
+                        fieldValueByName(name: \"$SPRINT_FIELD_NAME\") {
+                          ... on ProjectV2ItemFieldIterationValue {
+                            iterationId
+                            title
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          " -f org="$ORG" -f repo="$BACKLOG_REPO" -F issueNum="$ISSUE_NUM")
+
+          ISSUE_ITEM=$(echo "$DATA" | jq -c \
+            --arg pid "$PROJECT_ID" \
+            '.data.organization.repository.issue.projectItems.nodes[]? | select(.project.id == $pid)')
+
+          if [ -z "$ISSUE_ITEM" ]; then
+            echo "in_project=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "in_project=true" >> "$GITHUB_OUTPUT"
+            ITERATION_ID=$(echo "$ISSUE_ITEM" | jq -r '.fieldValueByName.iterationId // ""')
+            echo "iteration_id=$ITERATION_ID" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set sprint on PR item
+        if: ${{ steps.extract.outputs.found == 'true' && steps.issue.outputs.in_project == 'true' && steps.issue.outputs.iteration_id != '' && github.event.action != 'edited' }}
+        run: |
+          gh api graphql -f query='
+            mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $iterationId: String!) {
+              updateProjectV2ItemFieldValue(input: {
+                projectId: $projectId
+                itemId:    $itemId
+                fieldId:   $fieldId
+                value:     { iterationId: $iterationId }
+              }) {
+                projectV2Item { id }
+              }
+            }
+          ' \
+          -f projectId="${{ steps.project.outputs.project_id }}" \
+          -f itemId="${{ steps.add_pr.outputs.item_id }}" \
+          -f fieldId="${{ steps.project.outputs.sprint_field_id }}" \
+          -f iterationId="${{ steps.issue.outputs.iteration_id }}"
+
+      - name: Append closing reference to PR body
+        if: steps.extract.outputs.found == 'true'
+        env:
+          ISSUE_NUMBER: ${{ steps.extract.outputs.issue_number }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          CURRENT_BODY=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.body // ""')
+
+          CLOSES_REF="Closes $ORG/$BACKLOG_REPO#$ISSUE_NUMBER"
+
+          if echo "$CURRENT_BODY" | grep -qF "$CLOSES_REF"; then
+            echo "Closing reference already present, skipping."
+            exit 0
+          fi
+
+          SUFFIX=$'\n\n<!-- auto-linked -->\n'"$CLOSES_REF"
+          NEW_BODY="${CURRENT_BODY}${SUFFIX}"
+
+          gh api "repos/$REPO/pulls/$PR_NUMBER" -X PATCH -f body="$NEW_BODY"
+
+  mark-done-on-close:
+    name: Set PR status to Done
+    if: ${{ github.event.action == 'closed' }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.project_token }}
+
+    steps:
+      - name: Fetch project metadata
+        id: project
+        run: |
+          DATA=$(gh api graphql -f query='
+            query($org: String!, $num: Int!) {
+              organization(login: $org) {
+                projectV2(number: $num) {
+                  id
+                  fields(first: 30) {
+                    nodes {
+                      ... on ProjectV2SingleSelectField {
+                        id name
+                        options { id name }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ' -f org="$ORG" -F num="$PROJECT_NUMBER")
+
+          PROJECT_ID=$(echo "$DATA" | jq -r '.data.organization.projectV2.id')
+          STATUS_FIELD_ID=$(echo "$DATA" | jq -r \
+            --arg name "$STATUS_FIELD_NAME" \
+            '.data.organization.projectV2.fields.nodes[] | select(.name == $name) | .id')
+          DONE_OPTION_ID=$(echo "$DATA" | jq -r \
+            --arg name "$STATUS_FIELD_NAME" --arg val "$STATUS_DONE_VALUE" \
+            '.data.organization.projectV2.fields.nodes[] | select(.name == $name) | .options[] | select(.name == $val) | .id')
+
+          echo "project_id=$PROJECT_ID" >> "$GITHUB_OUTPUT"
+          echo "status_field_id=$STATUS_FIELD_ID" >> "$GITHUB_OUTPUT"
+          echo "done_option_id=$DONE_OPTION_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Find PR item in project
+        id: find_item
+        run: |
+          PROJECT_ID="${{ steps.project.outputs.project_id }}"
+
+          ITEM_ID=$(gh api graphql -f query='
+            query($nodeId: ID!) {
+              node(id: $nodeId) {
+                ... on PullRequest {
+                  projectItems(first: 20) {
+                    nodes {
+                      id
+                      project { id }
+                    }
+                  }
+                }
+              }
+            }
+          ' -f nodeId="${{ github.event.pull_request.node_id }}" \
+          | jq -r --arg pid "$PROJECT_ID" \
+            '.data.node.projectItems.nodes[]? | select(.project.id == $pid) | .id')
+
+          if [ -z "$ITEM_ID" ]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "item_id=$ITEM_ID" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set status to Done
+        if: steps.find_item.outputs.found == 'true'
+        run: |
+          gh api graphql -f query='
+            mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+              updateProjectV2ItemFieldValue(input: {
+                projectId: $projectId
+                itemId:    $itemId
+                fieldId:   $fieldId
+                value:     { singleSelectOptionId: $optionId }
+              }) {
+                projectV2Item { id }
+              }
+            }
+          ' \
+          -f projectId="${{ steps.project.outputs.project_id }}" \
+          -f itemId="${{ steps.find_item.outputs.item_id }}" \
+          -f fieldId="${{ steps.project.outputs.status_field_id }}" \
+          -f optionId="${{ steps.project.outputs.done_option_id }}"
