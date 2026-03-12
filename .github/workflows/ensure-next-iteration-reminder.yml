@@ -38,8 +38,6 @@ jobs:
         with:
           github-token: ${{ secrets.project_token }}
           script: |
-            const core = require('@actions/core');
-
             const ownerLogin = process.env.PROJECT_OWNER;
             const projectNumber = Number(process.env.PROJECT_NUMBER);
             const iterationFieldName = process.env.ITERATION_FIELD_NAME;
