@@ -19,7 +19,7 @@ env:
 
 jobs:
   prepare-reminder-create-scenario:
-    name: Prepare reminder create scenario
+    name: Prepare reminder create scenario before current iteration starts
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     outputs:
@@ -151,6 +151,12 @@ jobs:
               return new Date(`${value}T00:00:00Z`);
             }
 
+            function addDays(date, days) {
+              const result = new Date(date);
+              result.setUTCDate(result.getUTCDate() + days);
+              return result;
+            }
+
             function sortIterations(iterations) {
               return [...iterations].sort((a, b) => toUtcDate(a.startDate) - toUtcDate(b.startDate));
             }
@@ -250,8 +256,8 @@ jobs:
             }
 
             core.setOutput('reminder_title', reminderTitle);
-            core.setOutput('current_date_override', project.iterations[0].startDate);
-            core.setOutput('target_iteration_id', project.iterations[1].id);
+            core.setOutput('current_date_override', addDays(toUtcDate(project.iterations[0].startDate), -1).toISOString().slice(0, 10));
+            core.setOutput('target_iteration_id', project.iterations[0].id);
             core.setOutput('project_id', project.projectId);
 
   run-reminder-create-scenario:
@@ -276,7 +282,7 @@ jobs:
       - run-reminder-create-scenario
     runs-on: ubuntu-latest
     steps:
-      - name: Assert exactly one reminder draft exists in next iteration
+      - name: Assert exactly one reminder draft exists in first future iteration
         uses: actions/github-script@v8
         env:
           PROJECT_ID: ${{ needs.prepare-reminder-create-scenario.outputs.project_id }}
@@ -369,7 +375,7 @@ jobs:
               throw new Error(`Expected reminder draft to be in iteration ${targetIterationId}, got ${iterationId || 'none'}.`);
             }
 
-            core.info(`Reminder draft ${reminderItems[0].id} is present in the expected next iteration.`);
+            core.info(`Reminder draft ${reminderItems[0].id} is present in the expected target iteration before the current sprint starts.`);
 
   rerun-reminder-create-scenario:
     name: Rerun reminder create scenario for idempotency
@@ -395,7 +401,7 @@ jobs:
       - rerun-reminder-create-scenario
     runs-on: ubuntu-latest
     steps:
-      - name: Assert rerun did not create duplicates
+      - name: Assert rerun did not create duplicates before current iteration starts
         uses: actions/github-script@v8
         env:
           PROJECT_ID: ${{ needs.prepare-reminder-create-scenario.outputs.project_id }}
@@ -482,7 +488,402 @@ jobs:
               throw new Error(`Expected reminder draft to stay in iteration ${targetIterationId}, got ${iterationId || 'none'}.`);
             }
 
-            core.info(`Reminder rerun stayed idempotent for draft ${reminderItems[0].id}.`);
+            core.info(`Reminder rerun stayed idempotent for draft ${reminderItems[0].id} before the current sprint starts.`);
+
+  prepare-reminder-empty-current-scenario:
+    name: Prepare reminder empty current scenario
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    outputs:
+      reminder_title: ${{ steps.prepare.outputs.reminder_title }}
+      current_date_override: ${{ steps.prepare.outputs.current_date_override }}
+      target_iteration_id: ${{ steps.prepare.outputs.target_iteration_id }}
+      project_id: ${{ steps.prepare.outputs.project_id }}
+    steps:
+      - name: Prepare reminder fixture in empty current iteration
+        id: prepare
+        uses: actions/github-script@v8
+        env:
+          PROJECT_OWNER: ${{ env.PROJECT_OWNER }}
+          PROJECT_NUMBER: ${{ env.PROJECT_NUMBER }}
+          ITERATION_FIELD_NAME: ${{ env.ITERATION_FIELD_NAME }}
+          REMINDER_TITLE: ITEST-${{ github.run_id }}-empty-current-reminder
+        with:
+          github-token: ${{ secrets.ORG_PROJECT_TOKEN }}
+          script: |
+            const ownerLogin = process.env.PROJECT_OWNER;
+            const projectNumber = Number(process.env.PROJECT_NUMBER);
+            const iterationFieldName = process.env.ITERATION_FIELD_NAME;
+            const reminderTitle = process.env.REMINDER_TITLE;
+
+            const ORGANIZATION_PROJECT_QUERY = `
+              query($owner: String!, $number: Int!) {
+                organization(login: $owner) {
+                  projectV2(number: $number) {
+                    id
+                    fields(first: 100) {
+                      nodes {
+                        __typename
+                        ... on ProjectV2FieldCommon {
+                          id
+                          name
+                        }
+                        ... on ProjectV2IterationField {
+                          configuration {
+                            completedIterations {
+                              id
+                              title
+                              startDate
+                              duration
+                            }
+                            iterations {
+                              id
+                              title
+                              startDate
+                              duration
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const USER_PROJECT_QUERY = `
+              query($owner: String!, $number: Int!) {
+                user(login: $owner) {
+                  projectV2(number: $number) {
+                    id
+                    fields(first: 100) {
+                      nodes {
+                        __typename
+                        ... on ProjectV2FieldCommon {
+                          id
+                          name
+                        }
+                        ... on ProjectV2IterationField {
+                          configuration {
+                            completedIterations {
+                              id
+                              title
+                              startDate
+                              duration
+                            }
+                            iterations {
+                              id
+                              title
+                              startDate
+                              duration
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const PROJECT_ITEMS_QUERY = `
+              query($projectId: ID!, $after: String) {
+                node(id: $projectId) {
+                  ... on ProjectV2 {
+                    items(first: 100, after: $after) {
+                      pageInfo {
+                        hasNextPage
+                        endCursor
+                      }
+                      nodes {
+                        id
+                        content {
+                          __typename
+                          ... on DraftIssue {
+                            id
+                            title
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const ADD_DRAFT_MUTATION = `
+              mutation($input: AddProjectV2DraftIssueInput!) {
+                addProjectV2DraftIssue(input: $input) {
+                  projectItem {
+                    id
+                  }
+                }
+              }
+            `;
+
+            const UPDATE_ITERATION_MUTATION = `
+              mutation($input: UpdateProjectV2ItemFieldValueInput!) {
+                updateProjectV2ItemFieldValue(input: $input) {
+                  projectV2Item {
+                    id
+                  }
+                }
+              }
+            `;
+
+            const DELETE_ITEM_MUTATION = `
+              mutation($input: DeleteProjectV2ItemInput!) {
+                deleteProjectV2Item(input: $input) {
+                  deletedItemId
+                }
+              }
+            `;
+
+            function toUtcDate(value) {
+              return new Date(`${value}T00:00:00Z`);
+            }
+
+            function sortIterations(iterations) {
+              return [...iterations].sort((a, b) => toUtcDate(a.startDate) - toUtcDate(b.startDate));
+            }
+
+            async function getProjectOwnerType(login) {
+              const response = await github.request('GET /users/{username}', {
+                username: login,
+                headers: {
+                  accept: 'application/vnd.github+json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+                },
+              });
+
+              return response.data.type;
+            }
+
+            async function getProjectMetadata() {
+              const ownerType = await getProjectOwnerType(ownerLogin);
+              const query = ownerType === 'Organization' ? ORGANIZATION_PROJECT_QUERY : USER_PROJECT_QUERY;
+
+              const data = await github.graphql(query, {
+                owner: ownerLogin,
+                number: projectNumber,
+              });
+
+              const project = ownerType === 'Organization'
+                ? data.organization?.projectV2
+                : data.user?.projectV2;
+
+              if (!project) {
+                throw new Error(`Project ${ownerLogin}#${projectNumber} was not found.`);
+              }
+
+              const iterationField = project.fields.nodes.find((field) =>
+                field?.__typename === 'ProjectV2IterationField' && field.name === iterationFieldName,
+              );
+
+              if (!iterationField) {
+                throw new Error(`Iteration field "${iterationFieldName}" was not found in project ${ownerLogin}#${projectNumber}.`);
+              }
+
+              const iterations = sortIterations([
+                ...(iterationField.configuration?.completedIterations ?? []),
+                ...(iterationField.configuration?.iterations ?? []),
+              ]).filter((iteration) => iteration.startDate);
+
+              if (iterations.length < 1) {
+                throw new Error('Need at least one iteration in the sandbox project to run integration tests.');
+              }
+
+              return {
+                projectId: project.id,
+                iterationFieldId: iterationField.id,
+                iterations,
+              };
+            }
+
+            async function getAllProjectItems(projectId) {
+              const items = [];
+              let after = null;
+              let hasNextPage = true;
+
+              while (hasNextPage) {
+                const data = await github.graphql(PROJECT_ITEMS_QUERY, {
+                  projectId,
+                  after,
+                });
+
+                const connection = data.node?.items;
+                if (!connection) {
+                  throw new Error(`Unable to read project items for ${projectId}.`);
+                }
+
+                items.push(...connection.nodes);
+                hasNextPage = connection.pageInfo.hasNextPage;
+                after = connection.pageInfo.endCursor;
+              }
+
+              return items;
+            }
+
+            async function deleteProjectItem(projectId, itemId) {
+              await github.graphql(DELETE_ITEM_MUTATION, {
+                input: {
+                  projectId,
+                  itemId,
+                },
+              });
+            }
+
+            async function createReminderDraft(projectId) {
+              const response = await github.graphql(ADD_DRAFT_MUTATION, {
+                input: {
+                  projectId,
+                  title: reminderTitle,
+                },
+              });
+
+              return response.addProjectV2DraftIssue.projectItem.id;
+            }
+
+            async function setReminderIteration(projectId, itemId, fieldId, iterationId) {
+              await github.graphql(UPDATE_ITERATION_MUTATION, {
+                input: {
+                  projectId,
+                  itemId,
+                  fieldId,
+                  value: {
+                    iterationId,
+                  },
+                },
+              });
+            }
+
+            const project = await getProjectMetadata();
+            const items = await getAllProjectItems(project.projectId);
+            const staleItems = items.filter((item) => item.content?.__typename === 'DraftIssue' && item.content.title === reminderTitle);
+
+            for (const item of staleItems) {
+              await deleteProjectItem(project.projectId, item.id);
+              core.info(`Deleted stale draft ${item.id} for title ${reminderTitle}.`);
+            }
+
+            const itemId = await createReminderDraft(project.projectId);
+            await setReminderIteration(project.projectId, itemId, project.iterationFieldId, project.iterations[0].id);
+
+            core.setOutput('reminder_title', reminderTitle);
+            core.setOutput('current_date_override', project.iterations[0].startDate);
+            core.setOutput('target_iteration_id', project.iterations[0].id);
+            core.setOutput('project_id', project.projectId);
+
+  run-reminder-empty-current-scenario:
+    name: Run reminder empty current scenario
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs: prepare-reminder-empty-current-scenario
+    uses: ./.github/workflows/ensure-next-iteration-reminder.yml
+    with:
+      project_owner: ViRGiL175
+      project_number: 10
+      iteration_field_name: Iteration
+      reminder_title: ${{ needs.prepare-reminder-empty-current-scenario.outputs.reminder_title }}
+      current_date_override: ${{ needs.prepare-reminder-empty-current-scenario.outputs.current_date_override }}
+    secrets:
+      project_token: ${{ secrets.ORG_PROJECT_TOKEN }}
+
+  assert-reminder-empty-current-scenario:
+    name: Assert reminder empty current scenario
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs:
+      - prepare-reminder-empty-current-scenario
+      - run-reminder-empty-current-scenario
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assert reminder stayed in empty current iteration
+        uses: actions/github-script@v8
+        env:
+          PROJECT_ID: ${{ needs.prepare-reminder-empty-current-scenario.outputs.project_id }}
+          REMINDER_TITLE: ${{ needs.prepare-reminder-empty-current-scenario.outputs.reminder_title }}
+          TARGET_ITERATION_ID: ${{ needs.prepare-reminder-empty-current-scenario.outputs.target_iteration_id }}
+        with:
+          github-token: ${{ secrets.ORG_PROJECT_TOKEN }}
+          script: |
+            const projectId = process.env.PROJECT_ID;
+            const reminderTitle = process.env.REMINDER_TITLE;
+            const targetIterationId = process.env.TARGET_ITERATION_ID;
+
+            const PROJECT_ITEMS_QUERY = `
+              query($projectId: ID!, $after: String) {
+                node(id: $projectId) {
+                  ... on ProjectV2 {
+                    items(first: 100, after: $after) {
+                      pageInfo {
+                        hasNextPage
+                        endCursor
+                      }
+                      nodes {
+                        id
+                        content {
+                          __typename
+                          ... on DraftIssue {
+                            id
+                            title
+                          }
+                        }
+                        fieldValues(first: 20) {
+                          nodes {
+                            __typename
+                            ... on ProjectV2ItemFieldIterationValue {
+                              iterationId
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            async function getAllProjectItems() {
+              const items = [];
+              let after = null;
+              let hasNextPage = true;
+
+              while (hasNextPage) {
+                const data = await github.graphql(PROJECT_ITEMS_QUERY, {
+                  projectId,
+                  after,
+                });
+
+                const connection = data.node?.items;
+                if (!connection) {
+                  throw new Error(`Unable to read project items for ${projectId}.`);
+                }
+
+                items.push(...connection.nodes);
+                hasNextPage = connection.pageInfo.hasNextPage;
+                after = connection.pageInfo.endCursor;
+              }
+
+              return items;
+            }
+
+            function getIterationId(item) {
+              const fieldValue = item.fieldValues?.nodes?.find((node) => node.__typename === 'ProjectV2ItemFieldIterationValue');
+              return fieldValue?.iterationId ?? null;
+            }
+
+            const items = await getAllProjectItems();
+            const reminderItems = items.filter((item) => item.content?.__typename === 'DraftIssue' && item.content.title === reminderTitle);
+
+            if (reminderItems.length !== 1) {
+              throw new Error(`Expected exactly one draft with title ${reminderTitle}, got ${reminderItems.length}.`);
+            }
+
+            const iterationId = getIterationId(reminderItems[0]);
+            if (iterationId !== targetIterationId) {
+              throw new Error(`Expected reminder draft to stay in iteration ${targetIterationId}, got ${iterationId || 'none'}.`);
+            }
+
+            core.info(`Reminder draft ${reminderItems[0].id} stayed in the empty current iteration as expected.`);
 
   cleanup-reminder-scenarios:
     name: Cleanup reminder scenarios
@@ -500,6 +901,100 @@ jobs:
         env:
           PROJECT_ID: ${{ needs.prepare-reminder-create-scenario.outputs.project_id }}
           REMINDER_TITLE: ${{ needs.prepare-reminder-create-scenario.outputs.reminder_title }}
+        with:
+          github-token: ${{ secrets.ORG_PROJECT_TOKEN }}
+          script: |
+            const projectId = process.env.PROJECT_ID;
+            const reminderTitle = process.env.REMINDER_TITLE;
+
+            const PROJECT_ITEMS_QUERY = `
+              query($projectId: ID!, $after: String) {
+                node(id: $projectId) {
+                  ... on ProjectV2 {
+                    items(first: 100, after: $after) {
+                      pageInfo {
+                        hasNextPage
+                        endCursor
+                      }
+                      nodes {
+                        id
+                        content {
+                          __typename
+                          ... on DraftIssue {
+                            id
+                            title
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const DELETE_ITEM_MUTATION = `
+              mutation($input: DeleteProjectV2ItemInput!) {
+                deleteProjectV2Item(input: $input) {
+                  deletedItemId
+                }
+              }
+            `;
+
+            async function getAllProjectItems() {
+              const items = [];
+              let after = null;
+              let hasNextPage = true;
+
+              while (hasNextPage) {
+                const data = await github.graphql(PROJECT_ITEMS_QUERY, {
+                  projectId,
+                  after,
+                });
+
+                const connection = data.node?.items;
+                if (!connection) {
+                  throw new Error(`Unable to read project items for ${projectId}.`);
+                }
+
+                items.push(...connection.nodes);
+                hasNextPage = connection.pageInfo.hasNextPage;
+                after = connection.pageInfo.endCursor;
+              }
+
+              return items;
+            }
+
+            async function deleteProjectItem(itemId) {
+              await github.graphql(DELETE_ITEM_MUTATION, {
+                input: {
+                  projectId,
+                  itemId,
+                },
+              });
+            }
+
+            const items = await getAllProjectItems();
+            const reminderItems = items.filter((item) => item.content?.__typename === 'DraftIssue' && item.content.title === reminderTitle);
+
+            for (const item of reminderItems) {
+              await deleteProjectItem(item.id);
+              core.info(`Deleted reminder draft ${item.id} (${reminderTitle}).`);
+            }
+
+  cleanup-reminder-empty-current-scenario:
+    name: Cleanup reminder empty current scenario
+    if: ${{ always() && needs.prepare-reminder-empty-current-scenario.outputs.project_id != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    needs:
+      - prepare-reminder-empty-current-scenario
+      - run-reminder-empty-current-scenario
+      - assert-reminder-empty-current-scenario
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete reminder draft created for empty current scenario
+        uses: actions/github-script@v8
+        env:
+          PROJECT_ID: ${{ needs.prepare-reminder-empty-current-scenario.outputs.project_id }}
+          REMINDER_TITLE: ${{ needs.prepare-reminder-empty-current-scenario.outputs.reminder_title }}
         with:
           github-token: ${{ secrets.ORG_PROJECT_TOKEN }}
           script: |
