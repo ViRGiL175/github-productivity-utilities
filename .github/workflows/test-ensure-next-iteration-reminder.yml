@@ -131,6 +131,25 @@ jobs:
                             id
                             title
                           }
+                          ... on Issue {
+                            id
+                            number
+                            title
+                          }
+                        }
+                        fieldValues(first: 20) {
+                          nodes {
+                            __typename
+                            ... on ProjectV2ItemFieldIterationValue {
+                              iterationId
+                              field {
+                                ... on ProjectV2FieldCommon {
+                                  id
+                                  name
+                                }
+                              }
+                            }
+                          }
                         }
                       }
                     }
@@ -647,6 +666,22 @@ jobs:
               return [...iterations].sort((a, b) => toUtcDate(a.startDate) - toUtcDate(b.startDate));
             }
 
+            function getItemIterationId(item, iterationFieldId) {
+              const fieldValue = item.fieldValues?.nodes?.find((node) =>
+                node.__typename === 'ProjectV2ItemFieldIterationValue'
+                && node.field?.id === iterationFieldId,
+              );
+
+              return fieldValue?.iterationId ?? null;
+            }
+
+            function findIterationWithoutIssues(iterations, items, iterationFieldId) {
+              return iterations.find((iteration) => !items.some((item) =>
+                item.content?.__typename === 'Issue'
+                && getItemIterationId(item, iterationFieldId) === iteration.id,
+              ));
+            }
+
             async function getProjectOwnerType(login) {
               const response = await github.request('GET /users/{username}', {
                 username: login,
@@ -766,12 +801,19 @@ jobs:
               core.info(`Deleted stale draft ${item.id} for title ${reminderTitle}.`);
             }
 
+            const emptyIteration = findIterationWithoutIssues(project.iterations, items, project.iterationFieldId);
+            if (!emptyIteration) {
+              throw new Error('Need at least one iteration without issues in the sandbox project to run the empty current reminder scenario.');
+            }
+
             const itemId = await createReminderDraft(project.projectId);
-            await setReminderIteration(project.projectId, itemId, project.iterationFieldId, project.iterations[0].id);
+            await setReminderIteration(project.projectId, itemId, project.iterationFieldId, emptyIteration.id);
+
+            core.info(`Selected empty iteration "${emptyIteration.title}" (${emptyIteration.startDate}) for the empty current reminder scenario.`);
 
             core.setOutput('reminder_title', reminderTitle);
-            core.setOutput('current_date_override', project.iterations[0].startDate);
-            core.setOutput('target_iteration_id', project.iterations[0].id);
+            core.setOutput('current_date_override', emptyIteration.startDate);
+            core.setOutput('target_iteration_id', emptyIteration.id);
             core.setOutput('project_id', project.projectId);
 
   run-reminder-empty-current-scenario:
