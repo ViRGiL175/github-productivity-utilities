@@ -31,7 +31,7 @@ jobs:
       pull-requests: read
 
     steps:
-      - name: Ensure reminder draft exists in next iteration
+      - name: Ensure reminder draft exists in target iteration
         uses: actions/github-script@v8
         env:
           PROJECT_OWNER: ${{ inputs.project_owner }}
@@ -345,6 +345,17 @@ jobs:
               return value?.iterationId ?? null;
             }
 
+            function isPlannedIssue(item) {
+              return item.content?.__typename === 'Issue';
+            }
+
+            function iterationHasIssues(items, iterationFieldId, iterationId) {
+              return items.some((item) =>
+                isPlannedIssue(item)
+                && getItemIterationId(item, iterationFieldId) === iterationId,
+              );
+            }
+
             function isReminderDraft(item) {
               return item.content?.__typename === 'DraftIssue'
                 && (item.content.title || '') === reminderTitle;
@@ -398,6 +409,7 @@ jobs:
             const project = await getProjectMetadata(ownerType);
             const currentIteration = findCurrentIteration(project.iterations);
             const nextIteration = findNextIteration(project.iterations, currentIteration);
+            const items = await getProjectItems(project.projectId);
 
             if (!currentIteration) {
               core.notice(`No active iteration found for ${todayIso}. Will use the first future iteration as next if available.`);
@@ -405,24 +417,43 @@ jobs:
               core.info(`Current iteration: ${currentIteration.title} (${currentIteration.startDate})`);
             }
 
-            if (!nextIteration) {
-              core.notice(`No next iteration found in field "${iterationFieldName}" for project ${ownerLogin}#${projectNumber}. Nothing to do.`);
+            if (nextIteration) {
+              core.info(`Next iteration: ${nextIteration.title} (${nextIteration.startDate})`);
+            }
+
+            const currentHasIssues = currentIteration
+              ? iterationHasIssues(items, project.iterationFieldId, currentIteration.id)
+              : false;
+
+            if (currentIteration) {
+              if (currentHasIssues) {
+                core.info(`Current iteration "${currentIteration.title}" already has issues. Reminder should point to the next iteration.`);
+              } else {
+                core.info(`Current iteration "${currentIteration.title}" has no issues yet. Reminder will stay in the current iteration to keep the swimlane visible.`);
+              }
+            }
+
+            const targetIteration = currentIteration && !currentHasIssues
+              ? currentIteration
+              : nextIteration;
+
+            if (!targetIteration) {
+              core.notice(`No target iteration found in field "${iterationFieldName}" for project ${ownerLogin}#${projectNumber}. Nothing to do.`);
               return;
             }
 
-            core.info(`Target next iteration: ${nextIteration.title} (${nextIteration.startDate})`);
+            core.info(`Target iteration for reminder: ${targetIteration.title} (${targetIteration.startDate})`);
 
-            const items = await getProjectItems(project.projectId);
             const reminderItems = items.filter(isReminderDraft);
 
             let canonicalItem = reminderItems.find((item) =>
-              getItemIterationId(item, project.iterationFieldId) === nextIteration.id,
+              getItemIterationId(item, project.iterationFieldId) === targetIteration.id,
             ) ?? reminderItems[0];
 
             if (!canonicalItem) {
               const itemId = await createReminderDraft(project.projectId);
-              await setReminderIteration(project.projectId, itemId, project.iterationFieldId, nextIteration.id);
-              core.info(`Created reminder draft item in next iteration "${nextIteration.title}".`);
+              await setReminderIteration(project.projectId, itemId, project.iterationFieldId, targetIteration.id);
+              core.info(`Created reminder draft item in target iteration "${targetIteration.title}".`);
               return;
             }
 
@@ -436,9 +467,9 @@ jobs:
             }
 
             const canonicalIterationId = getItemIterationId(canonicalItem, project.iterationFieldId);
-            if (canonicalIterationId !== nextIteration.id) {
-              await setReminderIteration(project.projectId, canonicalItem.id, project.iterationFieldId, nextIteration.id);
-              core.info(`Moved reminder draft to next iteration "${nextIteration.title}".`);
+            if (canonicalIterationId !== targetIteration.id) {
+              await setReminderIteration(project.projectId, canonicalItem.id, project.iterationFieldId, targetIteration.id);
+              core.info(`Moved reminder draft to target iteration "${targetIteration.title}".`);
             }
 
             const duplicateItems = reminderItems.filter((item) => item.id !== canonicalItem.id);
