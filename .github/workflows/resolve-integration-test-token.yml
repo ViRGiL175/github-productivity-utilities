@@ -1,0 +1,110 @@
+name: Resolve integration test token
+
+on:
+  workflow_call:
+    inputs:
+      auth_mode:
+        required: false
+        default: pat
+        type: string
+      installation_owner:
+        required: true
+        type: string
+    outputs:
+      token:
+        description: Token to use for integration test API calls
+        value: ${{ jobs.use-pat.outputs.token || jobs.use-app.outputs.token }}
+      auth_mode:
+        description: Effective auth mode used by the test run
+        value: ${{ inputs.auth_mode }}
+    secrets:
+      pat_token:
+        required: false
+      app_id:
+        required: false
+      app_private_key:
+        required: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate auth mode configuration
+        shell: bash
+        env:
+          AUTH_MODE: ${{ inputs.auth_mode }}
+          PAT_TOKEN: ${{ secrets.pat_token }}
+          APP_ID: ${{ secrets.app_id }}
+          APP_PRIVATE_KEY: ${{ secrets.app_private_key }}
+        run: |
+          case "$AUTH_MODE" in
+            pat)
+              if [ -z "$PAT_TOKEN" ]; then
+                echo "pat_token secret is required when auth_mode=pat" >&2
+                exit 1
+              fi
+              ;;
+            app)
+              if [ -z "$APP_ID" ] || [ -z "$APP_PRIVATE_KEY" ]; then
+                echo "app_id and app_private_key secrets are required when auth_mode=app" >&2
+                exit 1
+              fi
+              ;;
+            *)
+              echo "Unsupported auth_mode: $AUTH_MODE" >&2
+              exit 1
+              ;;
+          esac
+
+  use-pat:
+    if: ${{ inputs.auth_mode == 'pat' }}
+    needs: validate
+    runs-on: ubuntu-latest
+    outputs:
+      token: ${{ steps.out.outputs.token }}
+    steps:
+      - name: Expose PAT/bot token
+        id: out
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.pat_token }}
+        run: |
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+  use-app:
+    if: ${{ inputs.auth_mode == 'app' }}
+    needs: validate
+    runs-on: ubuntu-latest
+    outputs:
+      token: ${{ steps.out.outputs.token }}
+    steps:
+      - name: Normalize GitHub App private key
+        id: normalize-key
+        shell: bash
+        env:
+          RAW_PRIVATE_KEY: ${{ secrets.app_private_key }}
+        run: |
+          if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
+            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          else
+            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub App installation token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.app_id }}
+          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          owner: ${{ inputs.installation_owner }}
+          skip-token-revoke: true
+
+      - name: Expose GitHub App installation token
+        id: out
+        shell: bash
+        env:
+          TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"

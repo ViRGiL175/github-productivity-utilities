@@ -15,6 +15,10 @@ on:
         description: Repository name where backlog issues live
         required: true
         type: string
+      backlog_repo_owner:
+        description: Owner of the repository where backlog issues live; defaults to project_owner when omitted
+        required: false
+        type: string
       iteration_field_name:
         description: Name of the iteration field in the project
         required: false
@@ -70,6 +74,7 @@ jobs:
           PROJECT_OWNER: ${{ inputs.project_owner }}
           PROJECT_NUMBER: ${{ inputs.project_number }}
           BACKLOG_REPO: ${{ inputs.backlog_repo }}
+          BACKLOG_REPO_OWNER: ${{ inputs.backlog_repo_owner || inputs.project_owner }}
           ITERATION_FIELD_NAME: ${{ inputs.iteration_field_name }}
           STATUS_FIELD_NAME: ${{ inputs.status_field_name }}
           STATUS_DONE_VALUE: ${{ inputs.status_done_value }}
@@ -84,6 +89,7 @@ jobs:
             const projectOwner = process.env.PROJECT_OWNER;
             const projectNumber = Number(process.env.PROJECT_NUMBER);
             const backlogRepo = process.env.BACKLOG_REPO;
+            const backlogRepoOwner = process.env.BACKLOG_REPO_OWNER || projectOwner;
             const iterationFieldName = process.env.ITERATION_FIELD_NAME;
             const statusFieldName = process.env.STATUS_FIELD_NAME;
             const statusDoneValue = process.env.STATUS_DONE_VALUE;
@@ -324,7 +330,7 @@ jobs:
 
             async function getIssueProjectItem(projectId, issueNumber) {
               const data = await github.graphql(ISSUE_PROJECT_ITEMS_QUERY, {
-                owner: projectOwner,
+                owner: backlogRepoOwner,
                 repo: backlogRepo,
                 issueNum: issueNumber,
                 fieldName: iterationFieldName,
@@ -361,10 +367,10 @@ jobs:
             }
 
             async function appendClosingReferenceIfMissing(issueNumber) {
-              const closesRef = `Closes ${projectOwner}/${backlogRepo}#${issueNumber}`;
+              const closesRef = `Closes ${backlogRepoOwner}/${backlogRepo}#${issueNumber}`;
               const response = await github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
+                owner: backlogRepoOwner,
+                repo: backlogRepo,
                 pull_number: pullRequest.number,
                 headers: {
                   accept: 'application/vnd.github+json',
@@ -380,8 +386,8 @@ jobs:
 
               const suffix = `\n\n<!-- auto-linked -->\n${closesRef}`;
               await github.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
+                owner: backlogRepoOwner,
+                repo: backlogRepo,
                 pull_number: pullRequest.number,
                 body: `${currentBody}${suffix}`,
                 headers: {
