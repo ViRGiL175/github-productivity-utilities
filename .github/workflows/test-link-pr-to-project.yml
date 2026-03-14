@@ -1,7 +1,18 @@
+# Integration test: создаёт issue и PR, проверяет привязку PR к Project V2,
+# перенос sprint из issue, установку статуса Done при закрытии и cleanup.
 name: Test link-pr-to-project
 
 on:
   workflow_dispatch:
+    inputs:
+      auth_mode:
+        description: Token source to use for integration tests (pat=user sandbox, app=org sandbox)
+        required: false
+        default: pat
+        type: choice
+        options:
+          - pat
+          - app
   pull_request:
     paths:
       - '.github/workflows/link-pr-to-project.yml'
@@ -13,20 +24,33 @@ permissions:
   pull-requests: read
 
 env:
-  PROJECT_OWNER: ViRGiL175
-  PROJECT_NUMBER: '10'
+  PROJECT_OWNER: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+  PROJECT_NUMBER: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10' }}
   ITERATION_FIELD_NAME: Iteration
   STATUS_FIELD_NAME: Status
   STATUS_DONE_VALUE: Done
-  REPO_OWNER: ViRGiL175
-  REPO_NAME: github-productivity-utilities
+  REPO_OWNER: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+  REPO_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'scrum-test-backlog' || 'github-productivity-utilities' }}
   DEFAULT_BRANCH: main
 
 jobs:
+  resolve-auth:
+    name: Resolve integration auth token
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    uses: ./.github/workflows/resolve-integration-test-token.yml
+    with:
+      auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
+      installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+    secrets:
+      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
+      app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+      app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+
   prepare-link-scenario:
     name: Prepare link PR scenario
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
+    needs: resolve-auth
     outputs:
       project_id: ${{ steps.prepare.outputs.project_id }}
       target_iteration_id: ${{ steps.prepare.outputs.target_iteration_id }}
@@ -51,7 +75,7 @@ jobs:
           PR_TITLE: ITEST-${{ github.run_id }} link PR
           FILE_PATH: itest/link-${{ github.run_id }}.txt
         with:
-          github-token: ${{ secrets.ORG_PROJECT_TOKEN }}
+          github-token: ${{ needs.resolve-auth.outputs.token }}
           script: |
             const projectOwner = process.env.PROJECT_OWNER;
             const projectNumber = Number(process.env.PROJECT_NUMBER);
@@ -304,12 +328,14 @@ jobs:
   run-link-open-scenario:
     name: Run link PR open scenario
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-    needs: prepare-link-scenario
+    needs:
+      - resolve-auth
+      - prepare-link-scenario
     uses: ./.github/workflows/link-pr-to-project.yml
     with:
-      project_owner: ViRGiL175
-      project_number: 10
-      backlog_repo: github-productivity-utilities
+      project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+      project_number: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10' }}
+      backlog_repo: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'scrum-test-backlog' || 'github-productivity-utilities' }}
       iteration_field_name: Iteration
       status_field_name: Status
       status_done_value: Done
@@ -318,12 +344,13 @@ jobs:
       head_ref: ${{ needs.prepare-link-scenario.outputs.branch_name }}
       action: opened
     secrets:
-      project_token: ${{ secrets.ORG_PROJECT_TOKEN }}
+      project_token: ${{ needs.resolve-auth.outputs.token }}
 
   assert-link-open-scenario:
     name: Assert link PR open scenario
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     needs:
+      - resolve-auth
       - prepare-link-scenario
       - run-link-open-scenario
     runs-on: ubuntu-latest
@@ -340,7 +367,7 @@ jobs:
           REPO_NAME: ${{ env.REPO_NAME }}
           CLOSES_REF: ${{ needs.prepare-link-scenario.outputs.closes_ref }}
         with:
-          github-token: ${{ secrets.ORG_PROJECT_TOKEN }}
+          github-token: ${{ needs.resolve-auth.outputs.token }}
           script: |
             const projectId = process.env.PROJECT_ID;
             const iterationFieldName = process.env.ITERATION_FIELD_NAME;
@@ -410,13 +437,14 @@ jobs:
     name: Rerun link PR open scenario for idempotency
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     needs:
+      - resolve-auth
       - prepare-link-scenario
       - assert-link-open-scenario
     uses: ./.github/workflows/link-pr-to-project.yml
     with:
-      project_owner: ViRGiL175
-      project_number: 10
-      backlog_repo: github-productivity-utilities
+      project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+      project_number: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10' }}
+      backlog_repo: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'scrum-test-backlog' || 'github-productivity-utilities' }}
       iteration_field_name: Iteration
       status_field_name: Status
       status_done_value: Done
@@ -425,12 +453,13 @@ jobs:
       head_ref: ${{ needs.prepare-link-scenario.outputs.branch_name }}
       action: opened
     secrets:
-      project_token: ${{ secrets.ORG_PROJECT_TOKEN }}
+      project_token: ${{ needs.resolve-auth.outputs.token }}
 
   assert-link-idempotency-scenario:
     name: Assert link PR idempotency scenario
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     needs:
+      - resolve-auth
       - prepare-link-scenario
       - rerun-link-open-scenario
     runs-on: ubuntu-latest
@@ -447,7 +476,7 @@ jobs:
           REPO_NAME: ${{ env.REPO_NAME }}
           CLOSES_REF: ${{ needs.prepare-link-scenario.outputs.closes_ref }}
         with:
-          github-token: ${{ secrets.ORG_PROJECT_TOKEN }}
+          github-token: ${{ needs.resolve-auth.outputs.token }}
           script: |
             const projectId = process.env.PROJECT_ID;
             const iterationFieldName = process.env.ITERATION_FIELD_NAME;
@@ -517,6 +546,7 @@ jobs:
     name: Close PR before status check
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     needs:
+      - resolve-auth
       - prepare-link-scenario
       - assert-link-idempotency-scenario
     runs-on: ubuntu-latest
@@ -528,7 +558,7 @@ jobs:
           REPO_NAME: ${{ env.REPO_NAME }}
           PULL_NUMBER: ${{ needs.prepare-link-scenario.outputs.pull_number }}
         with:
-          github-token: ${{ secrets.ORG_PROJECT_TOKEN }}
+          github-token: ${{ needs.resolve-auth.outputs.token }}
           script: |
             const owner = process.env.REPO_OWNER;
             const repo = process.env.REPO_NAME;
@@ -550,13 +580,14 @@ jobs:
     name: Run link PR closed scenario
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     needs:
+      - resolve-auth
       - prepare-link-scenario
       - close-pr-before-status-check
     uses: ./.github/workflows/link-pr-to-project.yml
     with:
-      project_owner: ViRGiL175
-      project_number: 10
-      backlog_repo: github-productivity-utilities
+      project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+      project_number: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10' }}
+      backlog_repo: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'scrum-test-backlog' || 'github-productivity-utilities' }}
       iteration_field_name: Iteration
       status_field_name: Status
       status_done_value: Done
@@ -565,12 +596,13 @@ jobs:
       head_ref: ${{ needs.prepare-link-scenario.outputs.branch_name }}
       action: closed
     secrets:
-      project_token: ${{ secrets.ORG_PROJECT_TOKEN }}
+      project_token: ${{ needs.resolve-auth.outputs.token }}
 
   assert-link-closed-scenario:
     name: Assert link PR closed scenario
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     needs:
+      - resolve-auth
       - prepare-link-scenario
       - run-link-closed-scenario
     runs-on: ubuntu-latest
@@ -583,7 +615,7 @@ jobs:
           STATUS_DONE_VALUE: ${{ env.STATUS_DONE_VALUE }}
           PULL_NODE_ID: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
         with:
-          github-token: ${{ secrets.ORG_PROJECT_TOKEN }}
+          github-token: ${{ needs.resolve-auth.outputs.token }}
           script: |
             const projectId = process.env.PROJECT_ID;
             const statusFieldName = process.env.STATUS_FIELD_NAME;
@@ -633,6 +665,7 @@ jobs:
     name: Cleanup link PR scenario
     if: ${{ always() && needs.prepare-link-scenario.outputs.issue_number != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     needs:
+      - resolve-auth
       - prepare-link-scenario
       - run-link-open-scenario
       - assert-link-open-scenario
@@ -656,7 +689,7 @@ jobs:
           PULL_NODE_ID: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
           BRANCH_NAME: ${{ needs.prepare-link-scenario.outputs.branch_name }}
         with:
-          github-token: ${{ secrets.ORG_PROJECT_TOKEN }}
+          github-token: ${{ needs.resolve-auth.outputs.token }}
           script: |
             const projectId = process.env.PROJECT_ID;
             const iterationFieldName = process.env.ITERATION_FIELD_NAME;
