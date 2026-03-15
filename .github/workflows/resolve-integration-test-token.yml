@@ -111,5 +111,4 @@ jobs:
             exit 1
           fi
 
-          echo "::add-mask::$TOKEN"
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
