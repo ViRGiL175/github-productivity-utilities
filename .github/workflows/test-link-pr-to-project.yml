@@ -26,6 +26,8 @@ permissions:
   pull-requests: read
 
 env:
+  AUTH_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
+  INSTALLATION_OWNER: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
   PROJECT_OWNER: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
   PROJECT_NUMBER: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10' }}
   ITERATION_FIELD_NAME: Iteration
@@ -69,6 +71,56 @@ jobs:
       pull_request_repo_owner: ${{ steps.prepare.outputs.pull_request_repo_owner }}
       pull_request_repo_name: ${{ steps.prepare.outputs.pull_request_repo_name }}
     steps:
+      - name: Normalize GitHub App private key
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: normalize-key
+        shell: bash
+        env:
+          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+        run: |
+          if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
+            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          else
+            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub App installation token
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          owner: ${{ env.INSTALLATION_OWNER }}
+          skip-token-revoke: true
+
+      - name: Resolve job auth token
+        id: auth
+        shell: bash
+        env:
+          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          case "$AUTH_MODE" in
+            pat)
+              TOKEN="$DIRECT_TOKEN"
+              ;;
+            app)
+              TOKEN="$APP_TOKEN"
+              ;;
+            *)
+              echo "Unsupported auth mode: $AUTH_MODE" >&2
+              exit 1
+              ;;
+          esac
+
+          if [ -z "$TOKEN" ]; then
+            echo "Resolved token is empty for auth_mode=$AUTH_MODE" >&2
+            exit 1
+          fi
+
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
       - name: Create issue, project item, branch, and PR
         id: prepare
         uses: actions/github-script@v8
@@ -85,7 +137,7 @@ jobs:
           PR_TITLE: ITEST-${{ github.run_id }} link PR
           FILE_PATH: itest/link-${{ github.run_id }}.txt
         with:
-          github-token: ${{ needs.resolve-auth.outputs.token }}
+          github-token: ${{ steps.auth.outputs.token }}
           script: |
             const projectOwner = process.env.PROJECT_OWNER;
             const projectNumber = Number(process.env.PROJECT_NUMBER);
@@ -362,8 +414,12 @@ jobs:
       pull_request_repo_name: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_name }}
       head_ref: ${{ needs.prepare-link-scenario.outputs.branch_name }}
       action: opened
+      auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
+      installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
     secrets:
-      project_token: ${{ needs.resolve-auth.outputs.token }}
+      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
+      app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+      app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
 
   assert-link-open-scenario:
     name: Assert link PR open scenario
@@ -374,6 +430,56 @@ jobs:
       - run-link-open-scenario
     runs-on: ubuntu-latest
     steps:
+      - name: Normalize GitHub App private key
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: normalize-key
+        shell: bash
+        env:
+          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+        run: |
+          if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
+            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          else
+            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub App installation token
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          owner: ${{ env.INSTALLATION_OWNER }}
+          skip-token-revoke: true
+
+      - name: Resolve job auth token
+        id: auth
+        shell: bash
+        env:
+          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          case "$AUTH_MODE" in
+            pat)
+              TOKEN="$DIRECT_TOKEN"
+              ;;
+            app)
+              TOKEN="$APP_TOKEN"
+              ;;
+            *)
+              echo "Unsupported auth mode: $AUTH_MODE" >&2
+              exit 1
+              ;;
+          esac
+
+          if [ -z "$TOKEN" ]; then
+            echo "Resolved token is empty for auth_mode=$AUTH_MODE" >&2
+            exit 1
+          fi
+
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
       - name: Assert PR was linked to project and issue sprint
         uses: actions/github-script@v8
         env:
@@ -386,7 +492,7 @@ jobs:
           PULL_REQUEST_REPO_NAME: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_name }}
           CLOSES_REF: ${{ needs.prepare-link-scenario.outputs.closes_ref }}
         with:
-          github-token: ${{ needs.resolve-auth.outputs.token }}
+          github-token: ${{ steps.auth.outputs.token }}
           script: |
             const projectId = process.env.PROJECT_ID;
             const iterationFieldName = process.env.ITERATION_FIELD_NAME;
@@ -511,8 +617,12 @@ jobs:
       pull_request_repo_name: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_name }}
       head_ref: ${{ needs.prepare-link-scenario.outputs.branch_name }}
       action: opened
+      auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
+      installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
     secrets:
-      project_token: ${{ needs.resolve-auth.outputs.token }}
+      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
+      app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+      app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
 
   assert-link-idempotency-scenario:
     name: Assert link PR idempotency scenario
@@ -523,6 +633,56 @@ jobs:
       - rerun-link-open-scenario
     runs-on: ubuntu-latest
     steps:
+      - name: Normalize GitHub App private key
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: normalize-key
+        shell: bash
+        env:
+          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+        run: |
+          if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
+            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          else
+            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub App installation token
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          owner: ${{ env.INSTALLATION_OWNER }}
+          skip-token-revoke: true
+
+      - name: Resolve job auth token
+        id: auth
+        shell: bash
+        env:
+          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          case "$AUTH_MODE" in
+            pat)
+              TOKEN="$DIRECT_TOKEN"
+              ;;
+            app)
+              TOKEN="$APP_TOKEN"
+              ;;
+            *)
+              echo "Unsupported auth mode: $AUTH_MODE" >&2
+              exit 1
+              ;;
+          esac
+
+          if [ -z "$TOKEN" ]; then
+            echo "Resolved token is empty for auth_mode=$AUTH_MODE" >&2
+            exit 1
+          fi
+
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
       - name: Assert rerun did not duplicate project item or closes line
         uses: actions/github-script@v8
         env:
@@ -535,7 +695,7 @@ jobs:
           PULL_REQUEST_REPO_NAME: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_name }}
           CLOSES_REF: ${{ needs.prepare-link-scenario.outputs.closes_ref }}
         with:
-          github-token: ${{ needs.resolve-auth.outputs.token }}
+          github-token: ${{ steps.auth.outputs.token }}
           script: |
             const projectId = process.env.PROJECT_ID;
             const iterationFieldName = process.env.ITERATION_FIELD_NAME;
@@ -647,6 +807,56 @@ jobs:
       - assert-link-idempotency-scenario
     runs-on: ubuntu-latest
     steps:
+      - name: Normalize GitHub App private key
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: normalize-key
+        shell: bash
+        env:
+          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+        run: |
+          if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
+            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          else
+            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub App installation token
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          owner: ${{ env.INSTALLATION_OWNER }}
+          skip-token-revoke: true
+
+      - name: Resolve job auth token
+        id: auth
+        shell: bash
+        env:
+          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          case "$AUTH_MODE" in
+            pat)
+              TOKEN="$DIRECT_TOKEN"
+              ;;
+            app)
+              TOKEN="$APP_TOKEN"
+              ;;
+            *)
+              echo "Unsupported auth mode: $AUTH_MODE" >&2
+              exit 1
+              ;;
+          esac
+
+          if [ -z "$TOKEN" ]; then
+            echo "Resolved token is empty for auth_mode=$AUTH_MODE" >&2
+            exit 1
+          fi
+
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
       - name: Close temporary PR
         uses: actions/github-script@v8
         env:
@@ -654,7 +864,7 @@ jobs:
           PULL_REQUEST_REPO_NAME: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_name }}
           PULL_NUMBER: ${{ needs.prepare-link-scenario.outputs.pull_number }}
         with:
-          github-token: ${{ needs.resolve-auth.outputs.token }}
+          github-token: ${{ steps.auth.outputs.token }}
           script: |
             const owner = process.env.PULL_REQUEST_REPO_OWNER;
             const repo = process.env.PULL_REQUEST_REPO_NAME;
@@ -694,8 +904,12 @@ jobs:
       pull_request_repo_name: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_name }}
       head_ref: ${{ needs.prepare-link-scenario.outputs.branch_name }}
       action: closed
+      auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
+      installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
     secrets:
-      project_token: ${{ needs.resolve-auth.outputs.token }}
+      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
+      app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+      app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
 
   assert-link-closed-scenario:
     name: Assert link PR closed scenario
@@ -706,6 +920,56 @@ jobs:
       - run-link-closed-scenario
     runs-on: ubuntu-latest
     steps:
+      - name: Normalize GitHub App private key
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: normalize-key
+        shell: bash
+        env:
+          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+        run: |
+          if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
+            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          else
+            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub App installation token
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          owner: ${{ env.INSTALLATION_OWNER }}
+          skip-token-revoke: true
+
+      - name: Resolve job auth token
+        id: auth
+        shell: bash
+        env:
+          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          case "$AUTH_MODE" in
+            pat)
+              TOKEN="$DIRECT_TOKEN"
+              ;;
+            app)
+              TOKEN="$APP_TOKEN"
+              ;;
+            *)
+              echo "Unsupported auth mode: $AUTH_MODE" >&2
+              exit 1
+              ;;
+          esac
+
+          if [ -z "$TOKEN" ]; then
+            echo "Resolved token is empty for auth_mode=$AUTH_MODE" >&2
+            exit 1
+          fi
+
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
       - name: Assert PR status is Done in project
         uses: actions/github-script@v8
         env:
@@ -714,7 +978,7 @@ jobs:
           STATUS_DONE_VALUE: ${{ env.STATUS_DONE_VALUE }}
           PULL_NODE_ID: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
         with:
-          github-token: ${{ needs.resolve-auth.outputs.token }}
+          github-token: ${{ steps.auth.outputs.token }}
           script: |
             const projectId = process.env.PROJECT_ID;
             const statusFieldName = process.env.STATUS_FIELD_NAME;
@@ -814,6 +1078,56 @@ jobs:
       - assert-link-closed-scenario
     runs-on: ubuntu-latest
     steps:
+      - name: Normalize GitHub App private key
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: normalize-key
+        shell: bash
+        env:
+          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+        run: |
+          if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
+            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          else
+            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub App installation token
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          owner: ${{ env.INSTALLATION_OWNER }}
+          skip-token-revoke: true
+
+      - name: Resolve job auth token
+        id: auth
+        shell: bash
+        env:
+          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          case "$AUTH_MODE" in
+            pat)
+              TOKEN="$DIRECT_TOKEN"
+              ;;
+            app)
+              TOKEN="$APP_TOKEN"
+              ;;
+            *)
+              echo "Unsupported auth mode: $AUTH_MODE" >&2
+              exit 1
+              ;;
+          esac
+
+          if [ -z "$TOKEN" ]; then
+            echo "Resolved token is empty for auth_mode=$AUTH_MODE" >&2
+            exit 1
+          fi
+
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
       - name: Remove project items, close issue, and delete branch
         uses: actions/github-script@v8
         env:
@@ -829,7 +1143,7 @@ jobs:
           PULL_NODE_ID: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
           BRANCH_NAME: ${{ needs.prepare-link-scenario.outputs.branch_name }}
         with:
-          github-token: ${{ needs.resolve-auth.outputs.token }}
+          github-token: ${{ steps.auth.outputs.token }}
           script: |
             const projectId = process.env.PROJECT_ID;
             const iterationFieldName = process.env.ITERATION_FIELD_NAME;
