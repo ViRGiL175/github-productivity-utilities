@@ -1,5 +1,7 @@
 # Integration test: создаёт issue и PR, проверяет привязку PR к Project V2,
 # перенос sprint из issue, установку статуса Done при закрытии и cleanup.
+# В `pat`-режиме issue и PR живут в одном репозитории.
+# В `app`-режиме issue живёт в backlog-репозитории, а PR — в отдельном client-репозитории.
 name: Test link-pr-to-project
 
 on:
@@ -29,8 +31,10 @@ env:
   ITERATION_FIELD_NAME: Iteration
   STATUS_FIELD_NAME: Status
   STATUS_DONE_VALUE: Done
-  REPO_OWNER: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-  REPO_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'scrum-test-backlog' || 'github-productivity-utilities' }}
+  BACKLOG_REPO_OWNER: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+  BACKLOG_REPO_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'scrum-test-backlog' || 'github-productivity-utilities' }}
+  PULL_REQUEST_REPO_OWNER: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+  PULL_REQUEST_REPO_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'test-client' || 'github-productivity-utilities' }}
   DEFAULT_BRANCH: main
 
 jobs:
@@ -60,6 +64,10 @@ jobs:
       pull_node_id: ${{ steps.prepare.outputs.pull_node_id }}
       branch_name: ${{ steps.prepare.outputs.branch_name }}
       closes_ref: ${{ steps.prepare.outputs.closes_ref }}
+      backlog_repo_owner: ${{ steps.prepare.outputs.backlog_repo_owner }}
+      backlog_repo_name: ${{ steps.prepare.outputs.backlog_repo_name }}
+      pull_request_repo_owner: ${{ steps.prepare.outputs.pull_request_repo_owner }}
+      pull_request_repo_name: ${{ steps.prepare.outputs.pull_request_repo_name }}
     steps:
       - name: Create issue, project item, branch, and PR
         id: prepare
@@ -68,8 +76,10 @@ jobs:
           PROJECT_OWNER: ${{ env.PROJECT_OWNER }}
           PROJECT_NUMBER: ${{ env.PROJECT_NUMBER }}
           ITERATION_FIELD_NAME: ${{ env.ITERATION_FIELD_NAME }}
-          REPO_OWNER: ${{ env.REPO_OWNER }}
-          REPO_NAME: ${{ env.REPO_NAME }}
+          BACKLOG_REPO_OWNER: ${{ env.BACKLOG_REPO_OWNER }}
+          BACKLOG_REPO_NAME: ${{ env.BACKLOG_REPO_NAME }}
+          PULL_REQUEST_REPO_OWNER: ${{ env.PULL_REQUEST_REPO_OWNER }}
+          PULL_REQUEST_REPO_NAME: ${{ env.PULL_REQUEST_REPO_NAME }}
           DEFAULT_BRANCH: ${{ env.DEFAULT_BRANCH }}
           ISSUE_TITLE: ITEST-${{ github.run_id }} link issue
           PR_TITLE: ITEST-${{ github.run_id }} link PR
@@ -80,8 +90,10 @@ jobs:
             const projectOwner = process.env.PROJECT_OWNER;
             const projectNumber = Number(process.env.PROJECT_NUMBER);
             const iterationFieldName = process.env.ITERATION_FIELD_NAME;
-            const owner = process.env.REPO_OWNER;
-            const repo = process.env.REPO_NAME;
+            const backlogRepoOwner = process.env.BACKLOG_REPO_OWNER;
+            const backlogRepoName = process.env.BACKLOG_REPO_NAME;
+            const pullRequestRepoOwner = process.env.PULL_REQUEST_REPO_OWNER;
+            const pullRequestRepoName = process.env.PULL_REQUEST_REPO_NAME;
             const defaultBranch = process.env.DEFAULT_BRANCH;
             const issueTitle = process.env.ISSUE_TITLE;
             const prTitle = process.env.PR_TITLE;
@@ -268,8 +280,8 @@ jobs:
             const project = await getProjectMetadata();
 
             const issueResponse = await github.request('POST /repos/{owner}/{repo}/issues', {
-              owner,
-              repo,
+              owner: backlogRepoOwner,
+              repo: backlogRepoName,
               title: issueTitle,
               body: `ITEST run ${context.runId} for link-pr-to-project issue`,
               headers,
@@ -281,23 +293,23 @@ jobs:
 
             const branchName = `${issue.number}-itest-${context.runId}`;
             const baseRef = await github.request('GET /repos/{owner}/{repo}/git/ref/{ref}', {
-              owner,
-              repo,
+              owner: pullRequestRepoOwner,
+              repo: pullRequestRepoName,
               ref: `heads/${defaultBranch}`,
               headers,
             });
 
             await github.request('POST /repos/{owner}/{repo}/git/refs', {
-              owner,
-              repo,
+              owner: pullRequestRepoOwner,
+              repo: pullRequestRepoName,
               ref: `refs/heads/${branchName}`,
               sha: baseRef.data.object.sha,
               headers,
             });
 
             await github.request('PUT /repos/{owner}/{repo}/contents/{path}', {
-              owner,
-              repo,
+              owner: pullRequestRepoOwner,
+              repo: pullRequestRepoName,
               path: filePath,
               message: `ITEST link fixture ${context.runId}`,
               content: Buffer.from(`link fixture for run ${context.runId}\n`).toString('base64'),
@@ -306,8 +318,8 @@ jobs:
             });
 
             const pullResponse = await github.request('POST /repos/{owner}/{repo}/pulls', {
-              owner,
-              repo,
+              owner: pullRequestRepoOwner,
+              repo: pullRequestRepoName,
               title: prTitle,
               head: branchName,
               base: defaultBranch,
@@ -323,7 +335,11 @@ jobs:
             core.setOutput('pull_number', String(pullRequest.number));
             core.setOutput('pull_node_id', pullRequest.node_id);
             core.setOutput('branch_name', branchName);
-            core.setOutput('closes_ref', `Closes ${owner}/${repo}#${issue.number}`);
+            core.setOutput('closes_ref', `Closes ${backlogRepoOwner}/${backlogRepoName}#${issue.number}`);
+            core.setOutput('backlog_repo_owner', backlogRepoOwner);
+            core.setOutput('backlog_repo_name', backlogRepoName);
+            core.setOutput('pull_request_repo_owner', pullRequestRepoOwner);
+            core.setOutput('pull_request_repo_name', pullRequestRepoName);
 
   run-link-open-scenario:
     name: Run link PR open scenario
@@ -335,12 +351,15 @@ jobs:
     with:
       project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
       project_number: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10' }}
-      backlog_repo: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'scrum-test-backlog' || 'github-productivity-utilities' }}
+      backlog_repo: ${{ needs.prepare-link-scenario.outputs.backlog_repo_name }}
+      backlog_repo_owner: ${{ needs.prepare-link-scenario.outputs.backlog_repo_owner }}
       iteration_field_name: Iteration
       status_field_name: Status
       status_done_value: Done
       pull_request_node_id: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
       pull_request_number: ${{ needs.prepare-link-scenario.outputs.pull_number }}
+      pull_request_repo_owner: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_owner }}
+      pull_request_repo_name: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_name }}
       head_ref: ${{ needs.prepare-link-scenario.outputs.branch_name }}
       action: opened
     secrets:
@@ -363,8 +382,8 @@ jobs:
           TARGET_ITERATION_ID: ${{ needs.prepare-link-scenario.outputs.target_iteration_id }}
           PULL_NODE_ID: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
           PULL_NUMBER: ${{ needs.prepare-link-scenario.outputs.pull_number }}
-          REPO_OWNER: ${{ env.REPO_OWNER }}
-          REPO_NAME: ${{ env.REPO_NAME }}
+          PULL_REQUEST_REPO_OWNER: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_owner }}
+          PULL_REQUEST_REPO_NAME: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_name }}
           CLOSES_REF: ${{ needs.prepare-link-scenario.outputs.closes_ref }}
         with:
           github-token: ${{ needs.resolve-auth.outputs.token }}
@@ -374,13 +393,48 @@ jobs:
             const targetIterationId = process.env.TARGET_ITERATION_ID;
             const pullNodeId = process.env.PULL_NODE_ID;
             const pullNumber = Number(process.env.PULL_NUMBER);
-            const owner = process.env.REPO_OWNER;
-            const repo = process.env.REPO_NAME;
+            const owner = process.env.PULL_REQUEST_REPO_OWNER;
+            const repo = process.env.PULL_REQUEST_REPO_NAME;
             const closesRef = process.env.CLOSES_REF;
             const headers = {
               accept: 'application/vnd.github+json',
               'X-GitHub-Api-Version': '2022-11-28',
             };
+
+            function sleep(ms) {
+              return new Promise((resolve) => setTimeout(resolve, ms));
+            }
+
+            function isRetryable(error) {
+              const status = error?.status ?? error?.response?.status ?? 0;
+              if (status >= 500) {
+                return true;
+              }
+
+              const message = String(error?.message || '').toLowerCase();
+              return message.includes('fetch failed') || message.includes('server error');
+            }
+
+            async function withRetry(label, fn, attempts = 8, delayMs = 4000) {
+              let lastError;
+
+              for (let attempt = 1; attempt <= attempts; attempt += 1) {
+                try {
+                  return await fn();
+                } catch (error) {
+                  lastError = error;
+                  const shouldRetry = attempt < attempts && (isRetryable(error) || error instanceof Error);
+                  if (!shouldRetry) {
+                    throw error;
+                  }
+
+                  core.info(`${label} attempt ${attempt}/${attempts} failed: ${error.message}. Retrying in ${delayMs}ms...`);
+                  await sleep(delayMs);
+                }
+              }
+
+              throw lastError;
+            }
 
             const PULL_REQUEST_PROJECT_ITEMS_QUERY = `
               query($nodeId: ID!, $fieldName: String!) {
@@ -404,32 +458,34 @@ jobs:
               }
             `;
 
-            const projectData = await github.graphql(PULL_REQUEST_PROJECT_ITEMS_QUERY, {
-              nodeId: pullNodeId,
-              fieldName: iterationFieldName,
+            await withRetry('Assert open scenario', async () => {
+              const projectData = await github.graphql(PULL_REQUEST_PROJECT_ITEMS_QUERY, {
+                nodeId: pullNodeId,
+                fieldName: iterationFieldName,
+              });
+
+              const projectItems = projectData.node?.projectItems?.nodes?.filter((item) => item.project?.id === projectId) ?? [];
+              if (projectItems.length !== 1) {
+                throw new Error(`Expected exactly one PR project item, got ${projectItems.length}.`);
+              }
+
+              const iterationId = projectItems[0].fieldValueByName?.iterationId ?? null;
+              if (iterationId !== targetIterationId) {
+                throw new Error(`Expected PR iteration ${targetIterationId}, got ${iterationId || 'none'}.`);
+              }
+
+              const pullResponse = await github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+                owner,
+                repo,
+                pull_number: pullNumber,
+                headers,
+              });
+              const body = pullResponse.data.body || '';
+
+              if (!body.includes(closesRef)) {
+                throw new Error(`Expected PR body to contain "${closesRef}".`);
+              }
             });
-
-            const projectItems = projectData.node?.projectItems?.nodes?.filter((item) => item.project?.id === projectId) ?? [];
-            if (projectItems.length !== 1) {
-              throw new Error(`Expected exactly one PR project item, got ${projectItems.length}.`);
-            }
-
-            const iterationId = projectItems[0].fieldValueByName?.iterationId ?? null;
-            if (iterationId !== targetIterationId) {
-              throw new Error(`Expected PR iteration ${targetIterationId}, got ${iterationId || 'none'}.`);
-            }
-
-            const pullResponse = await github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
-              owner,
-              repo,
-              pull_number: pullNumber,
-              headers,
-            });
-            const body = pullResponse.data.body || '';
-
-            if (!body.includes(closesRef)) {
-              throw new Error(`Expected PR body to contain "${closesRef}".`);
-            }
 
             core.info(`PR #${pullNumber} is in the project, has iteration ${targetIterationId}, and includes the closing reference.`);
 
@@ -444,12 +500,15 @@ jobs:
     with:
       project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
       project_number: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10' }}
-      backlog_repo: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'scrum-test-backlog' || 'github-productivity-utilities' }}
+      backlog_repo: ${{ needs.prepare-link-scenario.outputs.backlog_repo_name }}
+      backlog_repo_owner: ${{ needs.prepare-link-scenario.outputs.backlog_repo_owner }}
       iteration_field_name: Iteration
       status_field_name: Status
       status_done_value: Done
       pull_request_node_id: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
       pull_request_number: ${{ needs.prepare-link-scenario.outputs.pull_number }}
+      pull_request_repo_owner: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_owner }}
+      pull_request_repo_name: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_name }}
       head_ref: ${{ needs.prepare-link-scenario.outputs.branch_name }}
       action: opened
     secrets:
@@ -472,8 +531,8 @@ jobs:
           TARGET_ITERATION_ID: ${{ needs.prepare-link-scenario.outputs.target_iteration_id }}
           PULL_NODE_ID: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
           PULL_NUMBER: ${{ needs.prepare-link-scenario.outputs.pull_number }}
-          REPO_OWNER: ${{ env.REPO_OWNER }}
-          REPO_NAME: ${{ env.REPO_NAME }}
+          PULL_REQUEST_REPO_OWNER: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_owner }}
+          PULL_REQUEST_REPO_NAME: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_name }}
           CLOSES_REF: ${{ needs.prepare-link-scenario.outputs.closes_ref }}
         with:
           github-token: ${{ needs.resolve-auth.outputs.token }}
@@ -483,13 +542,48 @@ jobs:
             const targetIterationId = process.env.TARGET_ITERATION_ID;
             const pullNodeId = process.env.PULL_NODE_ID;
             const pullNumber = Number(process.env.PULL_NUMBER);
-            const owner = process.env.REPO_OWNER;
-            const repo = process.env.REPO_NAME;
+            const owner = process.env.PULL_REQUEST_REPO_OWNER;
+            const repo = process.env.PULL_REQUEST_REPO_NAME;
             const closesRef = process.env.CLOSES_REF;
             const headers = {
               accept: 'application/vnd.github+json',
               'X-GitHub-Api-Version': '2022-11-28',
             };
+
+            function sleep(ms) {
+              return new Promise((resolve) => setTimeout(resolve, ms));
+            }
+
+            function isRetryable(error) {
+              const status = error?.status ?? error?.response?.status ?? 0;
+              if (status >= 500) {
+                return true;
+              }
+
+              const message = String(error?.message || '').toLowerCase();
+              return message.includes('fetch failed') || message.includes('server error');
+            }
+
+            async function withRetry(label, fn, attempts = 8, delayMs = 4000) {
+              let lastError;
+
+              for (let attempt = 1; attempt <= attempts; attempt += 1) {
+                try {
+                  return await fn();
+                } catch (error) {
+                  lastError = error;
+                  const shouldRetry = attempt < attempts && (isRetryable(error) || error instanceof Error);
+                  if (!shouldRetry) {
+                    throw error;
+                  }
+
+                  core.info(`${label} attempt ${attempt}/${attempts} failed: ${error.message}. Retrying in ${delayMs}ms...`);
+                  await sleep(delayMs);
+                }
+              }
+
+              throw lastError;
+            }
 
             const PULL_REQUEST_PROJECT_ITEMS_QUERY = `
               query($nodeId: ID!, $fieldName: String!) {
@@ -513,32 +607,34 @@ jobs:
               }
             `;
 
-            const projectData = await github.graphql(PULL_REQUEST_PROJECT_ITEMS_QUERY, {
-              nodeId: pullNodeId,
-              fieldName: iterationFieldName,
+            await withRetry('Assert idempotency scenario', async () => {
+              const projectData = await github.graphql(PULL_REQUEST_PROJECT_ITEMS_QUERY, {
+                nodeId: pullNodeId,
+                fieldName: iterationFieldName,
+              });
+
+              const projectItems = projectData.node?.projectItems?.nodes?.filter((item) => item.project?.id === projectId) ?? [];
+              if (projectItems.length !== 1) {
+                throw new Error(`Expected exactly one PR project item after rerun, got ${projectItems.length}.`);
+              }
+
+              const iterationId = projectItems[0].fieldValueByName?.iterationId ?? null;
+              if (iterationId !== targetIterationId) {
+                throw new Error(`Expected PR iteration ${targetIterationId} after rerun, got ${iterationId || 'none'}.`);
+              }
+
+              const pullResponse = await github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+                owner,
+                repo,
+                pull_number: pullNumber,
+                headers,
+              });
+              const body = pullResponse.data.body || '';
+              const occurrenceCount = body.split(closesRef).length - 1;
+              if (occurrenceCount !== 1) {
+                throw new Error(`Expected exactly one occurrence of "${closesRef}", got ${occurrenceCount}.`);
+              }
             });
-
-            const projectItems = projectData.node?.projectItems?.nodes?.filter((item) => item.project?.id === projectId) ?? [];
-            if (projectItems.length !== 1) {
-              throw new Error(`Expected exactly one PR project item after rerun, got ${projectItems.length}.`);
-            }
-
-            const iterationId = projectItems[0].fieldValueByName?.iterationId ?? null;
-            if (iterationId !== targetIterationId) {
-              throw new Error(`Expected PR iteration ${targetIterationId} after rerun, got ${iterationId || 'none'}.`);
-            }
-
-            const pullResponse = await github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
-              owner,
-              repo,
-              pull_number: pullNumber,
-              headers,
-            });
-            const body = pullResponse.data.body || '';
-            const occurrenceCount = body.split(closesRef).length - 1;
-            if (occurrenceCount !== 1) {
-              throw new Error(`Expected exactly one occurrence of "${closesRef}", got ${occurrenceCount}.`);
-            }
 
             core.info(`PR #${pullNumber} rerun stayed idempotent.`);
 
@@ -554,14 +650,14 @@ jobs:
       - name: Close temporary PR
         uses: actions/github-script@v8
         env:
-          REPO_OWNER: ${{ env.REPO_OWNER }}
-          REPO_NAME: ${{ env.REPO_NAME }}
+          PULL_REQUEST_REPO_OWNER: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_owner }}
+          PULL_REQUEST_REPO_NAME: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_name }}
           PULL_NUMBER: ${{ needs.prepare-link-scenario.outputs.pull_number }}
         with:
           github-token: ${{ needs.resolve-auth.outputs.token }}
           script: |
-            const owner = process.env.REPO_OWNER;
-            const repo = process.env.REPO_NAME;
+            const owner = process.env.PULL_REQUEST_REPO_OWNER;
+            const repo = process.env.PULL_REQUEST_REPO_NAME;
             const pullNumber = Number(process.env.PULL_NUMBER);
             const headers = {
               accept: 'application/vnd.github+json',
@@ -587,12 +683,15 @@ jobs:
     with:
       project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
       project_number: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10' }}
-      backlog_repo: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'scrum-test-backlog' || 'github-productivity-utilities' }}
+      backlog_repo: ${{ needs.prepare-link-scenario.outputs.backlog_repo_name }}
+      backlog_repo_owner: ${{ needs.prepare-link-scenario.outputs.backlog_repo_owner }}
       iteration_field_name: Iteration
       status_field_name: Status
       status_done_value: Done
       pull_request_node_id: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
       pull_request_number: ${{ needs.prepare-link-scenario.outputs.pull_number }}
+      pull_request_repo_owner: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_owner }}
+      pull_request_repo_name: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_name }}
       head_ref: ${{ needs.prepare-link-scenario.outputs.branch_name }}
       action: closed
     secrets:
@@ -622,6 +721,41 @@ jobs:
             const statusDoneValue = process.env.STATUS_DONE_VALUE;
             const pullNodeId = process.env.PULL_NODE_ID;
 
+            function sleep(ms) {
+              return new Promise((resolve) => setTimeout(resolve, ms));
+            }
+
+            function isRetryable(error) {
+              const status = error?.status ?? error?.response?.status ?? 0;
+              if (status >= 500) {
+                return true;
+              }
+
+              const message = String(error?.message || '').toLowerCase();
+              return message.includes('fetch failed') || message.includes('server error');
+            }
+
+            async function withRetry(label, fn, attempts = 8, delayMs = 4000) {
+              let lastError;
+
+              for (let attempt = 1; attempt <= attempts; attempt += 1) {
+                try {
+                  return await fn();
+                } catch (error) {
+                  lastError = error;
+                  const shouldRetry = attempt < attempts && (isRetryable(error) || error instanceof Error);
+                  if (!shouldRetry) {
+                    throw error;
+                  }
+
+                  core.info(`${label} attempt ${attempt}/${attempts} failed: ${error.message}. Retrying in ${delayMs}ms...`);
+                  await sleep(delayMs);
+                }
+              }
+
+              throw lastError;
+            }
+
             const PULL_REQUEST_STATUS_QUERY = `
               query($nodeId: ID!, $statusFieldName: String!) {
                 node(id: $nodeId) {
@@ -644,20 +778,24 @@ jobs:
               }
             `;
 
-            const data = await github.graphql(PULL_REQUEST_STATUS_QUERY, {
-              nodeId: pullNodeId,
-              statusFieldName,
+            const projectItem = await withRetry('Assert closed scenario', async () => {
+              const data = await github.graphql(PULL_REQUEST_STATUS_QUERY, {
+                nodeId: pullNodeId,
+                statusFieldName,
+              });
+
+              const item = data.node?.projectItems?.nodes?.find((projectNode) => projectNode.project?.id === projectId) ?? null;
+              if (!item) {
+                throw new Error('PR project item is missing during closed-state assertion.');
+              }
+
+              const statusValue = item.fieldValueByName?.name ?? null;
+              if (statusValue !== statusDoneValue) {
+                throw new Error(`Expected PR status ${statusDoneValue}, got ${statusValue || 'none'}.`);
+              }
+
+              return item;
             });
-
-            const projectItem = data.node?.projectItems?.nodes?.find((item) => item.project?.id === projectId) ?? null;
-            if (!projectItem) {
-              throw new Error('PR project item is missing during closed-state assertion.');
-            }
-
-            const statusValue = projectItem.fieldValueByName?.name ?? null;
-            if (statusValue !== statusDoneValue) {
-              throw new Error(`Expected PR status ${statusDoneValue}, got ${statusValue || 'none'}.`);
-            }
 
             core.info(`PR project item ${projectItem.id} is marked as ${statusDoneValue}.`);
 
@@ -681,10 +819,12 @@ jobs:
         env:
           PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
           ITERATION_FIELD_NAME: ${{ env.ITERATION_FIELD_NAME }}
-          REPO_OWNER: ${{ env.REPO_OWNER }}
-          REPO_NAME: ${{ env.REPO_NAME }}
+          BACKLOG_REPO_OWNER: ${{ needs.prepare-link-scenario.outputs.backlog_repo_owner }}
+          BACKLOG_REPO_NAME: ${{ needs.prepare-link-scenario.outputs.backlog_repo_name }}
           ISSUE_NUMBER: ${{ needs.prepare-link-scenario.outputs.issue_number }}
           ISSUE_NODE_ID: ${{ needs.prepare-link-scenario.outputs.issue_node_id }}
+          PULL_REQUEST_REPO_OWNER: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_owner }}
+          PULL_REQUEST_REPO_NAME: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_name }}
           PULL_NUMBER: ${{ needs.prepare-link-scenario.outputs.pull_number }}
           PULL_NODE_ID: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
           BRANCH_NAME: ${{ needs.prepare-link-scenario.outputs.branch_name }}
@@ -693,8 +833,10 @@ jobs:
           script: |
             const projectId = process.env.PROJECT_ID;
             const iterationFieldName = process.env.ITERATION_FIELD_NAME;
-            const owner = process.env.REPO_OWNER;
-            const repo = process.env.REPO_NAME;
+            const backlogRepoOwner = process.env.BACKLOG_REPO_OWNER;
+            const backlogRepoName = process.env.BACKLOG_REPO_NAME;
+            const pullRequestRepoOwner = process.env.PULL_REQUEST_REPO_OWNER;
+            const pullRequestRepoName = process.env.PULL_REQUEST_REPO_NAME;
             const issueNumber = Number(process.env.ISSUE_NUMBER);
             const issueNodeId = process.env.ISSUE_NODE_ID;
             const pullNumber = Number(process.env.PULL_NUMBER);
@@ -806,8 +948,8 @@ jobs:
 
             if (pullNumber > 0) {
               await github.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', {
-                owner,
-                repo,
+                owner: pullRequestRepoOwner,
+                repo: pullRequestRepoName,
                 pull_number: pullNumber,
                 state: 'closed',
                 headers,
@@ -816,8 +958,8 @@ jobs:
 
             if (issueNumber > 0) {
               await github.request('PATCH /repos/{owner}/{repo}/issues/{issue_number}', {
-                owner,
-                repo,
+                owner: backlogRepoOwner,
+                repo: backlogRepoName,
                 issue_number: issueNumber,
                 state: 'closed',
                 headers,
@@ -827,8 +969,8 @@ jobs:
             if (branchName) {
               try {
                 await github.request('DELETE /repos/{owner}/{repo}/git/refs/{ref}', {
-                  owner,
-                  repo,
+                  owner: pullRequestRepoOwner,
+                  repo: pullRequestRepoName,
                   ref: `heads/${branchName}`,
                   headers,
                 });
