@@ -42,6 +42,14 @@ on:
         description: Pull request number override; falls back to github.event.pull_request.number when omitted
         required: false
         type: string
+      pull_request_repo_owner:
+        description: Pull request repository owner override; falls back to github.event.pull_request.base.repo.owner.login when omitted
+        required: false
+        type: string
+      pull_request_repo_name:
+        description: Pull request repository name override; falls back to github.event.pull_request.base.repo.name when omitted
+        required: false
+        type: string
       pull_request_body:
         description: Pull request body override hint; falls back to the live API body when omitted
         required: false
@@ -80,6 +88,8 @@ jobs:
           STATUS_DONE_VALUE: ${{ inputs.status_done_value }}
           PULL_REQUEST_NODE_ID: ${{ inputs.pull_request_node_id }}
           PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
+          PULL_REQUEST_REPO_OWNER: ${{ inputs.pull_request_repo_owner }}
+          PULL_REQUEST_REPO_NAME: ${{ inputs.pull_request_repo_name }}
           PULL_REQUEST_BODY: ${{ inputs.pull_request_body }}
           HEAD_REF: ${{ inputs.head_ref }}
           ACTION: ${{ inputs.action }}
@@ -98,10 +108,16 @@ jobs:
             const pullRequestBodyHint = process.env.PULL_REQUEST_BODY;
             const pullRequestNodeId = process.env.PULL_REQUEST_NODE_ID || pullRequestFromEvent?.node_id || '';
             const pullRequestNumber = Number(process.env.PULL_REQUEST_NUMBER || pullRequestFromEvent?.number || '');
+            const pullRequestRepoOwner = process.env.PULL_REQUEST_REPO_OWNER || pullRequestFromEvent?.base?.repo?.owner?.login || context.repo.owner;
+            const pullRequestRepoName = process.env.PULL_REQUEST_REPO_NAME || pullRequestFromEvent?.base?.repo?.name || context.repo.repo;
             const headRef = process.env.HEAD_REF || pullRequestFromEvent?.head?.ref || '';
 
             if (!pullRequestNodeId || !Number.isInteger(pullRequestNumber) || pullRequestNumber <= 0) {
               throw new Error('Pull request context is required. Pass pull_request_node_id and pull_request_number, or run from a pull_request event.');
+            }
+
+            if (!pullRequestRepoOwner || !pullRequestRepoName) {
+              throw new Error('Pull request repository context is required. Pass pull_request_repo_owner and pull_request_repo_name, or run from a pull_request event.');
             }
 
             const pullRequest = {
@@ -369,8 +385,8 @@ jobs:
             async function appendClosingReferenceIfMissing(issueNumber) {
               const closesRef = `Closes ${backlogRepoOwner}/${backlogRepo}#${issueNumber}`;
               const response = await github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
-                owner: backlogRepoOwner,
-                repo: backlogRepo,
+                owner: pullRequestRepoOwner,
+                repo: pullRequestRepoName,
                 pull_number: pullRequest.number,
                 headers: {
                   accept: 'application/vnd.github+json',
@@ -386,8 +402,8 @@ jobs:
 
               const suffix = `\n\n<!-- auto-linked -->\n${closesRef}`;
               await github.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', {
-                owner: backlogRepoOwner,
-                repo: backlogRepo,
+                owner: pullRequestRepoOwner,
+                repo: pullRequestRepoName,
                 pull_number: pullRequest.number,
                 body: `${currentBody}${suffix}`,
                 headers: {
@@ -396,7 +412,7 @@ jobs:
                 },
               });
 
-              core.info(`Appended closing reference ${closesRef} to PR #${pullRequest.number}.`);
+              core.info(`Appended closing reference ${closesRef} to PR ${pullRequestRepoOwner}/${pullRequestRepoName}#${pullRequest.number}.`);
             }
 
             const project = await getProjectMetadata();
