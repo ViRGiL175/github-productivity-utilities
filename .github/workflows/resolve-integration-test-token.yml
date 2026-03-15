@@ -25,6 +25,8 @@ on:
       app_private_key:
         required: false
 
+permissions: {}
+
 jobs:
   validate:
     runs-on: ubuntu-latest
