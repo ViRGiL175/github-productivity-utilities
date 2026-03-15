@@ -670,6 +670,25 @@ jobs:
                             id
                             title
                           }
+                          ... on Issue {
+                            id
+                            number
+                            title
+                          }
+                        }
+                        fieldValues(first: 20) {
+                          nodes {
+                            __typename
+                            ... on ProjectV2ItemFieldIterationValue {
+                              iterationId
+                              field {
+                                ... on ProjectV2FieldCommon {
+                                  id
+                                  name
+                                }
+                              }
+                            }
+                          }
                         }
                       }
                     }
