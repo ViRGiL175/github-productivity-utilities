@@ -62,9 +62,24 @@ on:
         description: Action override; falls back to github.event.action when omitted
         required: false
         type: string
+      auth_mode:
+        description: Auth mode used to resolve a token when project_token is not provided
+        required: false
+        default: pat
+        type: string
+      installation_owner:
+        description: Installation owner used to mint a GitHub App token when auth_mode=app
+        required: false
+        type: string
     secrets:
       project_token:
-        required: true
+        required: false
+      pat_token:
+        required: false
+      app_id:
+        required: false
+      app_private_key:
+        required: false
 
 jobs:
   sync-pr-with-project:
@@ -74,8 +89,92 @@ jobs:
       contents: read
       issues: read
       pull-requests: read
+    env:
+      AUTH_MODE: ${{ inputs.auth_mode }}
+      INSTALLATION_OWNER: ${{ inputs.installation_owner }}
+      DIRECT_TOKEN: ${{ secrets.project_token }}
+      PAT_TOKEN: ${{ secrets.pat_token }}
+      APP_ID: ${{ secrets.app_id }}
+      APP_PRIVATE_KEY: ${{ secrets.app_private_key }}
 
     steps:
+      - name: Validate workflow auth configuration
+        shell: bash
+        run: |
+          if [ -n "$DIRECT_TOKEN" ]; then
+            exit 0
+          fi
+
+          case "$AUTH_MODE" in
+            pat)
+              if [ -z "$PAT_TOKEN" ]; then
+                echo "pat_token secret is required when auth_mode=pat and project_token is not provided" >&2
+                exit 1
+              fi
+              ;;
+            app)
+              if [ -z "$APP_ID" ] || [ -z "$APP_PRIVATE_KEY" ] || [ -z "$INSTALLATION_OWNER" ]; then
+                echo "app_id, app_private_key, and installation_owner are required when auth_mode=app and project_token is not provided" >&2
+                exit 1
+              fi
+              ;;
+            *)
+              echo "Unsupported auth_mode: $AUTH_MODE" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Normalize GitHub App private key
+        if: ${{ env.DIRECT_TOKEN == '' && env.AUTH_MODE == 'app' }}
+        id: normalize-key
+        shell: bash
+        run: |
+          if [[ "$APP_PRIVATE_KEY" == *'\n'* ]]; then
+            printf 'private_key<<EOF\n%b\nEOF\n' "$APP_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          else
+            printf 'private_key<<EOF\n%s\nEOF\n' "$APP_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub App installation token
+        if: ${{ env.DIRECT_TOKEN == '' && env.AUTH_MODE == 'app' }}
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.app_id }}
+          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          owner: ${{ inputs.installation_owner }}
+          skip-token-revoke: true
+
+      - name: Resolve workflow auth token
+        id: auth
+        shell: bash
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          if [ -n "$DIRECT_TOKEN" ]; then
+            TOKEN="$DIRECT_TOKEN"
+          else
+            case "$AUTH_MODE" in
+              pat)
+                TOKEN="$PAT_TOKEN"
+                ;;
+              app)
+                TOKEN="$APP_TOKEN"
+                ;;
+              *)
+                echo "Unsupported auth_mode: $AUTH_MODE" >&2
+                exit 1
+                ;;
+            esac
+          fi
+
+          if [ -z "$TOKEN" ]; then
+            echo "Resolved token is empty" >&2
+            exit 1
+          fi
+
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
       - name: Sync PR metadata with project
         uses: actions/github-script@v8
         env:
@@ -94,7 +193,7 @@ jobs:
           HEAD_REF: ${{ inputs.head_ref }}
           ACTION: ${{ inputs.action }}
         with:
-          github-token: ${{ secrets.project_token }}
+          github-token: ${{ steps.auth.outputs.token }}
           script: |
             const projectOwner = process.env.PROJECT_OWNER;
             const projectNumber = Number(process.env.PROJECT_NUMBER);
