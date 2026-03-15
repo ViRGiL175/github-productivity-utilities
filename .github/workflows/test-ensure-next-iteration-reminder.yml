@@ -364,7 +364,7 @@ jobs:
     uses: ./.github/workflows/ensure-next-iteration-reminder.yml
     with:
       project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-      project_number: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10' }}
+      project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
       iteration_field_name: Iteration
       reminder_title: ${{ needs.prepare-reminder-create-scenario.outputs.reminder_title }}
       current_date_override: ${{ needs.prepare-reminder-create-scenario.outputs.current_date_override }}
@@ -557,7 +557,7 @@ jobs:
     uses: ./.github/workflows/ensure-next-iteration-reminder.yml
     with:
       project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-      project_number: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10' }}
+      project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
       iteration_field_name: Iteration
       reminder_title: ${{ needs.prepare-reminder-create-scenario.outputs.reminder_title }}
       current_date_override: ${{ needs.prepare-reminder-create-scenario.outputs.current_date_override }}
@@ -1102,7 +1102,7 @@ jobs:
     uses: ./.github/workflows/ensure-next-iteration-reminder.yml
     with:
       project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-      project_number: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10' }}
+      project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
       iteration_field_name: Iteration
       reminder_title: ${{ needs.prepare-reminder-empty-current-scenario.outputs.reminder_title }}
       current_date_override: ${{ needs.prepare-reminder-empty-current-scenario.outputs.current_date_override }}

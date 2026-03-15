@@ -402,7 +402,7 @@ jobs:
     uses: ./.github/workflows/link-pr-to-project.yml
     with:
       project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-      project_number: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10' }}
+      project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
       backlog_repo: ${{ needs.prepare-link-scenario.outputs.backlog_repo_name }}
       backlog_repo_owner: ${{ needs.prepare-link-scenario.outputs.backlog_repo_owner }}
       iteration_field_name: Iteration
@@ -605,7 +605,7 @@ jobs:
     uses: ./.github/workflows/link-pr-to-project.yml
     with:
       project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-      project_number: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10' }}
+      project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
       backlog_repo: ${{ needs.prepare-link-scenario.outputs.backlog_repo_name }}
       backlog_repo_owner: ${{ needs.prepare-link-scenario.outputs.backlog_repo_owner }}
       iteration_field_name: Iteration
@@ -892,7 +892,7 @@ jobs:
     uses: ./.github/workflows/link-pr-to-project.yml
     with:
       project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-      project_number: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10' }}
+      project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
       backlog_repo: ${{ needs.prepare-link-scenario.outputs.backlog_repo_name }}
       backlog_repo_owner: ${{ needs.prepare-link-scenario.outputs.backlog_repo_owner }}
       iteration_field_name: Iteration
