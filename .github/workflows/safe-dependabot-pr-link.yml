@@ -1,0 +1,491 @@
+name: Safe Dependabot PR link
+
+on:
+  workflow_call:
+    inputs:
+      project_owner:
+        description: Login of the organization or user that owns the Project V2 board
+        required: true
+        type: string
+      project_number:
+        description: Project V2 number
+        required: true
+        type: number
+      repositories_json:
+        description: JSON array of repository names or owner/name entries to reconcile
+        required: true
+        type: string
+      repository_owner:
+        description: Default owner used when repositories_json entries omit the owner; defaults to project_owner
+        required: false
+        type: string
+      status_field_name:
+        description: Name of the project single-select status field
+        required: false
+        default: Status
+        type: string
+      status_start_value:
+        description: Status value to set for open PRs
+        required: false
+        default: To do
+        type: string
+      status_final_value:
+        description: Status value to set for closed PRs
+        required: false
+        default: Done
+        type: string
+      dependabot_login:
+        description: Login of the bot account whose PRs should be reconciled
+        required: false
+        default: dependabot[bot]
+        type: string
+      max_pull_requests_per_repo:
+        description: Maximum number of open and closed PRs to inspect per repository
+        required: false
+        default: 50
+        type: number
+      closed_lookback_days:
+        description: Ignore closed PRs updated before now minus this many days; set negative to disable cutoff
+        required: false
+        default: 30
+        type: number
+      auth_mode:
+        description: Auth mode used to resolve a token when project_token is not provided
+        required: false
+        default: pat
+        type: string
+      installation_owner:
+        description: Installation owner used to mint a GitHub App token when auth_mode=app
+        required: false
+        type: string
+    secrets:
+      project_token:
+        required: false
+      pat_token:
+        required: false
+      app_id:
+        required: false
+      app_private_key:
+        required: false
+
+jobs:
+  safe-dependabot-pr-link:
+    name: Reconcile Dependabot PR links
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    env:
+      AUTH_MODE: ${{ inputs.auth_mode }}
+      INSTALLATION_OWNER: ${{ inputs.installation_owner }}
+      DIRECT_TOKEN: ${{ secrets.project_token }}
+      PAT_TOKEN: ${{ secrets.pat_token }}
+      APP_ID: ${{ secrets.app_id }}
+      APP_PRIVATE_KEY: ${{ secrets.app_private_key }}
+
+    steps:
+      - name: Validate workflow auth configuration
+        shell: bash
+        run: |
+          if [ -n "$DIRECT_TOKEN" ]; then
+            exit 0
+          fi
+
+          case "$AUTH_MODE" in
+            pat)
+              if [ -z "$PAT_TOKEN" ]; then
+                echo "pat_token secret is required when auth_mode=pat and project_token is not provided" >&2
+                exit 1
+              fi
+              ;;
+            app)
+              if [ -z "$APP_ID" ] || [ -z "$APP_PRIVATE_KEY" ] || [ -z "$INSTALLATION_OWNER" ]; then
+                echo "app_id, app_private_key, and installation_owner are required when auth_mode=app and project_token is not provided" >&2
+                exit 1
+              fi
+              ;;
+            *)
+              echo "Unsupported auth_mode: $AUTH_MODE" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Normalize GitHub App private key
+        if: ${{ env.DIRECT_TOKEN == '' && env.AUTH_MODE == 'app' }}
+        id: normalize-key
+        shell: bash
+        run: |
+          if [[ "$APP_PRIVATE_KEY" == *'\n'* ]]; then
+            printf 'private_key<<EOF\n%b\nEOF\n' "$APP_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          else
+            printf 'private_key<<EOF\n%s\nEOF\n' "$APP_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub App installation token
+        if: ${{ env.DIRECT_TOKEN == '' && env.AUTH_MODE == 'app' }}
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.app_id }}
+          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          owner: ${{ inputs.installation_owner }}
+          skip-token-revoke: true
+
+      - name: Resolve workflow auth token
+        id: auth
+        shell: bash
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          if [ -n "$DIRECT_TOKEN" ]; then
+            TOKEN="$DIRECT_TOKEN"
+          else
+            case "$AUTH_MODE" in
+              pat)
+                TOKEN="$PAT_TOKEN"
+                ;;
+              app)
+                TOKEN="$APP_TOKEN"
+                ;;
+              *)
+                echo "Unsupported auth_mode: $AUTH_MODE" >&2
+                exit 1
+                ;;
+            esac
+          fi
+
+          if [ -z "$TOKEN" ]; then
+            echo "Resolved token is empty" >&2
+            exit 1
+          fi
+
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Reconcile Dependabot PR project links
+        uses: actions/github-script@v8
+        env:
+          PROJECT_OWNER: ${{ inputs.project_owner }}
+          PROJECT_NUMBER: ${{ inputs.project_number }}
+          REPOSITORIES_JSON: ${{ inputs.repositories_json }}
+          REPOSITORY_OWNER: ${{ inputs.repository_owner || inputs.project_owner }}
+          STATUS_FIELD_NAME: ${{ inputs.status_field_name }}
+          STATUS_START_VALUE: ${{ inputs.status_start_value }}
+          STATUS_FINAL_VALUE: ${{ inputs.status_final_value }}
+          DEPENDABOT_LOGIN: ${{ inputs.dependabot_login }}
+          MAX_PULL_REQUESTS_PER_REPO: ${{ inputs.max_pull_requests_per_repo }}
+          CLOSED_LOOKBACK_DAYS: ${{ inputs.closed_lookback_days }}
+        with:
+          github-token: ${{ steps.auth.outputs.token }}
+          script: |
+            const projectOwner = process.env.PROJECT_OWNER;
+            const projectNumber = Number(process.env.PROJECT_NUMBER);
+            const repositoriesJson = process.env.REPOSITORIES_JSON;
+            const defaultRepositoryOwner = process.env.REPOSITORY_OWNER || projectOwner;
+            const statusFieldName = process.env.STATUS_FIELD_NAME;
+            const statusStartValue = process.env.STATUS_START_VALUE;
+            const statusFinalValue = process.env.STATUS_FINAL_VALUE;
+            const dependabotLogin = process.env.DEPENDABOT_LOGIN || 'dependabot[bot]';
+            const maxPullRequestsPerRepo = Number(process.env.MAX_PULL_REQUESTS_PER_REPO || '50');
+            const closedLookbackDays = Number(process.env.CLOSED_LOOKBACK_DAYS || '30');
+
+            const headers = {
+              accept: 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+            };
+
+            const ORGANIZATION_PROJECT_QUERY = `
+              query($owner: String!, $number: Int!) {
+                organization(login: $owner) {
+                  projectV2(number: $number) {
+                    id
+                    title
+                    fields(first: 100) {
+                      nodes {
+                        __typename
+                        ... on ProjectV2FieldCommon {
+                          id
+                          name
+                        }
+                        ... on ProjectV2SingleSelectField {
+                          options {
+                            id
+                            name
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const USER_PROJECT_QUERY = `
+              query($owner: String!, $number: Int!) {
+                user(login: $owner) {
+                  projectV2(number: $number) {
+                    id
+                    title
+                    fields(first: 100) {
+                      nodes {
+                        __typename
+                        ... on ProjectV2FieldCommon {
+                          id
+                          name
+                        }
+                        ... on ProjectV2SingleSelectField {
+                          options {
+                            id
+                            name
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const PULL_REQUEST_PROJECT_ITEMS_QUERY = `
+              query($nodeId: ID!, $statusFieldName: String!) {
+                node(id: $nodeId) {
+                  ... on PullRequest {
+                    projectItems(first: 100) {
+                      nodes {
+                        id
+                        project {
+                          id
+                        }
+                        fieldValueByName(name: $statusFieldName) {
+                          ... on ProjectV2ItemFieldSingleSelectValue {
+                            name
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const ADD_PROJECT_ITEM_MUTATION = `
+              mutation($projectId: ID!, $contentId: ID!) {
+                addProjectV2ItemById(input: { projectId: $projectId, contentId: $contentId }) {
+                  item {
+                    id
+                  }
+                }
+              }
+            `;
+
+            const UPDATE_STATUS_MUTATION = `
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $projectId
+                  itemId: $itemId
+                  fieldId: $fieldId
+                  value: { singleSelectOptionId: $optionId }
+                }) {
+                  projectV2Item {
+                    id
+                  }
+                }
+              }
+            `;
+
+            function parseRepositories(value, ownerFallback) {
+              const parsed = JSON.parse(value);
+              if (!Array.isArray(parsed) || parsed.length === 0) {
+                throw new Error('repositories_json must be a non-empty JSON array.');
+              }
+
+              const uniqueRepositories = new Map();
+              for (const entry of parsed) {
+                if (typeof entry !== 'string' || entry.trim() === '') {
+                  throw new Error('Each repositories_json entry must be a non-empty string.');
+                }
+
+                const parts = entry.split('/').filter(Boolean);
+                const owner = parts.length === 1 ? ownerFallback : parts[0];
+                const repo = parts.length === 1 ? parts[0] : parts[1];
+                if (!owner || !repo || parts.length > 2) {
+                  throw new Error(`Invalid repository entry: ${entry}`);
+                }
+
+                uniqueRepositories.set(`${owner}/${repo}`, { owner, repo, nameWithOwner: `${owner}/${repo}` });
+              }
+
+              return [...uniqueRepositories.values()];
+            }
+
+            function getClosedCutoffDate(days) {
+              if (days < 0) {
+                return null;
+              }
+
+              const cutoff = new Date();
+              cutoff.setUTCDate(cutoff.getUTCDate() - days);
+              return cutoff;
+            }
+
+            async function getProjectOwnerType(ownerLogin) {
+              const response = await github.request('GET /users/{username}', {
+                username: ownerLogin,
+                headers,
+              });
+
+              return response.data.type;
+            }
+
+            async function getProjectMetadata() {
+              const ownerType = await getProjectOwnerType(projectOwner);
+              const query = ownerType === 'Organization' ? ORGANIZATION_PROJECT_QUERY : USER_PROJECT_QUERY;
+              const data = await github.graphql(query, {
+                owner: projectOwner,
+                number: projectNumber,
+              });
+
+              const project = ownerType === 'Organization' ? data.organization?.projectV2 : data.user?.projectV2;
+              if (!project) {
+                throw new Error(`Project ${projectOwner}#${projectNumber} was not found.`);
+              }
+
+              const statusField = project.fields.nodes.find((field) =>
+                field?.__typename === 'ProjectV2SingleSelectField' && field.name === statusFieldName,
+              );
+              if (!statusField) {
+                throw new Error(`Status field "${statusFieldName}" was not found in project ${projectOwner}#${projectNumber}.`);
+              }
+
+              const startOption = statusField.options?.find((option) => option.name === statusStartValue);
+              const finalOption = statusField.options?.find((option) => option.name === statusFinalValue);
+              if (!startOption || !finalOption) {
+                throw new Error(`Required status options were not found in field ${statusFieldName}.`);
+              }
+
+              return {
+                projectId: project.id,
+                projectTitle: project.title,
+                statusFieldId: statusField.id,
+                startOptionId: startOption.id,
+                finalOptionId: finalOption.id,
+              };
+            }
+
+            async function listDependabotPullRequests(owner, repo, state, cutoffDate) {
+              const result = [];
+              const perPage = Math.min(100, maxPullRequestsPerRepo);
+
+              for (let page = 1; result.length < maxPullRequestsPerRepo; page += 1) {
+                const response = await github.request('GET /repos/{owner}/{repo}/pulls', {
+                  owner,
+                  repo,
+                  state,
+                  sort: 'updated',
+                  direction: 'desc',
+                  per_page: perPage,
+                  page,
+                  headers,
+                });
+
+                if (response.data.length === 0) {
+                  break;
+                }
+
+                let reachedCutoff = false;
+                for (const pullRequest of response.data) {
+                  if (state === 'closed' && cutoffDate && new Date(pullRequest.updated_at) < cutoffDate) {
+                    reachedCutoff = true;
+                    break;
+                  }
+
+                  if (pullRequest.user?.login === dependabotLogin) {
+                    result.push(pullRequest);
+                  }
+
+                  if (result.length >= maxPullRequestsPerRepo) {
+                    break;
+                  }
+                }
+
+                if (response.data.length < perPage || reachedCutoff) {
+                  break;
+                }
+              }
+
+              return result;
+            }
+
+            let project;
+
+            async function getProjectItem(nodeId) {
+              const data = await github.graphql(PULL_REQUEST_PROJECT_ITEMS_QUERY, {
+                nodeId,
+                statusFieldName,
+              });
+
+              return data.node?.projectItems?.nodes?.find((item) => item.project?.id === project.projectId) ?? null;
+            }
+
+            async function addProjectItem(nodeId) {
+              const data = await github.graphql(ADD_PROJECT_ITEM_MUTATION, {
+                projectId: project.projectId,
+                contentId: nodeId,
+              });
+
+              return data.addProjectV2ItemById.item.id;
+            }
+
+            async function setStatus(itemId, optionId) {
+              await github.graphql(UPDATE_STATUS_MUTATION, {
+                projectId: project.projectId,
+                itemId,
+                fieldId: project.statusFieldId,
+                optionId,
+              });
+            }
+
+            async function reconcilePullRequest(repository, pullRequest, targetStatusName, targetOptionId, counters) {
+              let projectItem = await getProjectItem(pullRequest.node_id);
+              let itemId = projectItem?.id;
+
+              if (!itemId) {
+                itemId = await addProjectItem(pullRequest.node_id);
+                projectItem = { id: itemId, fieldValueByName: null };
+                counters.added += 1;
+                core.info(`Added ${repository.nameWithOwner}#${pullRequest.number} to project ${projectOwner}#${projectNumber}.`);
+              }
+
+              const currentStatus = projectItem.fieldValueByName?.name ?? null;
+              if (currentStatus === targetStatusName) {
+                counters.unchanged += 1;
+                return;
+              }
+
+              await setStatus(itemId, targetOptionId);
+              counters.updated += 1;
+              core.info(`Set status ${statusFieldName}=${targetStatusName} for ${repository.nameWithOwner}#${pullRequest.number}.`);
+            }
+
+            const repositories = parseRepositories(repositoriesJson, defaultRepositoryOwner);
+            const closedCutoffDate = getClosedCutoffDate(closedLookbackDays);
+            project = await getProjectMetadata();
+            const counters = { added: 0, updated: 0, unchanged: 0, openSeen: 0, closedSeen: 0 };
+
+            core.info(`Resolved project "${project.projectTitle}" (${projectOwner}#${projectNumber}).`);
+
+            for (const repository of repositories) {
+              const openPullRequests = await listDependabotPullRequests(repository.owner, repository.repo, 'open', null);
+              counters.openSeen += openPullRequests.length;
+              for (const pullRequest of openPullRequests) {
+                await reconcilePullRequest(repository, pullRequest, statusStartValue, project.startOptionId, counters);
+              }
+
+              const closedPullRequests = await listDependabotPullRequests(repository.owner, repository.repo, 'closed', closedCutoffDate);
+              counters.closedSeen += closedPullRequests.length;
+              for (const pullRequest of closedPullRequests) {
+                await reconcilePullRequest(repository, pullRequest, statusFinalValue, project.finalOptionId, counters);
+              }
+            }
+
+            core.notice(`Dependabot reconciliation complete. Open seen: ${counters.openSeen}. Closed seen: ${counters.closedSeen}. Added: ${counters.added}. Updated: ${counters.updated}. Unchanged: ${counters.unchanged}.`);
