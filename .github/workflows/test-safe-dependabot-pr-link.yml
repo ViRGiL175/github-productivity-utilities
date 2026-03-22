@@ -65,6 +65,56 @@ jobs:
       open_branch_name: ${{ steps.prepare.outputs.open_branch_name }}
       closed_branch_name: ${{ steps.prepare.outputs.closed_branch_name }}
     steps:
+      - name: Normalize GitHub App private key
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: normalize-key
+        shell: bash
+        env:
+          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+        run: |
+          if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
+            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          else
+            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub App installation token
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          owner: ${{ env.INSTALLATION_OWNER }}
+          skip-token-revoke: true
+
+      - name: Resolve job auth token
+        id: auth
+        shell: bash
+        env:
+          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          case "$AUTH_MODE" in
+            pat)
+              TOKEN="$DIRECT_TOKEN"
+              ;;
+            app)
+              TOKEN="$APP_TOKEN"
+              ;;
+            *)
+              echo "Unsupported auth mode: $AUTH_MODE" >&2
+              exit 1
+              ;;
+          esac
+
+          if [ -z "$TOKEN" ]; then
+            echo "Resolved token is empty for auth_mode=$AUTH_MODE" >&2
+            exit 1
+          fi
+
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
       - name: Create open and closed PR fixtures
         id: prepare
         uses: actions/github-script@v8
@@ -79,7 +129,7 @@ jobs:
           OPEN_FILE_PATH: itest/safe-open-${{ github.run_id }}.txt
           CLOSED_FILE_PATH: itest/safe-closed-${{ github.run_id }}.txt
         with:
-          github-token: ${{ needs.resolve-auth.outputs.token }}
+          github-token: ${{ steps.auth.outputs.token }}
           script: |
             const projectOwner = process.env.PROJECT_OWNER;
             const projectNumber = Number(process.env.PROJECT_NUMBER);
@@ -220,6 +270,56 @@ jobs:
       - run-safe-scenario
     runs-on: ubuntu-latest
     steps:
+      - name: Normalize GitHub App private key
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: normalize-key
+        shell: bash
+        env:
+          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+        run: |
+          if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
+            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          else
+            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub App installation token
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          owner: ${{ env.INSTALLATION_OWNER }}
+          skip-token-revoke: true
+
+      - name: Resolve job auth token
+        id: auth
+        shell: bash
+        env:
+          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          case "$AUTH_MODE" in
+            pat)
+              TOKEN="$DIRECT_TOKEN"
+              ;;
+            app)
+              TOKEN="$APP_TOKEN"
+              ;;
+            *)
+              echo "Unsupported auth mode: $AUTH_MODE" >&2
+              exit 1
+              ;;
+          esac
+
+          if [ -z "$TOKEN" ]; then
+            echo "Resolved token is empty for auth_mode=$AUTH_MODE" >&2
+            exit 1
+          fi
+
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
       - name: Assert open and closed statuses
         uses: actions/github-script@v8
         env:
@@ -230,7 +330,7 @@ jobs:
           OPEN_PULL_NODE_ID: ${{ needs.prepare-safe-scenario.outputs.open_pull_node_id }}
           CLOSED_PULL_NODE_ID: ${{ needs.prepare-safe-scenario.outputs.closed_pull_node_id }}
         with:
-          github-token: ${{ needs.resolve-auth.outputs.token }}
+          github-token: ${{ steps.auth.outputs.token }}
           script: |
             const projectId = process.env.PROJECT_ID;
             const statusFieldName = process.env.STATUS_FIELD_NAME;
@@ -305,6 +405,56 @@ jobs:
       - rerun-safe-scenario
     runs-on: ubuntu-latest
     steps:
+      - name: Normalize GitHub App private key
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: normalize-key
+        shell: bash
+        env:
+          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+        run: |
+          if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
+            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          else
+            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub App installation token
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          owner: ${{ env.INSTALLATION_OWNER }}
+          skip-token-revoke: true
+
+      - name: Resolve job auth token
+        id: auth
+        shell: bash
+        env:
+          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          case "$AUTH_MODE" in
+            pat)
+              TOKEN="$DIRECT_TOKEN"
+              ;;
+            app)
+              TOKEN="$APP_TOKEN"
+              ;;
+            *)
+              echo "Unsupported auth mode: $AUTH_MODE" >&2
+              exit 1
+              ;;
+          esac
+
+          if [ -z "$TOKEN" ]; then
+            echo "Resolved token is empty for auth_mode=$AUTH_MODE" >&2
+            exit 1
+          fi
+
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
       - name: Assert no duplicates were created
         uses: actions/github-script@v8
         env:
@@ -313,7 +463,7 @@ jobs:
           OPEN_PULL_NODE_ID: ${{ needs.prepare-safe-scenario.outputs.open_pull_node_id }}
           CLOSED_PULL_NODE_ID: ${{ needs.prepare-safe-scenario.outputs.closed_pull_node_id }}
         with:
-          github-token: ${{ needs.resolve-auth.outputs.token }}
+          github-token: ${{ steps.auth.outputs.token }}
           script: |
             const projectId = process.env.PROJECT_ID;
             const statusFieldName = process.env.STATUS_FIELD_NAME;
@@ -361,6 +511,56 @@ jobs:
       - assert-safe-idempotency
     runs-on: ubuntu-latest
     steps:
+      - name: Normalize GitHub App private key
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: normalize-key
+        shell: bash
+        env:
+          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+        run: |
+          if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
+            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          else
+            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub App installation token
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          owner: ${{ env.INSTALLATION_OWNER }}
+          skip-token-revoke: true
+
+      - name: Resolve job auth token
+        id: auth
+        shell: bash
+        env:
+          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          case "$AUTH_MODE" in
+            pat)
+              TOKEN="$DIRECT_TOKEN"
+              ;;
+            app)
+              TOKEN="$APP_TOKEN"
+              ;;
+            *)
+              echo "Unsupported auth mode: $AUTH_MODE" >&2
+              exit 1
+              ;;
+          esac
+
+          if [ -z "$TOKEN" ]; then
+            echo "Resolved token is empty for auth_mode=$AUTH_MODE" >&2
+            exit 1
+          fi
+
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
       - name: Remove project items, close PRs, and delete branches
         uses: actions/github-script@v8
         env:
@@ -375,7 +575,7 @@ jobs:
           CLOSED_BRANCH_NAME: ${{ needs.prepare-safe-scenario.outputs.closed_branch_name }}
           STATUS_FIELD_NAME: ${{ env.STATUS_FIELD_NAME }}
         with:
-          github-token: ${{ needs.resolve-auth.outputs.token }}
+          github-token: ${{ steps.auth.outputs.token }}
           script: |
             const projectId = process.env.PROJECT_ID;
             const owner = process.env.REPO_OWNER;
