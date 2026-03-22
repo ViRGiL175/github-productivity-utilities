@@ -1,0 +1,467 @@
+# Integration test: создаёт открытый и закрытый PR в sandbox-репозитории,
+# запускает safe reconciler и проверяет стартовый/финальный статус и идемпотентность.
+name: Test safe-dependabot-pr-link
+
+on:
+  workflow_dispatch:
+    inputs:
+      auth_mode:
+        description: Token source to use for integration tests (pat=user sandbox, app=org sandbox)
+        required: false
+        default: pat
+        type: choice
+        options:
+          - pat
+          - app
+  pull_request:
+    paths:
+      - '.github/workflows/safe-dependabot-pr-link.yml'
+      - '.github/workflows/test-safe-dependabot-pr-link.yml'
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+env:
+  AUTH_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
+  INSTALLATION_OWNER: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+  PROJECT_OWNER: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+  PROJECT_NUMBER: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10' }}
+  STATUS_FIELD_NAME: Status
+  STATUS_START_VALUE: To do
+  STATUS_FINAL_VALUE: Done
+  REPO_OWNER: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+  REPO_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'test-client' || 'github-productivity-utilities' }}
+  DEFAULT_BRANCH: main
+
+jobs:
+  resolve-auth:
+    name: Resolve integration auth token
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    uses: ./.github/workflows/resolve-integration-test-token.yml
+    with:
+      auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
+      installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+    secrets:
+      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
+      app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+      app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+
+  prepare-safe-scenario:
+    name: Prepare safe Dependabot link scenario
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    needs: resolve-auth
+    outputs:
+      project_id: ${{ steps.prepare.outputs.project_id }}
+      bot_login: ${{ steps.prepare.outputs.bot_login }}
+      repo_owner: ${{ steps.prepare.outputs.repo_owner }}
+      repo_name: ${{ steps.prepare.outputs.repo_name }}
+      open_pull_number: ${{ steps.prepare.outputs.open_pull_number }}
+      open_pull_node_id: ${{ steps.prepare.outputs.open_pull_node_id }}
+      closed_pull_number: ${{ steps.prepare.outputs.closed_pull_number }}
+      closed_pull_node_id: ${{ steps.prepare.outputs.closed_pull_node_id }}
+      open_branch_name: ${{ steps.prepare.outputs.open_branch_name }}
+      closed_branch_name: ${{ steps.prepare.outputs.closed_branch_name }}
+    steps:
+      - name: Create open and closed PR fixtures
+        id: prepare
+        uses: actions/github-script@v8
+        env:
+          PROJECT_OWNER: ${{ env.PROJECT_OWNER }}
+          PROJECT_NUMBER: ${{ env.PROJECT_NUMBER }}
+          REPO_OWNER: ${{ env.REPO_OWNER }}
+          REPO_NAME: ${{ env.REPO_NAME }}
+          DEFAULT_BRANCH: ${{ env.DEFAULT_BRANCH }}
+          OPEN_BRANCH_NAME: itest-safe-open-${{ github.run_id }}
+          CLOSED_BRANCH_NAME: itest-safe-closed-${{ github.run_id }}
+          OPEN_FILE_PATH: itest/safe-open-${{ github.run_id }}.txt
+          CLOSED_FILE_PATH: itest/safe-closed-${{ github.run_id }}.txt
+        with:
+          github-token: ${{ needs.resolve-auth.outputs.token }}
+          script: |
+            const projectOwner = process.env.PROJECT_OWNER;
+            const projectNumber = Number(process.env.PROJECT_NUMBER);
+            const owner = process.env.REPO_OWNER;
+            const repo = process.env.REPO_NAME;
+            const defaultBranch = process.env.DEFAULT_BRANCH;
+            const openBranchName = process.env.OPEN_BRANCH_NAME;
+            const closedBranchName = process.env.CLOSED_BRANCH_NAME;
+            const openFilePath = process.env.OPEN_FILE_PATH;
+            const closedFilePath = process.env.CLOSED_FILE_PATH;
+            const headers = {
+              accept: 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+            };
+
+            const ORGANIZATION_PROJECT_QUERY = `
+              query($owner: String!, $number: Int!) {
+                organization(login: $owner) {
+                  projectV2(number: $number) { id }
+                }
+              }
+            `;
+
+            const USER_PROJECT_QUERY = `
+              query($owner: String!, $number: Int!) {
+                user(login: $owner) {
+                  projectV2(number: $number) { id }
+                }
+              }
+            `;
+
+            async function getProjectId() {
+              const ownerType = (await github.request('GET /users/{username}', { username: projectOwner, headers })).data.type;
+              const data = await github.graphql(ownerType === 'Organization' ? ORGANIZATION_PROJECT_QUERY : USER_PROJECT_QUERY, {
+                owner: projectOwner,
+                number: projectNumber,
+              });
+              return ownerType === 'Organization' ? data.organization?.projectV2?.id : data.user?.projectV2?.id;
+            }
+
+            async function createBranch(branchName) {
+              const baseRef = await github.request('GET /repos/{owner}/{repo}/git/ref/{ref}', {
+                owner,
+                repo,
+                ref: `heads/${defaultBranch}`,
+                headers,
+              });
+
+              await github.request('POST /repos/{owner}/{repo}/git/refs', {
+                owner,
+                repo,
+                ref: `refs/heads/${branchName}`,
+                sha: baseRef.data.object.sha,
+                headers,
+              });
+            }
+
+            async function commitFixture(branchName, filePath, text) {
+              await github.request('PUT /repos/{owner}/{repo}/contents/{path}', {
+                owner,
+                repo,
+                path: filePath,
+                message: `ITEST safe-dependabot fixture ${context.runId}`,
+                content: Buffer.from(`${text}\n`).toString('base64'),
+                branch: branchName,
+                headers,
+              });
+            }
+
+            async function createPullRequest(branchName, title, body) {
+              const response = await github.request('POST /repos/{owner}/{repo}/pulls', {
+                owner,
+                repo,
+                title,
+                head: branchName,
+                base: defaultBranch,
+                body,
+                headers,
+              });
+              return response.data;
+            }
+
+            await createBranch(openBranchName);
+            await commitFixture(openBranchName, openFilePath, `safe open fixture for run ${context.runId}`);
+            const openPullRequest = await createPullRequest(openBranchName, `ITEST-${context.runId} safe open PR`, 'open fixture');
+
+            await createBranch(closedBranchName);
+            await commitFixture(closedBranchName, closedFilePath, `safe closed fixture for run ${context.runId}`);
+            const closedPullRequest = await createPullRequest(closedBranchName, `ITEST-${context.runId} safe closed PR`, 'closed fixture');
+            await github.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', {
+              owner,
+              repo,
+              pull_number: closedPullRequest.number,
+              state: 'closed',
+              headers,
+            });
+
+            core.setOutput('project_id', await getProjectId());
+            core.setOutput('bot_login', openPullRequest.user?.login || closedPullRequest.user?.login || context.actor);
+            core.setOutput('repo_owner', owner);
+            core.setOutput('repo_name', repo);
+            core.setOutput('open_pull_number', String(openPullRequest.number));
+            core.setOutput('open_pull_node_id', openPullRequest.node_id);
+            core.setOutput('closed_pull_number', String(closedPullRequest.number));
+            core.setOutput('closed_pull_node_id', closedPullRequest.node_id);
+            core.setOutput('open_branch_name', openBranchName);
+            core.setOutput('closed_branch_name', closedBranchName);
+
+  run-safe-scenario:
+    name: Run safe Dependabot link scenario
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs:
+      - prepare-safe-scenario
+    uses: ./.github/workflows/safe-dependabot-pr-link.yml
+    with:
+      project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+      project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
+      repositories_json: ${{ format('["{0}/{1}"]', needs.prepare-safe-scenario.outputs.repo_owner, needs.prepare-safe-scenario.outputs.repo_name) }}
+      status_field_name: Status
+      status_start_value: To do
+      status_final_value: Done
+      dependabot_login: ${{ needs.prepare-safe-scenario.outputs.bot_login }}
+      max_pull_requests_per_repo: 20
+      closed_lookback_days: 7
+      auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
+      installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+    secrets:
+      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
+      app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+      app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+
+  assert-safe-scenario:
+    name: Assert safe Dependabot link scenario
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs:
+      - resolve-auth
+      - prepare-safe-scenario
+      - run-safe-scenario
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assert open and closed statuses
+        uses: actions/github-script@v8
+        env:
+          PROJECT_ID: ${{ needs.prepare-safe-scenario.outputs.project_id }}
+          STATUS_FIELD_NAME: ${{ env.STATUS_FIELD_NAME }}
+          STATUS_START_VALUE: ${{ env.STATUS_START_VALUE }}
+          STATUS_FINAL_VALUE: ${{ env.STATUS_FINAL_VALUE }}
+          OPEN_PULL_NODE_ID: ${{ needs.prepare-safe-scenario.outputs.open_pull_node_id }}
+          CLOSED_PULL_NODE_ID: ${{ needs.prepare-safe-scenario.outputs.closed_pull_node_id }}
+        with:
+          github-token: ${{ needs.resolve-auth.outputs.token }}
+          script: |
+            const projectId = process.env.PROJECT_ID;
+            const statusFieldName = process.env.STATUS_FIELD_NAME;
+            const statusStartValue = process.env.STATUS_START_VALUE;
+            const statusFinalValue = process.env.STATUS_FINAL_VALUE;
+            const openPullNodeId = process.env.OPEN_PULL_NODE_ID;
+            const closedPullNodeId = process.env.CLOSED_PULL_NODE_ID;
+
+            const QUERY = `
+              query($nodeId: ID!, $statusFieldName: String!) {
+                node(id: $nodeId) {
+                  ... on PullRequest {
+                    projectItems(first: 100) {
+                      nodes {
+                        id
+                        project { id }
+                        fieldValueByName(name: $statusFieldName) {
+                          ... on ProjectV2ItemFieldSingleSelectValue { name }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            async function assertStatus(nodeId, expectedStatus) {
+              const data = await github.graphql(QUERY, { nodeId, statusFieldName });
+              const items = data.node?.projectItems?.nodes?.filter((item) => item.project?.id === projectId) ?? [];
+              if (items.length !== 1) {
+                throw new Error(`Expected exactly one project item for ${nodeId}, got ${items.length}.`);
+              }
+              const actualStatus = items[0].fieldValueByName?.name ?? null;
+              if (actualStatus !== expectedStatus) {
+                throw new Error(`Expected status ${expectedStatus}, got ${actualStatus || 'none'}.`);
+              }
+            }
+
+            await assertStatus(openPullNodeId, statusStartValue);
+            await assertStatus(closedPullNodeId, statusFinalValue);
+
+  rerun-safe-scenario:
+    name: Rerun safe Dependabot link scenario for idempotency
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs:
+      - prepare-safe-scenario
+      - assert-safe-scenario
+    uses: ./.github/workflows/safe-dependabot-pr-link.yml
+    with:
+      project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+      project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
+      repositories_json: ${{ format('["{0}/{1}"]', needs.prepare-safe-scenario.outputs.repo_owner, needs.prepare-safe-scenario.outputs.repo_name) }}
+      status_field_name: Status
+      status_start_value: To do
+      status_final_value: Done
+      dependabot_login: ${{ needs.prepare-safe-scenario.outputs.bot_login }}
+      max_pull_requests_per_repo: 20
+      closed_lookback_days: 7
+      auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
+      installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+    secrets:
+      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
+      app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+      app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+
+  assert-safe-idempotency:
+    name: Assert safe Dependabot link idempotency
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs:
+      - resolve-auth
+      - prepare-safe-scenario
+      - rerun-safe-scenario
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assert no duplicates were created
+        uses: actions/github-script@v8
+        env:
+          PROJECT_ID: ${{ needs.prepare-safe-scenario.outputs.project_id }}
+          STATUS_FIELD_NAME: ${{ env.STATUS_FIELD_NAME }}
+          OPEN_PULL_NODE_ID: ${{ needs.prepare-safe-scenario.outputs.open_pull_node_id }}
+          CLOSED_PULL_NODE_ID: ${{ needs.prepare-safe-scenario.outputs.closed_pull_node_id }}
+        with:
+          github-token: ${{ needs.resolve-auth.outputs.token }}
+          script: |
+            const projectId = process.env.PROJECT_ID;
+            const statusFieldName = process.env.STATUS_FIELD_NAME;
+            const openPullNodeId = process.env.OPEN_PULL_NODE_ID;
+            const closedPullNodeId = process.env.CLOSED_PULL_NODE_ID;
+
+            const QUERY = `
+              query($nodeId: ID!, $statusFieldName: String!) {
+                node(id: $nodeId) {
+                  ... on PullRequest {
+                    projectItems(first: 100) {
+                      nodes {
+                        id
+                        project { id }
+                        fieldValueByName(name: $statusFieldName) {
+                          ... on ProjectV2ItemFieldSingleSelectValue { name }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            async function assertSingleItem(nodeId) {
+              const data = await github.graphql(QUERY, { nodeId, statusFieldName });
+              const items = data.node?.projectItems?.nodes?.filter((item) => item.project?.id === projectId) ?? [];
+              if (items.length !== 1) {
+                throw new Error(`Expected exactly one project item for ${nodeId} after rerun, got ${items.length}.`);
+              }
+            }
+
+            await assertSingleItem(openPullNodeId);
+            await assertSingleItem(closedPullNodeId);
+
+  cleanup-safe-scenario:
+    name: Cleanup safe Dependabot link scenario
+    if: ${{ always() && needs.prepare-safe-scenario.outputs.open_pull_number != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    needs:
+      - resolve-auth
+      - prepare-safe-scenario
+      - run-safe-scenario
+      - assert-safe-scenario
+      - rerun-safe-scenario
+      - assert-safe-idempotency
+    runs-on: ubuntu-latest
+    steps:
+      - name: Remove project items, close PRs, and delete branches
+        uses: actions/github-script@v8
+        env:
+          PROJECT_ID: ${{ needs.prepare-safe-scenario.outputs.project_id }}
+          REPO_OWNER: ${{ needs.prepare-safe-scenario.outputs.repo_owner }}
+          REPO_NAME: ${{ needs.prepare-safe-scenario.outputs.repo_name }}
+          OPEN_PULL_NUMBER: ${{ needs.prepare-safe-scenario.outputs.open_pull_number }}
+          OPEN_PULL_NODE_ID: ${{ needs.prepare-safe-scenario.outputs.open_pull_node_id }}
+          CLOSED_PULL_NUMBER: ${{ needs.prepare-safe-scenario.outputs.closed_pull_number }}
+          CLOSED_PULL_NODE_ID: ${{ needs.prepare-safe-scenario.outputs.closed_pull_node_id }}
+          OPEN_BRANCH_NAME: ${{ needs.prepare-safe-scenario.outputs.open_branch_name }}
+          CLOSED_BRANCH_NAME: ${{ needs.prepare-safe-scenario.outputs.closed_branch_name }}
+          STATUS_FIELD_NAME: ${{ env.STATUS_FIELD_NAME }}
+        with:
+          github-token: ${{ needs.resolve-auth.outputs.token }}
+          script: |
+            const projectId = process.env.PROJECT_ID;
+            const owner = process.env.REPO_OWNER;
+            const repo = process.env.REPO_NAME;
+            const openPullNumber = Number(process.env.OPEN_PULL_NUMBER);
+            const openPullNodeId = process.env.OPEN_PULL_NODE_ID;
+            const closedPullNumber = Number(process.env.CLOSED_PULL_NUMBER);
+            const closedPullNodeId = process.env.CLOSED_PULL_NODE_ID;
+            const openBranchName = process.env.OPEN_BRANCH_NAME;
+            const closedBranchName = process.env.CLOSED_BRANCH_NAME;
+            const statusFieldName = process.env.STATUS_FIELD_NAME;
+            const headers = {
+              accept: 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+            };
+
+            const QUERY = `
+              query($nodeId: ID!, $statusFieldName: String!) {
+                node(id: $nodeId) {
+                  ... on PullRequest {
+                    projectItems(first: 100) {
+                      nodes {
+                        id
+                        project { id }
+                        fieldValueByName(name: $statusFieldName) {
+                          ... on ProjectV2ItemFieldSingleSelectValue { name }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const DELETE_ITEM = `
+              mutation($input: DeleteProjectV2ItemInput!) {
+                deleteProjectV2Item(input: $input) { deletedItemId }
+              }
+            `;
+
+            async function deleteProjectItem(nodeId) {
+              const data = await github.graphql(QUERY, { nodeId, statusFieldName });
+              const item = data.node?.projectItems?.nodes?.find((projectItem) => projectItem.project?.id === projectId) ?? null;
+              if (!item) {
+                return;
+              }
+              await github.graphql(DELETE_ITEM, { input: { projectId, itemId: item.id } });
+            }
+
+            await deleteProjectItem(openPullNodeId);
+            await deleteProjectItem(closedPullNodeId);
+
+            for (const pullNumber of [openPullNumber, closedPullNumber]) {
+              if (pullNumber > 0) {
+                await github.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', {
+                  owner,
+                  repo,
+                  pull_number: pullNumber,
+                  state: 'closed',
+                  headers,
+                });
+              }
+            }
+
+            for (const branchName of [openBranchName, closedBranchName]) {
+              if (!branchName) {
+                continue;
+              }
+              try {
+                await github.request('DELETE /repos/{owner}/{repo}/git/refs/{ref}', {
+                  owner,
+                  repo,
+                  ref: `heads/${branchName}`,
+                  headers,
+                });
+              } catch (error) {
+                if (error.status !== 404) {
+                  throw error;
+                }
+              }
+            }
+
+  test-skipped-for-fork-pr:
+    name: Test skipped for fork PR
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Explain why test is skipped
+        run: echo "Skipping integration test for fork pull requests because repository secrets are unavailable."
