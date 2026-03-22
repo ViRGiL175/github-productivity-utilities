@@ -40,7 +40,7 @@ on:
         default: dependabot[bot]
         type: string
       max_pull_requests_per_repo:
-        description: Maximum number of open and closed PRs to inspect per repository
+        description: Maximum number of PRs to inspect per repository and per state (open and closed); up to 2x this number may be processed per repository
         required: false
         default: 50
         type: number
