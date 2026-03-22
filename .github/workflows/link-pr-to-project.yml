@@ -54,6 +54,10 @@ on:
         description: Pull request body override hint; falls back to the live API body when omitted
         required: false
         type: string
+      pull_request_author_login:
+        description: Pull request author login override; falls back to github.event.pull_request.user.login when omitted
+        required: false
+        type: string
       head_ref:
         description: Head ref override; falls back to github.event.pull_request.head.ref when omitted
         required: false
@@ -82,8 +86,56 @@ on:
         required: false
 
 jobs:
+  preflight:
+    name: Preflight auth and skip check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    outputs:
+      should_skip: ${{ steps.skip-check.outputs.should_skip }}
+    env:
+      AUTH_MODE: ${{ inputs.auth_mode }}
+      INSTALLATION_OWNER: ${{ inputs.installation_owner }}
+      DIRECT_TOKEN: ${{ secrets.project_token }}
+      PAT_TOKEN: ${{ secrets.pat_token }}
+      APP_ID: ${{ secrets.app_id }}
+      APP_PRIVATE_KEY: ${{ secrets.app_private_key }}
+      PULL_REQUEST_AUTHOR_LOGIN: ${{ inputs.pull_request_author_login || github.event.pull_request.user.login || '' }}
+
+    steps:
+      - name: Detect Dependabot PR without available auth
+        id: skip-check
+        shell: bash
+        run: |
+          SHOULD_SKIP=false
+
+          case "$AUTH_MODE" in
+            pat)
+              if [ -z "$DIRECT_TOKEN" ] && [ -z "$PAT_TOKEN" ] && [ "$PULL_REQUEST_AUTHOR_LOGIN" = "dependabot[bot]" ]; then
+                SHOULD_SKIP=true
+              fi
+              ;;
+            app)
+              if [ -z "$DIRECT_TOKEN" ] && { [ -z "$APP_ID" ] || [ -z "$APP_PRIVATE_KEY" ] || [ -z "$INSTALLATION_OWNER" ]; } && [ "$PULL_REQUEST_AUTHOR_LOGIN" = "dependabot[bot]" ]; then
+                SHOULD_SKIP=true
+              fi
+              ;;
+          esac
+
+          echo "should_skip=$SHOULD_SKIP" >> "$GITHUB_OUTPUT"
+
+      - name: Explain skipped Dependabot project sync
+        if: ${{ steps.skip-check.outputs.should_skip == 'true' }}
+        shell: bash
+        run: |
+          echo "Skipping project sync for Dependabot PR because the required token secrets are unavailable in this run."
+
   sync-pr-with-project:
     name: Sync PR with project
+    needs: preflight
+    if: ${{ needs.preflight.outputs.should_skip != 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

@@ -9,6 +9,7 @@ const workflowEntries = [
   ['test-ensure-next-iteration-reminder.yml', '.github/workflows/test-ensure-next-iteration-reminder.yml'],
   ['test-link-pr-to-project.yml', '.github/workflows/test-link-pr-to-project.yml'],
   ['test-reopen-issue-if-pr-open.yml', '.github/workflows/test-reopen-issue-if-pr-open.yml'],
+  ['test-safe-dependabot-pr-link.yml', '.github/workflows/test-safe-dependabot-pr-link.yml'],
   ['test-sync-sub-issue-sprint.yml', '.github/workflows/test-sync-sub-issue-sprint.yml'],
 ];
 const workflowMap = new Map(workflowEntries);
@@ -16,6 +17,7 @@ const legacyWorkflowAliases = new Map([
   ['ensure-next-iteration-reminder', 'test-ensure-next-iteration-reminder.yml'],
   ['link-pr-to-project', 'test-link-pr-to-project.yml'],
   ['reopen-issue-if-pr-open', 'test-reopen-issue-if-pr-open.yml'],
+  ['safe-dependabot-pr-link', 'test-safe-dependabot-pr-link.yml'],
   ['sync-sub-issue-sprint', 'test-sync-sub-issue-sprint.yml'],
 ]);
 
