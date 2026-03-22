@@ -242,7 +242,6 @@ jobs:
           PULL_REQUEST_REPO_OWNER: ${{ inputs.pull_request_repo_owner }}
           PULL_REQUEST_REPO_NAME: ${{ inputs.pull_request_repo_name }}
           PULL_REQUEST_BODY: ${{ inputs.pull_request_body }}
-          PULL_REQUEST_AUTHOR_LOGIN: ${{ inputs.pull_request_author_login }}
           HEAD_REF: ${{ inputs.head_ref }}
           ACTION: ${{ inputs.action }}
         with:

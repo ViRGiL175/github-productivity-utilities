@@ -146,6 +146,11 @@ jobs:
               'X-GitHub-Api-Version': '2022-11-28',
             };
 
+            core.setOutput('repo_owner', owner);
+            core.setOutput('repo_name', repo);
+            core.setOutput('open_branch_name', openBranchName);
+            core.setOutput('closed_branch_name', closedBranchName);
+
             const ORGANIZATION_PROJECT_QUERY = `
               query($owner: String!, $number: Int!) {
                 organization(login: $owner) {
@@ -218,13 +223,20 @@ jobs:
               return response.data;
             }
 
+            core.setOutput('project_id', await getProjectId());
+
             await createBranch(openBranchName);
             await commitFixture(openBranchName, openFilePath, `safe open fixture for run ${context.runId}`);
             const openPullRequest = await createPullRequest(openBranchName, `ITEST-${context.runId} safe open PR`, 'open fixture');
+            core.setOutput('open_pull_number', String(openPullRequest.number));
+            core.setOutput('open_pull_node_id', openPullRequest.node_id);
+            core.setOutput('bot_login', openPullRequest.user?.login || context.actor);
 
             await createBranch(closedBranchName);
             await commitFixture(closedBranchName, closedFilePath, `safe closed fixture for run ${context.runId}`);
             const closedPullRequest = await createPullRequest(closedBranchName, `ITEST-${context.runId} safe closed PR`, 'closed fixture');
+            core.setOutput('closed_pull_number', String(closedPullRequest.number));
+            core.setOutput('closed_pull_node_id', closedPullRequest.node_id);
             await github.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', {
               owner,
               repo,
@@ -232,17 +244,6 @@ jobs:
               state: 'closed',
               headers,
             });
-
-            core.setOutput('project_id', await getProjectId());
-            core.setOutput('bot_login', openPullRequest.user?.login || closedPullRequest.user?.login || context.actor);
-            core.setOutput('repo_owner', owner);
-            core.setOutput('repo_name', repo);
-            core.setOutput('open_pull_number', String(openPullRequest.number));
-            core.setOutput('open_pull_node_id', openPullRequest.node_id);
-            core.setOutput('closed_pull_number', String(closedPullRequest.number));
-            core.setOutput('closed_pull_node_id', closedPullRequest.node_id);
-            core.setOutput('open_branch_name', openBranchName);
-            core.setOutput('closed_branch_name', closedBranchName);
 
   run-safe-scenario:
     name: Run safe Dependabot link scenario
@@ -507,7 +508,7 @@ jobs:
 
   cleanup-safe-scenario:
     name: Cleanup safe Dependabot link scenario
-    if: ${{ always() && needs.prepare-safe-scenario.outputs.open_pull_number != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     needs:
       - resolve-auth
       - prepare-safe-scenario
@@ -623,6 +624,9 @@ jobs:
             `;
 
             async function deleteProjectItem(nodeId) {
+              if (!projectId || !nodeId) {
+                return;
+              }
               const data = await github.graphql(QUERY, { nodeId, statusFieldName });
               const item = data.node?.projectItems?.nodes?.find((projectItem) => projectItem.project?.id === projectId) ?? null;
               if (!item) {
@@ -635,7 +639,7 @@ jobs:
             await deleteProjectItem(closedPullNodeId);
 
             for (const pullNumber of [openPullNumber, closedPullNumber]) {
-              if (pullNumber > 0) {
+              if (owner && repo && pullNumber > 0) {
                 await github.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', {
                   owner,
                   repo,
@@ -647,7 +651,7 @@ jobs:
             }
 
             for (const branchName of [openBranchName, closedBranchName]) {
-              if (!branchName) {
+              if (!owner || !repo || !branchName) {
                 continue;
               }
               try {
