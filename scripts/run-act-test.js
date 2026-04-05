@@ -6,28 +6,74 @@ const { spawnSync } = require('node:child_process');
 
 const repoRoot = path.resolve(__dirname, '..');
 const workflowEntries = [
-  ['test-ensure-next-iteration-reminder.yml', '.github/workflows/test-ensure-next-iteration-reminder.yml'],
-  ['test-link-pr-to-project.yml', '.github/workflows/test-link-pr-to-project.yml'],
-  ['test-reopen-issue-if-pr-open.yml', '.github/workflows/test-reopen-issue-if-pr-open.yml'],
-  ['test-safe-dependabot-pr-link.yml', '.github/workflows/test-safe-dependabot-pr-link.yml'],
-  ['test-sync-sub-issue-sprint.yml', '.github/workflows/test-sync-sub-issue-sprint.yml'],
+  {
+    name: 'test-copilot-generate-text.yml',
+    path: '.github/workflows/test-copilot-generate-text.yml',
+    secrets: ['USER_COPILOT_FGPAT'],
+  },
+  {
+    name: 'test-ensure-next-iteration-reminder.yml',
+    path: '.github/workflows/test-ensure-next-iteration-reminder.yml',
+    secrets: ['ORG_PROJECT_TOKEN', 'ORG_AUTOMATION_APP_ID', 'ORG_AUTOMATION_APP_PRIVATE_KEY'],
+  },
+  {
+    name: 'test-link-pr-to-project.yml',
+    path: '.github/workflows/test-link-pr-to-project.yml',
+    secrets: ['ORG_PROJECT_TOKEN', 'ORG_AUTOMATION_APP_ID', 'ORG_AUTOMATION_APP_PRIVATE_KEY'],
+  },
+  {
+    name: 'test-reopen-issue-if-pr-open.yml',
+    path: '.github/workflows/test-reopen-issue-if-pr-open.yml',
+    secrets: ['ORG_PROJECT_TOKEN', 'ORG_AUTOMATION_APP_ID', 'ORG_AUTOMATION_APP_PRIVATE_KEY'],
+  },
+  {
+    name: 'test-safe-dependabot-pr-link.yml',
+    path: '.github/workflows/test-safe-dependabot-pr-link.yml',
+    secrets: ['ORG_PROJECT_TOKEN', 'ORG_AUTOMATION_APP_ID', 'ORG_AUTOMATION_APP_PRIVATE_KEY'],
+  },
+  {
+    name: 'test-sync-sub-issue-sprint.yml',
+    path: '.github/workflows/test-sync-sub-issue-sprint.yml',
+    secrets: ['ORG_PROJECT_TOKEN', 'ORG_AUTOMATION_APP_ID', 'ORG_AUTOMATION_APP_PRIVATE_KEY'],
+  },
 ];
-const workflowMap = new Map(workflowEntries);
-const legacyWorkflowAliases = new Map([
-  ['ensure-next-iteration-reminder', 'test-ensure-next-iteration-reminder.yml'],
-  ['link-pr-to-project', 'test-link-pr-to-project.yml'],
-  ['reopen-issue-if-pr-open', 'test-reopen-issue-if-pr-open.yml'],
-  ['safe-dependabot-pr-link', 'test-safe-dependabot-pr-link.yml'],
-  ['sync-sub-issue-sprint', 'test-sync-sub-issue-sprint.yml'],
-]);
+
+// Placeholder text, required auth modes, and error messages per secret.
+const secretMeta = {
+  USER_COPILOT_FGPAT: {
+    placeholder: 'replace-with-your-copilot-fine-grained-pat',
+    modes: ['pat', 'app'],
+    failMessage: 'Update .secrets with a real USER_COPILOT_FGPAT (FGPAT with Copilot Requests permission) before running the Copilot integration test.',
+    warnMessage: null,
+  },
+  ORG_PROJECT_TOKEN: {
+    placeholder: 'replace-with-your-project-token',
+    modes: ['pat'],
+    failMessage: 'Update .secrets with a real ORG_PROJECT_TOKEN before running act in pat mode. You can start from .secrets.example.',
+    warnMessage: 'Using placeholder ORG_PROJECT_TOKEN because dry run was requested.',
+  },
+  ORG_AUTOMATION_APP_ID: {
+    placeholder: 'replace-with-your-github-app-id',
+    modes: ['app'],
+    failMessage: 'Update .secrets with real ORG_AUTOMATION_APP_ID and ORG_AUTOMATION_APP_PRIVATE_KEY before running act in app mode. You can start from .secrets.example.',
+    warnMessage: 'Using placeholder GitHub App credentials because dry run was requested.',
+  },
+  ORG_AUTOMATION_APP_PRIVATE_KEY: {
+    placeholder: 'replace-with-your-github-app-private-key',
+    modes: ['app'],
+    failMessage: 'Update .secrets with real ORG_AUTOMATION_APP_ID and ORG_AUTOMATION_APP_PRIVATE_KEY before running act in app mode. You can start from .secrets.example.',
+    warnMessage: null,
+  },
+};
+
+const workflowMap = new Map(workflowEntries.map((e) => [e.name, e]));
 
 function printHelp() {
   console.log('Usage: node scripts/run-act-test.js [--files <workflow-file> [...workflow-file]] [--auth-mode <pat|app>] [--dry-run] [--list]');
   console.log('');
   console.log('Options:');
   console.log('  --files, -f <files...> Run one or more test workflows by file name; defaults to all');
-  console.log('  --workflow, -w <name>  Backward-compatible alias for a single legacy workflow key or file name');
-  console.log('  --all                  Backward-compatible alias for running all test workflows');
+  console.log('  --all                  Run all test workflows (default when --files is omitted)');
   console.log('  --auth-mode <mode>     Select token source: pat or app');
   console.log('  --dry-run              Pass --dryrun to act');
   console.log('  --list                 Print available test workflow file names');
@@ -65,17 +111,6 @@ function parseArgs(argv) {
         }
 
         options.files.push(...values);
-        break;
-      }
-      case '--workflow':
-      case '-w': {
-        const value = argv[index + 1];
-        if (!value) {
-          fail(`Missing value for ${arg}.`);
-        }
-
-        options.files.push(value);
-        index += 1;
         break;
       }
       case '--all':
@@ -117,10 +152,6 @@ function parseArgs(argv) {
 function normalizeWorkflowSelection(value) {
   if (workflowMap.has(value)) {
     return value;
-  }
-
-  if (legacyWorkflowAliases.has(value)) {
-    return legacyWorkflowAliases.get(value);
   }
 
   const fileName = path.basename(value);
@@ -187,26 +218,28 @@ function readSecretsFile() {
   return readFileSync(path.join(repoRoot, '.secrets'), 'utf8');
 }
 
-function maybeValidateSecrets(dryRun, authMode) {
-  const secretFileContent = readSecretsFile();
-  const patPlaceholder = secretFileContent.includes('replace-with-your-project-token');
-  const appIdPlaceholder = secretFileContent.includes('replace-with-your-github-app-id');
-  const appKeyPlaceholder = secretFileContent.includes('replace-with-your-github-app-private-key');
+function maybeValidateSecrets(dryRun, authMode, selectedWorkflows) {
+  const content = readSecretsFile();
+  const shownMessages = new Set();
 
-  if (authMode === 'pat' && !dryRun && patPlaceholder) {
-    fail('Update .secrets with a real ORG_PROJECT_TOKEN before running act in pat mode. You can start from .secrets.example.');
-  }
+  const neededSecrets = new Set(
+    selectedWorkflows.flatMap((name) => workflowMap.get(name).secrets),
+  );
 
-  if (authMode === 'app' && !dryRun && (appIdPlaceholder || appKeyPlaceholder)) {
-    fail('Update .secrets with real ORG_AUTOMATION_APP_ID and ORG_AUTOMATION_APP_PRIVATE_KEY before running act in app mode. You can start from .secrets.example.');
-  }
+  for (const secret of neededSecrets) {
+    const meta = secretMeta[secret];
+    if (!meta.modes.includes(authMode)) continue;
+    if (!content.includes(meta.placeholder)) continue;
 
-  if (dryRun && authMode === 'pat' && patPlaceholder) {
-    console.warn('Using placeholder ORG_PROJECT_TOKEN because dry run was requested.');
-  }
-
-  if (dryRun && authMode === 'app' && (appIdPlaceholder || appKeyPlaceholder)) {
-    console.warn('Using placeholder GitHub App credentials because dry run was requested.');
+    if (dryRun) {
+      if (meta.warnMessage && !shownMessages.has(meta.warnMessage)) {
+        shownMessages.add(meta.warnMessage);
+        console.warn(meta.warnMessage);
+      }
+    } else if (!shownMessages.has(meta.failMessage)) {
+      shownMessages.add(meta.failMessage);
+      fail(meta.failMessage);
+    }
   }
 }
 
@@ -239,8 +272,8 @@ function runActWorkflow(actCommand, workflowName, workflowPath, dryRun, authMode
 
 function printWorkflowList() {
   console.log('Available test workflow files:');
-  for (const [fileName, workflowPath] of workflowMap.entries()) {
-    console.log(`- ${fileName}: ${workflowPath}`);
+  for (const entry of workflowMap.values()) {
+    console.log(`- ${entry.name}: ${entry.path}`);
   }
 }
 
@@ -255,11 +288,11 @@ function main() {
   const actCommand = resolveActCommand();
   ensureActAvailable(actCommand);
   ensureRequiredFiles();
-  maybeValidateSecrets(options.dryRun, options.authMode);
-
   const selectedWorkflows = resolveWorkflowSelections(options.files);
+  maybeValidateSecrets(options.dryRun, options.authMode, selectedWorkflows);
   for (const workflowFile of selectedWorkflows) {
-    runActWorkflow(actCommand, workflowFile, workflowMap.get(workflowFile), options.dryRun, options.authMode);
+    const entry = workflowMap.get(workflowFile);
+    runActWorkflow(actCommand, entry.name, entry.path, options.dryRun, options.authMode);
   }
 }
 

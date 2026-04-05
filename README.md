@@ -13,6 +13,7 @@
 | [`./.github/workflows/reopen-issue-if-pr-open.yml`](./.github/workflows/reopen-issue-if-pr-open.yml) | Переоткрывает issue автоматически, если связанные PR, которые должны её закрыть, всё ещё открыты. |
 | [`./.github/workflows/safe-dependabot-pr-link.yml`](./.github/workflows/safe-dependabot-pr-link.yml) | Безопасно синхронизирует PR от Dependabot по списку репозиториев: открытым ставит стартовый статус, закрытым — финальный. |
 | [`./.github/workflows/sync-sub-issue-sprint.yml`](./.github/workflows/sync-sub-issue-sprint.yml) | Наследует sprint/iteration-метаданные из родительской issue в её sub-issue. |
+| [`./.github/workflows/copilot-generate-text.yml`](./.github/workflows/copilot-generate-text.yml) | Reusable workflow для генерации текста через Copilot SDK. Требует `copilot_token` с правом `Copilot Requests`. Возвращает output `text`. |
 
 ## Локальный прогон test workflow через act
 
@@ -33,6 +34,8 @@
 
 `ORG_PROJECT_TOKEN` должен иметь права, достаточные для работы с sandbox Project V2 и связанными issue / PR.
 
+`USER_COPILOT_FGPAT` — отдельный FGPAT с правом `Copilot Requests`; используется только для Copilot workflow.
+
 `ORG_AUTOMATION_APP_PRIVATE_KEY` для локального `act` удобнее хранить одной строкой с литералами `\n` между строками ключа.
 
 `.secrets` нужен, потому что test workflow теперь поддерживают два auth-режима:
@@ -46,6 +49,7 @@
 
 Поддерживаются test workflow-файлы:
 
+- `test-copilot-generate-text.yml`
 - `test-ensure-next-iteration-reminder.yml`
 - `test-link-pr-to-project.yml`
 - `test-reopen-issue-if-pr-open.yml`
@@ -69,3 +73,5 @@
 `node ./scripts/run-act-test.js --files test-ensure-next-iteration-reminder.yml test-link-pr-to-project.yml --auth-mode app`
 
 `node ./scripts/run-act-test.js --files test-ensure-next-iteration-reminder.yml --auth-mode pat --dry-run`
+
+Для `test-copilot-generate-text.yml` нужен `USER_COPILOT_FGPAT` с permission `Copilot Requests`, потому что это живой integration test через реальный Copilot SDK.
