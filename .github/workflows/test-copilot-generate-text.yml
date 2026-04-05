@@ -1,0 +1,50 @@
+name: Test copilot-generate-text
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Optional Copilot model override for the integration run
+        required: false
+        default: ''
+        type: string
+  pull_request:
+    paths:
+      - '.github/workflows/copilot-generate-text.yml'
+      - '.github/workflows/test-copilot-generate-text.yml'
+      - '.secrets.example'
+      - 'README.md'
+      - 'scripts/run-act-test.js'
+
+permissions:
+  contents: read
+
+jobs:
+  live-generation:
+    name: Verify live Copilot generation
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    uses: ./.github/workflows/copilot-generate-text.yml
+    with:
+      prompt_text: 'You are a math assistant. Return only the final numeric answer, with no explanation.'
+      input_text: 'What is 2 + 2?'
+      model: ''
+    secrets:
+      copilot_token: ${{ secrets.USER_COPILOT_FGPAT }}
+
+  assert-live-output:
+    name: Assert live Copilot output
+    runs-on: ubuntu-latest
+    needs: live-generation
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - name: Assert output equals 4
+        shell: bash
+        env:
+          ACTUAL_OUTPUT: ${{ needs.live-generation.outputs.text }}
+        run: |
+          actual="$(printf '%s' "$ACTUAL_OUTPUT" | tr -d '\r\n[:space:]')"
+
+          if [ "$actual" != "4" ]; then
+            echo "Unexpected Copilot output: '$ACTUAL_OUTPUT'" >&2
+            exit 1
+          fi

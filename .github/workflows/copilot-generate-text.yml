@@ -1,0 +1,102 @@
+name: Copilot Generate Text
+
+on:
+  workflow_call:
+    inputs:
+      prompt_text:
+        description: Main instruction for the model
+        required: true
+        type: string
+      input_text:
+        description: Optional additional input appended after the prompt
+        required: false
+        default: ''
+        type: string
+      model:
+        description: Copilot model ID to use (e.g. gpt-4.1, gpt-5-mini, claude-sonnet-4.6)
+        required: false
+        default: 'gpt-4.1'
+        type: string
+    outputs:
+      text:
+        description: Generated text result
+        value: ${{ jobs.generate.outputs.text }}
+    secrets:
+      copilot_token:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    name: Generate text via Copilot SDK
+    runs-on: ubuntu-latest
+    outputs:
+      text: ${{ steps.generate.outputs.text }}
+    steps:
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+
+      - name: Install Copilot SDK runtime dependencies
+        run: npm_config_ignore_scripts=false npm install @github/copilot-sdk --no-audit --no-fund
+
+      - name: Generate text
+        id: generate
+        uses: actions/github-script@v8
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.copilot_token }}
+          PROMPT_TEXT: ${{ inputs.prompt_text }}
+          INPUT_TEXT: ${{ inputs.input_text }}
+          MODEL: ${{ inputs.model }}
+        with:
+          script: |
+            const { pathToFileURL } = require('node:url');
+
+            // github-script wraps `require` in a proxy that lacks `.resolve`.
+            // `__original_require__` is the real Node.js require — needed to locate
+            // the ESM package path. The SDK itself is ESM-only, so we use `import()`.
+            const sdkEntry = __original_require__.resolve('@github/copilot-sdk', { paths: [process.cwd()] });
+            const { CopilotClient, approveAll } = await import(pathToFileURL(sdkEntry).href);
+
+            const promptText = process.env.PROMPT_TEXT || '';
+            const inputText = process.env.INPUT_TEXT || '';
+            const model = process.env.MODEL || '';
+
+            if (!promptText.trim()) {
+              throw new Error('prompt_text must not be empty');
+            }
+
+            const client = new CopilotClient({
+              githubToken: process.env.COPILOT_GITHUB_TOKEN,
+            });
+
+            try {
+              await client.start();
+
+              const sessionConfig = {
+                onPermissionRequest: approveAll,
+                model,
+                systemMessage: {
+                  mode: 'replace',
+                  content: promptText,
+                },
+              };
+
+              const session = await client.createSession(sessionConfig);
+
+              try {
+                const response = await session.sendAndWait({ prompt: inputText || promptText });
+                const content = (response?.data?.content || '').trim();
+
+                if (!content) {
+                  throw new Error('Copilot SDK returned an empty response');
+                }
+
+                core.setOutput('text', content);
+              } finally {
+                await session.disconnect();
+              }
+            } finally {
+              await client.stop();
+            }
