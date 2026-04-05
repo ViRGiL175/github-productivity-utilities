@@ -1,3 +1,4 @@
 -P ubuntu-latest=catthehacker/ubuntu:act-latest
+--pull=false
 --secret-file .secrets
 --artifact-server-path .act-artifacts
