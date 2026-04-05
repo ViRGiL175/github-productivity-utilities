@@ -11,6 +11,7 @@
 | [`./.github/workflows/ensure-next-iteration-reminder.yml`](./.github/workflows/ensure-next-iteration-reminder.yml) | Гарантирует, что в целевой итерации есть reminder draft, чтобы lane следующего спринта оставался видимым. |
 | [`./.github/workflows/link-pr-to-project.yml`](./.github/workflows/link-pr-to-project.yml) | Добавляет PR в Project V2, копирует sprint-метаданные из связанной issue и ставит статус Done при закрытии. |
 | [`./.github/workflows/reopen-issue-if-pr-open.yml`](./.github/workflows/reopen-issue-if-pr-open.yml) | Переоткрывает issue автоматически, если связанные PR, которые должны её закрыть, всё ещё открыты. |
+| [`./.github/workflows/safe-dependabot-pr-link.yml`](./.github/workflows/safe-dependabot-pr-link.yml) | Безопасно синхронизирует PR от Dependabot по списку репозиториев: открытым ставит стартовый статус, закрытым — финальный. |
 | [`./.github/workflows/sync-sub-issue-sprint.yml`](./.github/workflows/sync-sub-issue-sprint.yml) | Наследует sprint/iteration-метаданные из родительской issue в её sub-issue. |
 | [`./.github/workflows/copilot-generate-text.yml`](./.github/workflows/copilot-generate-text.yml) | Reusable workflow для генерации текста через Copilot SDK. Требует `copilot_token` с правом `Copilot Requests`. Возвращает output `text`. |
 
@@ -52,6 +53,7 @@
 - `test-ensure-next-iteration-reminder.yml`
 - `test-link-pr-to-project.yml`
 - `test-reopen-issue-if-pr-open.yml`
+- `test-safe-dependabot-pr-link.yml`
 - `test-sync-sub-issue-sprint.yml`
 
 Если параметр `--files` не указан, раннер по умолчанию запускает все test workflow по очереди.
