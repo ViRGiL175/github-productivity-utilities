@@ -39,7 +39,7 @@ jobs:
         uses: actions/setup-node@v6
 
       - name: Install Copilot SDK runtime dependencies
-        run: npm_config_ignore_scripts=false npm install @github/copilot-sdk --no-audit --no-fund
+        run: npm_config_ignore_scripts=false npm install @github/copilot-sdk@0.2.1 --no-audit --no-fund
 
       - name: Generate text
         id: generate
@@ -57,7 +57,11 @@ jobs:
             // `__original_require__` is the real Node.js require — needed to locate
             // the ESM package path. The SDK itself is ESM-only, so we use `import()`.
             const sdkEntry = __original_require__.resolve('@github/copilot-sdk', { paths: [process.cwd()] });
-            const { CopilotClient, approveAll } = await import(pathToFileURL(sdkEntry).href);
+            const { CopilotClient } = await import(pathToFileURL(sdkEntry).href);
+
+            // Deny all permission requests — plain text generation requires none.
+            // If a request arrives, it signals unexpected model behaviour and should fail loudly.
+            const denyAll = () => ({ kind: 'denied-by-permission-request-hook' });
 
             const promptText = process.env.PROMPT_TEXT || '';
             const inputText = process.env.INPUT_TEXT || '';
@@ -75,7 +79,7 @@ jobs:
               await client.start();
 
               const sessionConfig = {
-                onPermissionRequest: approveAll,
+                onPermissionRequest: denyAll,
                 model,
                 systemMessage: {
                   mode: 'replace',
@@ -89,8 +93,8 @@ jobs:
                 const response = await session.sendAndWait({ prompt: inputText || promptText });
                 const content = (response?.data?.content || '').trim();
 
-                core.info(`Raw response data: ${JSON.stringify(response?.data)}`);
-                core.info(`Trimmed content (${content.length} chars): ${JSON.stringify(content)}`);
+                core.debug(`Raw response data: ${JSON.stringify(response?.data)}`);
+                core.debug(`Trimmed content (${content.length} chars): ${JSON.stringify(content)}`);
 
                 if (!content) {
                   throw new Error('Copilot SDK returned an empty response');

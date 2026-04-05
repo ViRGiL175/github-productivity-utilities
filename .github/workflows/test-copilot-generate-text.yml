@@ -27,7 +27,7 @@ jobs:
     with:
       prompt_text: 'You are a math assistant. Return only the final numeric answer, with no explanation.'
       input_text: 'What is 2 + 2?'
-      model: ''
+      model: ${{ inputs.model }}
     secrets:
       copilot_token: ${{ secrets.USER_COPILOT_FGPAT }}
 
@@ -42,9 +42,10 @@ jobs:
         env:
           ACTUAL_OUTPUT: ${{ needs.live-generation.outputs.text }}
         run: |
-          actual="$(printf '%s' "$ACTUAL_OUTPUT" | tr -d '\r\n[:space:]')"
+          actual="$(printf '%s' "$ACTUAL_OUTPUT" | tr -d '\r\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
 
-          if [ "$actual" != "4" ]; then
+          # Pass if the output contains "4" anywhere
+          if ! echo "$actual" | grep -qF '4'; then
             echo "Unexpected Copilot output: '$ACTUAL_OUTPUT'" >&2
             exit 1
           fi

@@ -41,7 +41,7 @@ const workflowEntries = [
 // Placeholder text, required auth modes, and error messages per secret.
 const secretMeta = {
   USER_COPILOT_FGPAT: {
-    placeholder: 'replace-with-your-copilot-fgpat',
+    placeholder: 'replace-with-your-copilot-fine-grained-pat',
     modes: ['pat', 'app'],
     failMessage: 'Update .secrets with a real USER_COPILOT_FGPAT (FGPAT with Copilot Requests permission) before running the Copilot integration test.',
     warnMessage: null,
