@@ -89,6 +89,9 @@ jobs:
                 const response = await session.sendAndWait({ prompt: inputText || promptText });
                 const content = (response?.data?.content || '').trim();
 
+                core.info(`Raw response data: ${JSON.stringify(response?.data)}`);
+                core.info(`Trimmed content (${content.length} chars): ${JSON.stringify(content)}`);
+
                 if (!content) {
                   throw new Error('Copilot SDK returned an empty response');
                 }
