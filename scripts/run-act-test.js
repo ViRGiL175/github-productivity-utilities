@@ -27,6 +27,11 @@ const workflowEntries = [
     secrets: ['ORG_PROJECT_TOKEN', 'ORG_AUTOMATION_APP_ID', 'ORG_AUTOMATION_APP_PRIVATE_KEY'],
   },
   {
+    name: 'test-safe-dependabot-pr-link.yml',
+    path: '.github/workflows/test-safe-dependabot-pr-link.yml',
+    secrets: ['ORG_PROJECT_TOKEN', 'ORG_AUTOMATION_APP_ID', 'ORG_AUTOMATION_APP_PRIVATE_KEY'],
+  },
+  {
     name: 'test-sync-sub-issue-sprint.yml',
     path: '.github/workflows/test-sync-sub-issue-sprint.yml',
     secrets: ['ORG_PROJECT_TOKEN', 'ORG_AUTOMATION_APP_ID', 'ORG_AUTOMATION_APP_PRIVATE_KEY'],
