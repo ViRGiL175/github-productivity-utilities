@@ -1,0 +1,237 @@
+name: Test collect-linked-context
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/collect-linked-context.yml'
+      - '.github/workflows/test-collect-linked-context.yml'
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  # ─── Case 1: text without links → empty output ──────────────────────────────
+  collect-empty:
+    name: '[1] Collect — text without links'
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    uses: ./.github/workflows/collect-linked-context.yml
+    with:
+      text: 'No links here, just plain text.'
+
+  assert-empty:
+    name: '[1] Assert — output is empty for link-free text'
+    runs-on: ubuntu-latest
+    needs: collect-empty
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    env:
+      ACTUAL: ${{ needs.collect-empty.outputs.value }}
+    steps:
+      - name: Output must be empty
+        run: |
+          if [ -n "$ACTUAL" ]; then
+            echo "Expected empty output, got: $ACTUAL" >&2
+            exit 1
+          fi
+          echo "OK: output is empty"
+
+  # ─── Case 2: short #NUM ref → same-repo PR/Issue fetched ──────────────────
+  # PR #84 exists in this repo (current open PR).
+  collect-short-ref:
+    name: '[2] Collect — short #84 ref'
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    uses: ./.github/workflows/collect-linked-context.yml
+    with:
+      text: 'Фикс для #84 в этом репо.'
+
+  assert-short-ref:
+    name: '[2] Assert — short ref resolves'
+    runs-on: ubuntu-latest
+    needs: collect-short-ref
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    env:
+      ACTUAL: ${{ needs.collect-short-ref.outputs.value }}
+    steps:
+      - name: Output must not be empty
+        run: |
+          if [ -z "$ACTUAL" ]; then
+            echo "Expected output with #84 context, got empty" >&2
+            exit 1
+          fi
+          echo "OK: output is not empty"
+      - name: Output must mention '#84'
+        run: |
+          if ! echo "$ACTUAL" | grep -q '#84'; then
+            echo "Expected '#84' in output, got: $ACTUAL" >&2
+            exit 1
+          fi
+          echo "OK: #84 found in output"
+
+  # ─── Case 3: full URL + redirect URL of same PR → deduplicated ────────────
+  # github.com and redirect.github.com links to same PR must produce one item.
+  collect-dedup:
+    name: '[3] Collect — deduplication of github.com + redirect.github.com'
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    uses: ./.github/workflows/collect-linked-context.yml
+    with:
+      text: |
+        See https://github.com/ViRGiL175/github-productivity-utilities/pull/84
+        and same via Dependabot redirect:
+        https://redirect.github.com/ViRGiL175/github-productivity-utilities/pull/84
+
+  assert-dedup:
+    name: '[3] Assert — exactly one item, not two'
+    runs-on: ubuntu-latest
+    needs: collect-dedup
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    env:
+      ACTUAL: ${{ needs.collect-dedup.outputs.value }}
+    steps:
+      - name: Output must not be empty
+        run: |
+          if [ -z "$ACTUAL" ]; then
+            echo "Expected output, got empty" >&2
+            exit 1
+          fi
+      - name: Must contain exactly one item (zero '---' separators)
+        run: |
+          count=$(printf '%s' "$ACTUAL" | grep -c '^---$' || true)
+          if [ "$count" -gt 0 ]; then
+            echo "Expected 1 item (0 separators) but got $count separator(s) — dedup failed." >&2
+            printf '%s\n' "$ACTUAL" >&2
+            exit 1
+          fi
+          echo "OK: deduplicated correctly"
+
+  # ─── Case 4: Dependabot-style release URL ─────────────────────────────────
+  collect-release:
+    name: '[4] Collect — GitHub release URL'
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    uses: ./.github/workflows/collect-linked-context.yml
+    with:
+      text: |
+        Bumps actions/checkout from 3 to 4.
+        Release notes: https://github.com/actions/checkout/releases/tag/v4.0.0
+
+  assert-release:
+    name: '[4] Assert — release context fetched'
+    runs-on: ubuntu-latest
+    needs: collect-release
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    env:
+      ACTUAL: ${{ needs.collect-release.outputs.value }}
+    steps:
+      - name: Output must not be empty
+        run: |
+          if [ -z "$ACTUAL" ]; then
+            echo "Expected release context, got empty" >&2
+            exit 1
+          fi
+      - name: Output must mention the release tag
+        run: |
+          if ! echo "$ACTUAL" | grep -q 'v4.0.0'; then
+            echo "Expected 'v4.0.0' in output, got: $ACTUAL" >&2
+            exit 1
+          fi
+          echo "OK: release tag found in output"
+
+  # ─── Case 5: stable Issue URL from a major public repo ────────────────────
+  # microsoft/vscode issue #1 was filed on Oct 14, 2015, titled "Open Source VS Code".
+  # It's closed and locked — will never be deleted from this flagship Microsoft repo.
+  collect-stable-issue:
+    name: '[5] Collect — stable Issue URL (microsoft/vscode#1)'
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    uses: ./.github/workflows/collect-linked-context.yml
+    with:
+      text: 'Original tracking issue: https://github.com/microsoft/vscode/issues/1'
+
+  assert-stable-issue:
+    name: '[5] Assert — issue title appears in output'
+    runs-on: ubuntu-latest
+    needs: collect-stable-issue
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    env:
+      ACTUAL: ${{ needs.collect-stable-issue.outputs.value }}
+    steps:
+      - name: Output must not be empty
+        run: |
+          if [ -z "$ACTUAL" ]; then
+            echo "Expected issue context for vscode#1, got empty" >&2
+            exit 1
+          fi
+          echo "OK: output not empty"
+      - name: Output must mention the issue title
+        run: |
+          if ! echo "$ACTUAL" | grep -q 'Open Source VS Code'; then
+            echo "Expected 'Open Source VS Code' in output, got: $ACTUAL" >&2
+            exit 1
+          fi
+          echo "OK: issue title found in output"
+
+  # ─── Case 6: stable PR URL from a GitHub-maintained action repo ───────────
+  # actions/checkout is GitHub's own Actions toolkit; PR #1 is its very first change.
+  # The repo is maintained by GitHub itself and this PR will never be removed.
+  collect-stable-pr:
+    name: '[6] Collect — stable PR URL (actions/checkout#1)'
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    uses: ./.github/workflows/collect-linked-context.yml
+    with:
+      text: 'Uses https://github.com/actions/checkout/pull/1 as reference.'
+
+  assert-stable-pr:
+    name: '[6] Assert — PR/issue content fetched for actions/checkout#1'
+    runs-on: ubuntu-latest
+    needs: collect-stable-pr
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    env:
+      ACTUAL: ${{ needs.collect-stable-pr.outputs.value }}
+    steps:
+      - name: Output must not be empty
+        run: |
+          if [ -z "$ACTUAL" ]; then
+            echo "Expected context for actions/checkout#1, got empty" >&2
+            exit 1
+          fi
+          echo "OK: output not empty"
+      - name: Output must mention the checkout repo
+        run: |
+          if ! echo "$ACTUAL" | grep -q 'checkout'; then
+            echo "Expected 'checkout' in output, got: $ACTUAL" >&2
+            exit 1
+          fi
+          echo "OK: 'checkout' found in output"
+
+  # ─── Case 7: stable commit URL — the Linux kernel's initial Git commit ─────
+  # Linus Torvalds' first commit to the Linux repo on Apr 17, 2005.
+  # SHA: 1da177e4c3f41524e886b7f1b8a0c1fc7321cac — the most cited commit in FOSS history.
+  collect-stable-commit:
+    name: '[7] Collect — stable commit URL (linux initial commit)'
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    uses: ./.github/workflows/collect-linked-context.yml
+    with:
+      text: 'Historic: https://github.com/torvalds/linux/commit/1da177e4c3f41524e886b7f1b8a0c1fc7321cac'
+
+  assert-stable-commit:
+    name: '[7] Assert — commit message fetched'
+    runs-on: ubuntu-latest
+    needs: collect-stable-commit
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    env:
+      ACTUAL: ${{ needs.collect-stable-commit.outputs.value }}
+    steps:
+      - name: Output must not be empty
+        run: |
+          if [ -z "$ACTUAL" ]; then
+            echo "Expected commit context for linux initial commit, got empty" >&2
+            exit 1
+          fi
+          echo "OK: output not empty"
+      - name: Output must contain the commit message fragment
+        run: |
+          if ! echo "$ACTUAL" | grep -q 'Linux-2.6.12-rc2'; then
+            echo "Expected 'Linux-2.6.12-rc2' in output, got: $ACTUAL" >&2
+            exit 1
+          fi
+          echo "OK: 'Linux-2.6.12-rc2' found in output"

@@ -36,6 +36,11 @@ const workflowEntries = [
     path: '.github/workflows/test-sync-sub-issue-sprint.yml',
     secrets: ['ORG_PROJECT_TOKEN', 'ORG_AUTOMATION_APP_ID', 'ORG_AUTOMATION_APP_PRIVATE_KEY'],
   },
+  {
+    name: 'test-collect-linked-context.yml',
+    path: '.github/workflows/test-collect-linked-context.yml',
+    secrets: [],
+  },
 ];
 
 // Placeholder text, required auth modes, and error messages per secret.
