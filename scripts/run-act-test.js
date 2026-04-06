@@ -39,7 +39,7 @@ const workflowEntries = [
   {
     name: 'test-collect-linked-context.yml',
     path: '.github/workflows/test-collect-linked-context.yml',
-    secrets: [],
+    secrets: ['ORG_PROJECT_TOKEN', 'ORG_AUTOMATION_APP_ID', 'ORG_AUTOMATION_APP_PRIVATE_KEY'],
   },
 ];
 
