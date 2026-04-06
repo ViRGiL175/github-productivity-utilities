@@ -10,18 +10,19 @@ on:
 permissions:
   contents: read
   pull-requests: read
+  issues: read
 
 jobs:
-  # ─── Case 1: empty text → empty output ────────────────────────────────────
+  # ─── Case 1: text without links → empty output ──────────────────────────────
   collect-empty:
-    name: '[1] Collect — empty text'
+    name: '[1] Collect — text without links'
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     uses: ./.github/workflows/collect-linked-context.yml
     with:
       text: 'No links here, just plain text.'
 
   assert-empty:
-    name: '[1] Assert — empty output'
+    name: '[1] Assert — output is empty for link-free text'
     runs-on: ubuntu-latest
     needs: collect-empty
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
