@@ -136,67 +136,101 @@ jobs:
           fi
           echo "OK: release tag found in output"
 
-  # ─── Case 1: PR with a linked PR reference in body ──────────────────────────
-  # PR #314 in android-dreddbook-client references #312 in its body.
-  # Expected: output contains "PR #312".
-  collect-with-links:
-    name: '[1] Collect — PR with linked reference'
+  # ─── Case 5: stable Issue URL from a major public repo ────────────────────
+  # microsoft/vscode issue #1 was filed on Oct 14, 2015, titled "Open Source VS Code".
+  # It's closed and locked — will never be deleted from this flagship Microsoft repo.
+  collect-stable-issue:
+    name: '[5] Collect — stable Issue URL (microsoft/vscode#1)'
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     uses: ./.github/workflows/collect-linked-context.yml
     with:
-      pr_number: '314'
-      repo_owner: Dreddbook
-      repo_name: android-dreddbook-client
+      text: 'Original tracking issue: https://github.com/microsoft/vscode/issues/1'
 
-  assert-with-links:
-    name: '[1] Assert — linked PR present in output'
+  assert-stable-issue:
+    name: '[5] Assert — issue title appears in output'
     runs-on: ubuntu-latest
-    needs: collect-with-links
+    needs: collect-stable-issue
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     env:
-      OUTPUT: ${{ needs.collect-with-links.outputs.value }}
+      ACTUAL: ${{ needs.collect-stable-issue.outputs.value }}
     steps:
-      - name: Check output is not empty
-        shell: bash
+      - name: Output must not be empty
         run: |
-          if [ -z "$OUTPUT" ]; then
-            echo "Expected non-empty output for PR with linked references, got empty string" >&2
+          if [ -z "$ACTUAL" ]; then
+            echo "Expected issue context for vscode#1, got empty" >&2
             exit 1
           fi
-      - name: Check output contains linked PR marker
-        shell: bash
+          echo "OK: output not empty"
+      - name: Output must mention the issue title
         run: |
-          if ! echo "$OUTPUT" | grep -q "312"; then
-            echo "Expected output to mention PR #312, got:" >&2
-            echo "$OUTPUT" >&2
+          if ! echo "$ACTUAL" | grep -q 'Open Source VS Code'; then
+            echo "Expected 'Open Source VS Code' in output, got: $ACTUAL" >&2
             exit 1
           fi
+          echo "OK: issue title found in output"
 
-  # ─── Case 2: PR with no body references ─────────────────────────────────────
-  # PR #315 or any PR with clean body — expect empty output.
-  # We use pr #1 from the main github-productivity-utilities repo which has no linked refs.
-  collect-no-links:
-    name: '[2] Collect — PR with no linked references'
+  # ─── Case 6: stable PR URL from a GitHub-maintained action repo ───────────
+  # actions/checkout is GitHub's own Actions toolkit; PR #1 is its very first change.
+  # The repo is maintained by GitHub itself and this PR will never be removed.
+  collect-stable-pr:
+    name: '[6] Collect — stable PR URL (actions/checkout#1)'
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     uses: ./.github/workflows/collect-linked-context.yml
     with:
-      pr_number: '1'
-      repo_owner: ViRGiL175
-      repo_name: github-productivity-utilities
+      text: 'Uses https://github.com/actions/checkout/pull/1 as reference.'
 
-  assert-no-links:
-    name: '[2] Assert — empty output for PR without references'
+  assert-stable-pr:
+    name: '[6] Assert — PR/issue content fetched for actions/checkout#1'
     runs-on: ubuntu-latest
-    needs: collect-no-links
+    needs: collect-stable-pr
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     env:
-      OUTPUT: ${{ needs.collect-no-links.outputs.value }}
+      ACTUAL: ${{ needs.collect-stable-pr.outputs.value }}
     steps:
-      - name: Check output is empty
-        shell: bash
+      - name: Output must not be empty
         run: |
-          if [ -n "$OUTPUT" ]; then
-            echo "Expected empty output for PR with no references, got:" >&2
-            echo "$OUTPUT" >&2
+          if [ -z "$ACTUAL" ]; then
+            echo "Expected context for actions/checkout#1, got empty" >&2
             exit 1
           fi
+          echo "OK: output not empty"
+      - name: Output must mention the checkout repo
+        run: |
+          if ! echo "$ACTUAL" | grep -q 'checkout'; then
+            echo "Expected 'checkout' in output, got: $ACTUAL" >&2
+            exit 1
+          fi
+          echo "OK: 'checkout' found in output"
+
+  # ─── Case 7: stable commit URL — the Linux kernel's initial Git commit ─────
+  # Linus Torvalds' first commit to the Linux repo on Apr 17, 2005.
+  # SHA: 1da177e4c3f41524e886b7f1b8a0c1fc7321cac — the most cited commit in FOSS history.
+  collect-stable-commit:
+    name: '[7] Collect — stable commit URL (linux initial commit)'
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    uses: ./.github/workflows/collect-linked-context.yml
+    with:
+      text: 'Historic: https://github.com/torvalds/linux/commit/1da177e4c3f41524e886b7f1b8a0c1fc7321cac'
+
+  assert-stable-commit:
+    name: '[7] Assert — commit message fetched'
+    runs-on: ubuntu-latest
+    needs: collect-stable-commit
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    env:
+      ACTUAL: ${{ needs.collect-stable-commit.outputs.value }}
+    steps:
+      - name: Output must not be empty
+        run: |
+          if [ -z "$ACTUAL" ]; then
+            echo "Expected commit context for linux initial commit, got empty" >&2
+            exit 1
+          fi
+          echo "OK: output not empty"
+      - name: Output must contain the commit message fragment
+        run: |
+          if ! echo "$ACTUAL" | grep -q 'Linux-2.6.12-rc2'; then
+            echo "Expected 'Linux-2.6.12-rc2' in output, got: $ACTUAL" >&2
+            exit 1
+          fi
+          echo "OK: 'Linux-2.6.12-rc2' found in output"
