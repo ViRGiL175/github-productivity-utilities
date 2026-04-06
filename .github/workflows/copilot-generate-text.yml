@@ -12,6 +12,11 @@ on:
         required: false
         default: ''
         type: string
+      context_files:
+        description: Newline-separated list of file paths whose contents are appended to input_text as additional context
+        required: false
+        default: ''
+        type: string
       model:
         description: Copilot model ID to use (e.g. gpt-4.1, gpt-5-mini, claude-sonnet-4.6)
         required: false
@@ -35,11 +40,34 @@ jobs:
     outputs:
       text: ${{ steps.generate.outputs.text }}
     steps:
+      - name: Checkout caller repository
+        if: inputs.context_files != ''
+        uses: actions/checkout@v6
+
       - name: Set up Node.js
         uses: actions/setup-node@v6
 
       - name: Install Copilot SDK runtime dependencies
         run: npm_config_ignore_scripts=false npm install @github/copilot-sdk@0.2.1 --no-audit --no-fund
+
+      - name: Read context files
+        id: context
+        if: inputs.context_files != ''
+        env:
+          CONTEXT_FILES: ${{ inputs.context_files }}
+        run: |
+          delimiter="EOF_$(head -c 16 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 16)"
+          printf 'content<<%s\n' "$delimiter" >> "$GITHUB_OUTPUT"
+          while IFS= read -r filepath; do
+            [ -z "$filepath" ] && continue
+            if [ -f "$filepath" ]; then
+              cat "$filepath" >> "$GITHUB_OUTPUT"
+              printf '\n\n' >> "$GITHUB_OUTPUT"
+            else
+              echo "Warning: context file not found: $filepath" >&2
+            fi
+          done <<< "$CONTEXT_FILES"
+          printf '%s\n' "$delimiter" >> "$GITHUB_OUTPUT"
 
       - name: Generate text
         id: generate
@@ -48,6 +76,7 @@ jobs:
           COPILOT_GITHUB_TOKEN: ${{ secrets.copilot_token }}
           PROMPT_TEXT: ${{ inputs.prompt_text }}
           INPUT_TEXT: ${{ inputs.input_text }}
+          CONTEXT_FILES_CONTENT: ${{ steps.context.outputs.content }}
           MODEL: ${{ inputs.model }}
         with:
           script: |
@@ -65,7 +94,12 @@ jobs:
 
             const promptText = process.env.PROMPT_TEXT || '';
             const inputText = process.env.INPUT_TEXT || '';
+            const contextFilesContent = process.env.CONTEXT_FILES_CONTENT || '';
             const model = process.env.MODEL || '';
+
+            const effectiveInput = contextFilesContent
+              ? (inputText ? `${inputText}\n\n${contextFilesContent}` : contextFilesContent)
+              : inputText;
 
             if (!promptText.trim()) {
               throw new Error('prompt_text must not be empty');
@@ -90,7 +124,7 @@ jobs:
               const session = await client.createSession(sessionConfig);
 
               try {
-                const response = await session.sendAndWait({ prompt: inputText || promptText });
+                const response = await session.sendAndWait({ prompt: effectiveInput || promptText });
                 const content = (response?.data?.content || '').trim();
 
                 core.debug(`Raw response data: ${JSON.stringify(response?.data)}`);

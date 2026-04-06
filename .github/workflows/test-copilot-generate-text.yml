@@ -12,6 +12,7 @@ on:
     paths:
       - '.github/workflows/copilot-generate-text.yml'
       - '.github/workflows/test-copilot-generate-text.yml'
+      - 'itest/copilot-context-fixture.txt'
       - '.secrets.example'
       - 'README.md'
       - 'scripts/run-act-test.js'
@@ -19,9 +20,49 @@ on:
 permissions:
   contents: read
 
+# Skips all jobs on PRs from forks — secrets are unavailable there.
+# Reused as a job-level if condition throughout the file.
+
 jobs:
-  live-generation:
-    name: Verify live Copilot generation
+  # ─── Case 1: only prompt_text, no optional inputs ─────────────────────────
+  # effectiveInput is empty → falls back to promptText in sendAndWait.
+  gen-prompt-only:
+    name: '[1] Generate — prompt only'
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    uses: ./.github/workflows/copilot-generate-text.yml
+    with:
+      prompt_text: 'You are a math assistant. What is 1 + 1? Return only the final numeric answer, with no explanation.'
+      model: ${{ inputs.model }}
+    secrets:
+      copilot_token: ${{ secrets.USER_COPILOT_FGPAT }}
+
+  assert-prompt-only:
+    name: '[1] Assert — prompt only'
+    runs-on: ubuntu-latest
+    needs: gen-prompt-only
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    env:
+      ACTUAL_OUTPUT: ${{ needs.gen-prompt-only.outputs.text }}
+    steps:
+      - name: Check output is not empty
+        shell: bash
+        run: |
+          if [ -z "$ACTUAL_OUTPUT" ]; then
+            echo "Output is empty" >&2
+            exit 1
+          fi
+      - name: Check output contains 2
+        shell: bash
+        run: |
+          actual="$(printf '%s' "$ACTUAL_OUTPUT" | tr -d '\r\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          if ! echo "$actual" | grep -qF '2'; then
+            echo "Expected output to contain '2', got: '$ACTUAL_OUTPUT'" >&2
+            exit 1
+          fi
+
+  # ─── Case 2: prompt_text + input_text (no context_files) ──────────────────
+  gen-input-only:
+    name: '[2] Generate — prompt + input_text'
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     uses: ./.github/workflows/copilot-generate-text.yml
     with:
@@ -31,21 +72,101 @@ jobs:
     secrets:
       copilot_token: ${{ secrets.USER_COPILOT_FGPAT }}
 
-  assert-live-output:
-    name: Assert live Copilot output
+  assert-input-only:
+    name: '[2] Assert — prompt + input_text'
     runs-on: ubuntu-latest
-    needs: live-generation
+    needs: gen-input-only
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    env:
+      ACTUAL_OUTPUT: ${{ needs.gen-input-only.outputs.text }}
     steps:
-      - name: Assert output equals 4
+      - name: Check output is not empty
         shell: bash
-        env:
-          ACTUAL_OUTPUT: ${{ needs.live-generation.outputs.text }}
+        run: |
+          if [ -z "$ACTUAL_OUTPUT" ]; then
+            echo "Output is empty" >&2
+            exit 1
+          fi
+      - name: Check output contains 4
+        shell: bash
         run: |
           actual="$(printf '%s' "$ACTUAL_OUTPUT" | tr -d '\r\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-
-          # Pass if the output contains "4" anywhere
           if ! echo "$actual" | grep -qF '4'; then
-            echo "Unexpected Copilot output: '$ACTUAL_OUTPUT'" >&2
+            echo "Expected output to contain '4', got: '$ACTUAL_OUTPUT'" >&2
+            exit 1
+          fi
+
+  # ─── Case 3: prompt_text + context_files (no input_text) ──────────────────
+  # The model should read the magic word from the context file and return it.
+  gen-context-only:
+    name: '[3] Generate — prompt + context_files'
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    uses: ./.github/workflows/copilot-generate-text.yml
+    with:
+      prompt_text: 'You are a test assistant. The user will provide a context document. Extract and return only the magic word from the document, with no explanation or punctuation.'
+      context_files: 'itest/copilot-context-fixture.txt'
+      model: ${{ inputs.model }}
+    secrets:
+      copilot_token: ${{ secrets.USER_COPILOT_FGPAT }}
+
+  assert-context-only:
+    name: '[3] Assert — prompt + context_files'
+    runs-on: ubuntu-latest
+    needs: gen-context-only
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    env:
+      ACTUAL_OUTPUT: ${{ needs.gen-context-only.outputs.text }}
+    steps:
+      - name: Check output is not empty
+        shell: bash
+        run: |
+          if [ -z "$ACTUAL_OUTPUT" ]; then
+            echo "Output is empty" >&2
+            exit 1
+          fi
+      - name: Check output contains magic word from context file
+        shell: bash
+        run: |
+          actual="$(printf '%s' "$ACTUAL_OUTPUT" | tr -d '\r\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          if ! echo "$actual" | grep -qiF 'strawberry'; then
+            echo "Expected output to contain 'strawberry' (magic word from itest/copilot-context-fixture.txt), got: '$ACTUAL_OUTPUT'" >&2
+            exit 1
+          fi
+
+  # ─── Case 4: all optional inputs provided ─────────────────────────────────
+  # Verifies that input_text and context_files are both passed through without conflict.
+  gen-all-inputs:
+    name: '[4] Generate — prompt + input_text + context_files'
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    uses: ./.github/workflows/copilot-generate-text.yml
+    with:
+      prompt_text: 'You are a math assistant. Ignore any non-numeric context. Return only the final numeric answer to the math question, with no explanation.'
+      input_text: 'What is 3 + 3?'
+      context_files: 'itest/copilot-context-fixture.txt'
+      model: ${{ inputs.model }}
+    secrets:
+      copilot_token: ${{ secrets.USER_COPILOT_FGPAT }}
+
+  assert-all-inputs:
+    name: '[4] Assert — prompt + input_text + context_files'
+    runs-on: ubuntu-latest
+    needs: gen-all-inputs
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    env:
+      ACTUAL_OUTPUT: ${{ needs.gen-all-inputs.outputs.text }}
+    steps:
+      - name: Check output is not empty
+        shell: bash
+        run: |
+          if [ -z "$ACTUAL_OUTPUT" ]; then
+            echo "Output is empty" >&2
+            exit 1
+          fi
+      - name: Check output contains 6
+        shell: bash
+        run: |
+          actual="$(printf '%s' "$ACTUAL_OUTPUT" | tr -d '\r\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          if ! echo "$actual" | grep -qF '6'; then
+            echo "Expected output to contain '6', got: '$ACTUAL_OUTPUT'" >&2
             exit 1
           fi
