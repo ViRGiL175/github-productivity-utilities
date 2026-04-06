@@ -1,0 +1,202 @@
+name: Test collect-linked-context
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/collect-linked-context.yml'
+      - '.github/workflows/test-collect-linked-context.yml'
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  # ─── Case 1: empty text → empty output ────────────────────────────────────
+  collect-empty:
+    name: '[1] Collect — empty text'
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    uses: ./.github/workflows/collect-linked-context.yml
+    with:
+      text: 'No links here, just plain text.'
+
+  assert-empty:
+    name: '[1] Assert — empty output'
+    runs-on: ubuntu-latest
+    needs: collect-empty
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    env:
+      ACTUAL: ${{ needs.collect-empty.outputs.value }}
+    steps:
+      - name: Output must be empty
+        run: |
+          if [ -n "$ACTUAL" ]; then
+            echo "Expected empty output, got: $ACTUAL" >&2
+            exit 1
+          fi
+          echo "OK: output is empty"
+
+  # ─── Case 2: short #NUM ref → same-repo PR/Issue fetched ──────────────────
+  # PR #84 exists in this repo (current open PR).
+  collect-short-ref:
+    name: '[2] Collect — short #84 ref'
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    uses: ./.github/workflows/collect-linked-context.yml
+    with:
+      text: 'Фикс для #84 в этом репо.'
+
+  assert-short-ref:
+    name: '[2] Assert — short ref resolves'
+    runs-on: ubuntu-latest
+    needs: collect-short-ref
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    env:
+      ACTUAL: ${{ needs.collect-short-ref.outputs.value }}
+    steps:
+      - name: Output must not be empty
+        run: |
+          if [ -z "$ACTUAL" ]; then
+            echo "Expected output with #84 context, got empty" >&2
+            exit 1
+          fi
+          echo "OK: output is not empty"
+      - name: Output must mention '#84'
+        run: |
+          if ! echo "$ACTUAL" | grep -q '#84'; then
+            echo "Expected '#84' in output, got: $ACTUAL" >&2
+            exit 1
+          fi
+          echo "OK: #84 found in output"
+
+  # ─── Case 3: full URL + redirect URL of same PR → deduplicated ────────────
+  # github.com and redirect.github.com links to same PR must produce one item.
+  collect-dedup:
+    name: '[3] Collect — deduplication of github.com + redirect.github.com'
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    uses: ./.github/workflows/collect-linked-context.yml
+    with:
+      text: |
+        See https://github.com/ViRGiL175/github-productivity-utilities/pull/84
+        and same via Dependabot redirect:
+        https://redirect.github.com/ViRGiL175/github-productivity-utilities/pull/84
+
+  assert-dedup:
+    name: '[3] Assert — exactly one item, not two'
+    runs-on: ubuntu-latest
+    needs: collect-dedup
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    env:
+      ACTUAL: ${{ needs.collect-dedup.outputs.value }}
+    steps:
+      - name: Output must not be empty
+        run: |
+          if [ -z "$ACTUAL" ]; then
+            echo "Expected output, got empty" >&2
+            exit 1
+          fi
+      - name: Must contain exactly one item (zero '---' separators)
+        run: |
+          count=$(printf '%s' "$ACTUAL" | grep -c '^---$' || true)
+          if [ "$count" -gt 0 ]; then
+            echo "Expected 1 item (0 separators) but got $count separator(s) — dedup failed." >&2
+            printf '%s\n' "$ACTUAL" >&2
+            exit 1
+          fi
+          echo "OK: deduplicated correctly"
+
+  # ─── Case 4: Dependabot-style release URL ─────────────────────────────────
+  collect-release:
+    name: '[4] Collect — GitHub release URL'
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    uses: ./.github/workflows/collect-linked-context.yml
+    with:
+      text: |
+        Bumps actions/checkout from 3 to 4.
+        Release notes: https://github.com/actions/checkout/releases/tag/v4.0.0
+
+  assert-release:
+    name: '[4] Assert — release context fetched'
+    runs-on: ubuntu-latest
+    needs: collect-release
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    env:
+      ACTUAL: ${{ needs.collect-release.outputs.value }}
+    steps:
+      - name: Output must not be empty
+        run: |
+          if [ -z "$ACTUAL" ]; then
+            echo "Expected release context, got empty" >&2
+            exit 1
+          fi
+      - name: Output must mention the release tag
+        run: |
+          if ! echo "$ACTUAL" | grep -q 'v4.0.0'; then
+            echo "Expected 'v4.0.0' in output, got: $ACTUAL" >&2
+            exit 1
+          fi
+          echo "OK: release tag found in output"
+
+  # ─── Case 1: PR with a linked PR reference in body ──────────────────────────
+  # PR #314 in android-dreddbook-client references #312 in its body.
+  # Expected: output contains "PR #312".
+  collect-with-links:
+    name: '[1] Collect — PR with linked reference'
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    uses: ./.github/workflows/collect-linked-context.yml
+    with:
+      pr_number: '314'
+      repo_owner: Dreddbook
+      repo_name: android-dreddbook-client
+
+  assert-with-links:
+    name: '[1] Assert — linked PR present in output'
+    runs-on: ubuntu-latest
+    needs: collect-with-links
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    env:
+      OUTPUT: ${{ needs.collect-with-links.outputs.value }}
+    steps:
+      - name: Check output is not empty
+        shell: bash
+        run: |
+          if [ -z "$OUTPUT" ]; then
+            echo "Expected non-empty output for PR with linked references, got empty string" >&2
+            exit 1
+          fi
+      - name: Check output contains linked PR marker
+        shell: bash
+        run: |
+          if ! echo "$OUTPUT" | grep -q "312"; then
+            echo "Expected output to mention PR #312, got:" >&2
+            echo "$OUTPUT" >&2
+            exit 1
+          fi
+
+  # ─── Case 2: PR with no body references ─────────────────────────────────────
+  # PR #315 or any PR with clean body — expect empty output.
+  # We use pr #1 from the main github-productivity-utilities repo which has no linked refs.
+  collect-no-links:
+    name: '[2] Collect — PR with no linked references'
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    uses: ./.github/workflows/collect-linked-context.yml
+    with:
+      pr_number: '1'
+      repo_owner: ViRGiL175
+      repo_name: github-productivity-utilities
+
+  assert-no-links:
+    name: '[2] Assert — empty output for PR without references'
+    runs-on: ubuntu-latest
+    needs: collect-no-links
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    env:
+      OUTPUT: ${{ needs.collect-no-links.outputs.value }}
+    steps:
+      - name: Check output is empty
+        shell: bash
+        run: |
+          if [ -n "$OUTPUT" ]; then
+            echo "Expected empty output for PR with no references, got:" >&2
+            echo "$OUTPUT" >&2
+            exit 1
+          fi

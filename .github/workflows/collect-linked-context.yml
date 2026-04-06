@@ -1,0 +1,164 @@
+name: Collect Linked Context
+
+on:
+  workflow_call:
+    inputs:
+      text:
+        description: Text to scan for GitHub links (e.g. PR body)
+        required: true
+        type: string
+    outputs:
+      value:
+        description: Formatted linked context text, or empty string if nothing found
+        value: ${{ jobs.collect.outputs.value }}
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  collect:
+    name: Collect linked PRs, Issues, Releases, Commits
+    runs-on: ubuntu-latest
+    outputs:
+      value: ${{ steps.collect.outputs.value }}
+    steps:
+      - name: Collect linked context
+        id: collect
+        uses: actions/github-script@v8
+        env:
+          INPUT_TEXT: ${{ inputs.text }}
+        with:
+          script: |
+            const MAX_ITEMS = 5;
+            const MAX_BODY_CHARS = 800;
+            const text = process.env.INPUT_TEXT ?? '';
+            const defaultOwner = context.repo.owner;
+            const defaultRepo = context.repo.repo;
+
+            // Shared fetch+format logic per item type.
+            // New item types can be added here without touching LINK_TYPES below.
+            const ITEM_HANDLERS = {
+              issue: {
+                fetch: async (r) => {
+                  const { data } = await github.rest.issues.get({
+                    owner: r.owner, repo: r.repo, issue_number: r.number
+                  });
+                  return data;
+                },
+                format: (r, data) => {
+                  const kind = data.pull_request ? 'PR' : 'Issue';
+                  const body = (data.body ?? '').slice(0, MAX_BODY_CHARS);
+                  return `${kind} ${r.owner}/${r.repo}#${r.number} («${data.title}»):\n${body}`;
+                },
+              },
+              release: {
+                fetch: async (r) => {
+                  const { data } = await github.rest.repos.getReleaseByTag({
+                    owner: r.owner, repo: r.repo, tag: r.tag
+                  });
+                  return data;
+                },
+                format: (r, data) => {
+                  const body = (data.body ?? '').slice(0, MAX_BODY_CHARS);
+                  return `Релиз ${r.owner}/${r.repo}@${r.tag} («${data.name ?? r.tag}»):\n${body}`;
+                },
+              },
+              commit: {
+                fetch: async (r) => {
+                  const { data } = await github.rest.repos.getCommit({
+                    owner: r.owner, repo: r.repo, ref: r.sha
+                  });
+                  return data;
+                },
+                format: (r, data) => {
+                  const msg = (data.commit.message ?? '').slice(0, MAX_BODY_CHARS);
+                  return `Коммит ${r.sha.slice(0, 7)} (${r.owner}/${r.repo}):\n${msg}`;
+                },
+              },
+            };
+
+            // Registry of link syntaxes GitHub supports.
+            // Each entry: { name, pattern, ref(match) → ref-object, key(ref) → dedup-string }
+            // Entries sharing the same key() output are deduplicated — first match wins.
+            const LINK_TYPES = [
+              {
+                // Full URL: https://github.com/owner/repo/pull/123
+                //           https://github.com/owner/repo/issues/123
+                //           https://redirect.github.com/... (Dependabot changelog links)
+                name: 'github-pr-issue-url',
+                pattern: /https:\/\/(?:redirect\.)?github\.com\/([^/\s"'<>]+)\/([^/\s"'<>]+)\/(?:pull|issues)\/(\d+)/g,
+                ref: (m) => ({ type: 'issue', owner: m[1], repo: m[2], number: parseInt(m[3], 10) }),
+                key: (r) => `issue:${r.owner}/${r.repo}#${r.number}`,
+              },
+              {
+                // Short reference: #123 (same repo as caller)
+                // Matches #NUM at line start or after space / , ( :
+                name: 'short-ref',
+                pattern: /(?:^|[\s,(:])#(\d+)/gm,
+                ref: (m) => ({ type: 'issue', owner: defaultOwner, repo: defaultRepo, number: parseInt(m[1], 10) }),
+                key: (r) => `issue:${r.owner}/${r.repo}#${r.number}`,
+              },
+              {
+                // Cross-repo reference: owner/repo#123
+                // Negative lookbehind prevents matching path segments like github.com/owner/repo
+                name: 'cross-repo-ref',
+                pattern: /(?<![/\w])([A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?)\/([A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?)#(\d+)/g,
+                ref: (m) => ({ type: 'issue', owner: m[1], repo: m[2], number: parseInt(m[3], 10) }),
+                key: (r) => `issue:${r.owner}/${r.repo}#${r.number}`,
+              },
+              {
+                // GitHub release tag URL: https://github.com/owner/repo/releases/tag/v1.2.3
+                name: 'github-release-url',
+                pattern: /https:\/\/github\.com\/([^/\s"'<>]+)\/([^/\s"'<>]+)\/releases\/tag\/([^\s"'<>)]+)/g,
+                ref: (m) => ({ type: 'release', owner: m[1], repo: m[2], tag: m[3] }),
+                key: (r) => `release:${r.owner}/${r.repo}@${r.tag}`,
+              },
+              {
+                // GitHub commit URL: https://github.com/owner/repo/commit/abc1234
+                name: 'github-commit-url',
+                pattern: /https:\/\/github\.com\/([^/\s"'<>]+)\/([^/\s"'<>]+)\/commit\/([0-9a-f]{7,40})\b/gi,
+                ref: (m) => ({ type: 'commit', owner: m[1], repo: m[2], sha: m[3] }),
+                key: (r) => `commit:${r.owner}/${r.repo}@${r.sha}`,
+              },
+            ];
+
+            // --- Pass 1: collect unique refs across all link types ---
+            const seen = new Map(); // key → { ref, handler }
+            for (const lt of LINK_TYPES) {
+              lt.pattern.lastIndex = 0;
+              let m;
+              while ((m = lt.pattern.exec(text)) !== null) {
+                const ref = lt.ref(m);
+                const key = lt.key(ref);
+                if (!seen.has(key)) {
+                  seen.set(key, { ref, handler: ITEM_HANDLERS[ref.type] });
+                  core.info(`[${lt.name}] found: ${key}`);
+                }
+              }
+            }
+            core.info(`Total unique references: ${seen.size}`);
+
+            if (seen.size === 0) {
+              core.setOutput('value', '');
+              return;
+            }
+
+            // --- Pass 2: fetch and format, up to MAX_ITEMS ---
+            const results = [];
+            for (const [key, { ref, handler }] of [...seen.entries()].slice(0, MAX_ITEMS)) {
+              try {
+                core.info(`Fetching: ${key}`);
+                const data = await handler.fetch(ref);
+                results.push(handler.format(ref, data));
+                core.info(`OK: ${key}`);
+              } catch (err) {
+                core.warning(`Skipped ${key}: ${err.message}`);
+              }
+            }
+
+            if (results.length === 0) {
+              core.setOutput('value', '');
+            } else {
+              core.setOutput('value', `Связанные материалы:\n\n${results.join('\n\n---\n\n')}`);
+            }
