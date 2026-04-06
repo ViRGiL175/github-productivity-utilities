@@ -53,21 +53,30 @@ jobs:
       - name: Read context files
         id: context
         if: inputs.context_files != ''
+        uses: actions/github-script@v8
         env:
           CONTEXT_FILES: ${{ inputs.context_files }}
-        run: |
-          delimiter="EOF_$(head -c 16 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 16)"
-          printf 'content<<%s\n' "$delimiter" >> "$GITHUB_OUTPUT"
-          while IFS= read -r filepath; do
-            [ -z "$filepath" ] && continue
-            if [ -f "$filepath" ]; then
-              cat "$filepath" >> "$GITHUB_OUTPUT"
-              printf '\n\n' >> "$GITHUB_OUTPUT"
-            else
-              echo "Warning: context file not found: $filepath" >&2
-            fi
-          done <<< "$CONTEXT_FILES"
-          printf '%s\n' "$delimiter" >> "$GITHUB_OUTPUT"
+        with:
+          script: |
+            const fs = require('fs');
+            const MAX_CONTEXT_BYTES = 50_000;
+            const paths = (process.env.CONTEXT_FILES || '').split('\n').map(p => p.trim()).filter(Boolean);
+            let totalBytes = 0;
+            const parts = [];
+            for (const filepath of paths) {
+              if (!fs.existsSync(filepath)) {
+                core.error(`Context file not found: ${filepath}`);
+                process.exit(1);
+              }
+              const bytes = fs.statSync(filepath).size;
+              if (totalBytes + bytes > MAX_CONTEXT_BYTES) {
+                core.error(`Combined context files exceed ${MAX_CONTEXT_BYTES} bytes. Reduce the number or size of context_files.`);
+                process.exit(1);
+              }
+              parts.push(fs.readFileSync(filepath, 'utf8'));
+              totalBytes += bytes;
+            }
+            core.setOutput('content', parts.join('\n\n'));
 
       - name: Generate text
         id: generate
