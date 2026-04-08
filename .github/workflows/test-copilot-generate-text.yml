@@ -17,6 +17,10 @@ on:
       - 'README.md'
       - 'scripts/run-act-test.js'
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
