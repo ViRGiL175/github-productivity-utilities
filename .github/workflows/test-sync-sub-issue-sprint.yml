@@ -18,6 +18,10 @@ on:
       - '.github/workflows/sync-sub-issue-sprint.yml'
       - '.github/workflows/test-sync-sub-issue-sprint.yml'
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
   issues: read
