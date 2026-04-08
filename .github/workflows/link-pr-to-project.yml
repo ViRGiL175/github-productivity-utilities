@@ -441,51 +441,14 @@ jobs:
               return match ? Number(match[1]) : null;
             }
 
-            function sleep(ms) {
-              return new Promise((resolve) => setTimeout(resolve, ms));
-            }
-
-            function isRetryable(error) {
-              const status = error?.status ?? error?.response?.status ?? 0;
-              if (status >= 500) {
-                return true;
-              }
-
-              const message = String(error?.message || '').toLowerCase();
-              return message.includes('fetch failed') || message.includes('server error');
-            }
-
-            async function withRetry(label, fn, attempts = 5, delayMs = 2000) {
-              let lastError;
-
-              for (let attempt = 1; attempt <= attempts; attempt += 1) {
-                try {
-                  return await fn();
-                } catch (error) {
-                  lastError = error;
-                  const shouldRetry = attempt < attempts && isRetryable(error);
-                  if (!shouldRetry) {
-                    throw error;
-                  }
-
-                  core.info(`${label} attempt ${attempt}/${attempts} failed: ${error.message}. Retrying in ${delayMs}ms...`);
-                  await sleep(delayMs);
-                }
-              }
-
-              throw lastError;
-            }
-
             async function getProjectOwnerType(ownerLogin) {
-              const response = await withRetry(`Resolve owner type for ${ownerLogin}`, () =>
-                github.request('GET /users/{username}', {
-                  username: ownerLogin,
-                  headers: {
-                    accept: 'application/vnd.github+json',
-                    'X-GitHub-Api-Version': '2022-11-28',
-                  },
-                }),
-              );
+              const response = await github.request('GET /users/{username}', {
+                username: ownerLogin,
+                headers: {
+                  accept: 'application/vnd.github+json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+                },
+              });
 
               return response.data.type;
             }
@@ -500,12 +463,10 @@ jobs:
               }
 
               const query = isOrganization ? ORGANIZATION_PROJECT_QUERY : USER_PROJECT_QUERY;
-              const data = await withRetry(`Load project metadata for ${projectOwner}#${projectNumber}`, () =>
-                github.graphql(query, {
-                  owner: projectOwner,
-                  number: projectNumber,
-                }),
-              );
+              const data = await github.graphql(query, {
+                owner: projectOwner,
+                number: projectNumber,
+              });
 
               const project = isOrganization
                 ? data.organization?.projectV2
@@ -560,72 +521,60 @@ jobs:
             }
 
             async function getPullRequestProjectItem(projectId) {
-              const data = await withRetry(`Load project items for PR #${pullRequest.number}`, () =>
-                github.graphql(PULL_REQUEST_PROJECT_ITEMS_QUERY, {
-                  nodeId: pullRequest.node_id,
-                  fieldName: iterationFieldName,
-                }),
-              );
+              const data = await github.graphql(PULL_REQUEST_PROJECT_ITEMS_QUERY, {
+                nodeId: pullRequest.node_id,
+                fieldName: iterationFieldName,
+              });
 
               return data.node?.projectItems?.nodes?.find((item) => item.project?.id === projectId) ?? null;
             }
 
             async function getIssueProjectItem(projectId, issueNumber) {
-              const data = await withRetry(`Load project item for issue #${issueNumber}`, () =>
-                github.graphql(ISSUE_PROJECT_ITEMS_QUERY, {
-                  owner: backlogRepoOwner,
-                  repo: backlogRepo,
-                  issueNum: issueNumber,
-                  fieldName: iterationFieldName,
-                }),
-              );
+              const data = await github.graphql(ISSUE_PROJECT_ITEMS_QUERY, {
+                owner: backlogRepoOwner,
+                repo: backlogRepo,
+                issueNum: issueNumber,
+                fieldName: iterationFieldName,
+              });
 
               return data.repository?.issue?.projectItems?.nodes?.find((item) => item.project?.id === projectId) ?? null;
             }
 
             async function addPullRequestToProject(projectId) {
-              const data = await withRetry(`Add PR #${pullRequest.number} to project`, () =>
-                github.graphql(ADD_PROJECT_ITEM_MUTATION, {
-                  projectId,
-                  contentId: pullRequest.node_id,
-                }),
-              );
+              const data = await github.graphql(ADD_PROJECT_ITEM_MUTATION, {
+                projectId,
+                contentId: pullRequest.node_id,
+              });
 
               return data.addProjectV2ItemById.item.id;
             }
 
             async function setIteration(projectId, itemId, iterationId) {
-              await withRetry(`Set iteration ${iterationId} for PR #${pullRequest.number}`, () =>
-                github.graphql(UPDATE_ITERATION_MUTATION, {
-                  projectId,
-                  itemId,
-                  fieldId: project.iterationFieldId,
-                  iterationId,
-                }),
-              );
+              await github.graphql(UPDATE_ITERATION_MUTATION, {
+                projectId,
+                itemId,
+                fieldId: project.iterationFieldId,
+                iterationId,
+              });
             }
 
             async function setStatus(projectId, itemId, optionId) {
-              await withRetry(`Set status option ${optionId} for PR #${pullRequest.number}`, () =>
-                github.graphql(UPDATE_STATUS_MUTATION, {
-                  projectId,
-                  itemId,
-                  fieldId: project.statusFieldId,
-                  optionId,
-                }),
-              );
+              await github.graphql(UPDATE_STATUS_MUTATION, {
+                projectId,
+                itemId,
+                fieldId: project.statusFieldId,
+                optionId,
+              });
             }
 
             async function getUserType(login) {
-              const response = await withRetry(`Resolve user type for ${login}`, () =>
-                github.request('GET /users/{username}', {
-                  username: login,
-                  headers: {
-                    accept: 'application/vnd.github+json',
-                    'X-GitHub-Api-Version': '2022-11-28',
-                  },
-                }),
-              );
+              const response = await github.request('GET /users/{username}', {
+                username: login,
+                headers: {
+                  accept: 'application/vnd.github+json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+                },
+              });
 
               return response.data.type;
             }
@@ -651,17 +600,15 @@ jobs:
 
             async function appendClosingReferenceIfMissing(issueNumber) {
               const closesRef = `Closes ${backlogRepoOwner}/${backlogRepo}#${issueNumber}`;
-              const response = await withRetry(`Load PR body for PR #${pullRequest.number}`, () =>
-                github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
-                  owner: pullRequestRepoOwner,
-                  repo: pullRequestRepoName,
-                  pull_number: pullRequest.number,
-                  headers: {
-                    accept: 'application/vnd.github+json',
-                    'X-GitHub-Api-Version': '2022-11-28',
-                  },
-                }),
-              );
+              const response = await github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+                owner: pullRequestRepoOwner,
+                repo: pullRequestRepoName,
+                pull_number: pullRequest.number,
+                headers: {
+                  accept: 'application/vnd.github+json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+                },
+              });
 
               const currentBody = response.data.body || pullRequestBodyHint || '';
               if (currentBody.includes(closesRef)) {
@@ -670,18 +617,16 @@ jobs:
               }
 
               const suffix = `\n\n<!-- auto-linked -->\n${closesRef}`;
-              await withRetry(`Append closing reference for PR #${pullRequest.number}`, () =>
-                github.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', {
-                  owner: pullRequestRepoOwner,
-                  repo: pullRequestRepoName,
-                  pull_number: pullRequest.number,
-                  body: `${currentBody}${suffix}`,
-                  headers: {
-                    accept: 'application/vnd.github+json',
-                    'X-GitHub-Api-Version': '2022-11-28',
-                  },
-                }),
-              );
+              await github.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', {
+                owner: pullRequestRepoOwner,
+                repo: pullRequestRepoName,
+                pull_number: pullRequest.number,
+                body: `${currentBody}${suffix}`,
+                headers: {
+                  accept: 'application/vnd.github+json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+                },
+              });
 
               core.info(`Appended closing reference ${closesRef} to PR ${pullRequestRepoOwner}/${pullRequestRepoName}#${pullRequest.number}.`);
             }
