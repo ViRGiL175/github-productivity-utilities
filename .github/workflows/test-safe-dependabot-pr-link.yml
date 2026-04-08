@@ -18,6 +18,10 @@ on:
       - '.github/workflows/safe-dependabot-pr-link.yml'
       - '.github/workflows/test-safe-dependabot-pr-link.yml'
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
   issues: read

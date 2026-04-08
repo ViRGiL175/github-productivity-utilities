@@ -16,6 +16,10 @@ on:
       - '.github/workflows/collect-linked-context.yml'
       - '.github/workflows/test-collect-linked-context.yml'
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
   pull-requests: read

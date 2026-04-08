@@ -18,6 +18,10 @@ on:
       - '.github/workflows/ensure-next-iteration-reminder.yml'
       - '.github/workflows/test-ensure-next-iteration-reminder.yml'
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
   issues: read
