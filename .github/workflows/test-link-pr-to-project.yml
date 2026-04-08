@@ -1,5 +1,6 @@
 # Integration test: создаёт issue и PR, проверяет привязку PR к Project V2,
-# перенос sprint из issue, установку статуса Done при закрытии и cleanup.
+# перенос sprint из issue, установку начального статуса, перевод в Need Review
+# при запросе human-reviewer и установку статуса Done при закрытии, плюс cleanup.
 # В `pat`-режиме issue и PR живут в одном репозитории.
 # В `app`-режиме issue живёт в backlog-репозитории, а PR — в отдельном client-репозитории.
 name: Test link-pr-to-project
@@ -19,6 +20,10 @@ on:
     paths:
       - '.github/workflows/link-pr-to-project.yml'
       - '.github/workflows/test-link-pr-to-project.yml'
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -61,6 +66,8 @@ jobs:
     outputs:
       project_id: ${{ steps.prepare.outputs.project_id }}
       target_iteration_id: ${{ steps.prepare.outputs.target_iteration_id }}
+      status_in_progress_value: ${{ steps.prepare.outputs.status_in_progress_value }}
+      status_in_review_value: ${{ steps.prepare.outputs.status_in_review_value }}
       issue_number: ${{ steps.prepare.outputs.issue_number }}
       issue_node_id: ${{ steps.prepare.outputs.issue_node_id }}
       pull_number: ${{ steps.prepare.outputs.pull_number }}
@@ -129,6 +136,8 @@ jobs:
           PROJECT_OWNER: ${{ env.PROJECT_OWNER }}
           PROJECT_NUMBER: ${{ env.PROJECT_NUMBER }}
           ITERATION_FIELD_NAME: ${{ env.ITERATION_FIELD_NAME }}
+          STATUS_FIELD_NAME: ${{ env.STATUS_FIELD_NAME }}
+          STATUS_DONE_VALUE: ${{ env.STATUS_DONE_VALUE }}
           BACKLOG_REPO_OWNER: ${{ env.BACKLOG_REPO_OWNER }}
           BACKLOG_REPO_NAME: ${{ env.BACKLOG_REPO_NAME }}
           PULL_REQUEST_REPO_OWNER: ${{ env.PULL_REQUEST_REPO_OWNER }}
@@ -143,6 +152,8 @@ jobs:
             const projectOwner = process.env.PROJECT_OWNER;
             const projectNumber = Number(process.env.PROJECT_NUMBER);
             const iterationFieldName = process.env.ITERATION_FIELD_NAME;
+            const statusFieldName = process.env.STATUS_FIELD_NAME;
+            const statusDoneValue = process.env.STATUS_DONE_VALUE;
             const backlogRepoOwner = process.env.BACKLOG_REPO_OWNER;
             const backlogRepoName = process.env.BACKLOG_REPO_NAME;
             const pullRequestRepoOwner = process.env.PULL_REQUEST_REPO_OWNER;
@@ -185,6 +196,12 @@ jobs:
                             }
                           }
                         }
+                        ... on ProjectV2SingleSelectField {
+                          options {
+                            id
+                            name
+                          }
+                        }
                       }
                     }
                   }
@@ -218,6 +235,12 @@ jobs:
                               startDate
                               duration
                             }
+                          }
+                        }
+                        ... on ProjectV2SingleSelectField {
+                          options {
+                            id
+                            name
                           }
                         }
                       }
@@ -260,6 +283,18 @@ jobs:
               return [...iterations].sort((a, b) => toUtcDate(a.startDate) - toUtcDate(b.startDate));
             }
 
+            function pickPreferredOption(optionNames, preferredNames, excludedNames = []) {
+              const excluded = new Set(excludedNames.filter(Boolean));
+
+              for (const candidate of preferredNames) {
+                if (optionNames.includes(candidate) && !excluded.has(candidate)) {
+                  return candidate;
+                }
+              }
+
+              return optionNames.find((name) => !excluded.has(name)) ?? null;
+            }
+
             async function getProjectOwnerType(login) {
               const response = await github.request('GET /users/{username}', {
                 username: login,
@@ -296,6 +331,13 @@ jobs:
                 throw new Error(`Iteration field "${iterationFieldName}" was not found in project ${projectOwner}#${projectNumber}.`);
               }
 
+              const statusField = project.fields.nodes.find((field) =>
+                field?.__typename === 'ProjectV2SingleSelectField' && field.name === statusFieldName,
+              );
+              if (!statusField) {
+                throw new Error(`Status field "${statusFieldName}" was not found in project ${projectOwner}#${projectNumber}.`);
+              }
+
               const iterations = sortIterations([
                 ...(iterationField.configuration?.iterations ?? []),
                 ...(iterationField.configuration?.completedIterations ?? []),
@@ -305,10 +347,32 @@ jobs:
                 throw new Error('Need at least one iteration in the sandbox project to run link-pr-to-project integration tests.');
               }
 
+              const statusOptionNames = (statusField.options ?? []).map((option) => option.name);
+              if (!statusOptionNames.includes(statusDoneValue)) {
+                throw new Error(`Status option "${statusDoneValue}" was not found in field ${statusFieldName} of project ${projectOwner}#${projectNumber}.`);
+              }
+
+              const nonDoneStatusNames = statusOptionNames.filter((name) => name !== statusDoneValue);
+              if (nonDoneStatusNames.length === 0) {
+                throw new Error(`Need at least one non-${statusDoneValue} option in field ${statusFieldName} to run link-pr-to-project integration tests.`);
+              }
+
+              const statusInProgressValue = pickPreferredOption(
+                nonDoneStatusNames,
+                ['In Progress', 'Doing', 'Active', 'Planned', 'Todo', 'To Do', 'Backlog'],
+              );
+              const statusInReviewValue = pickPreferredOption(
+                nonDoneStatusNames,
+                ['Need Review', 'In Review', 'Review', 'Ready for Review'],
+                [statusInProgressValue],
+              ) ?? statusInProgressValue;
+
               return {
                 projectId: project.id,
                 iterationFieldId: iterationField.id,
                 targetIterationId: iterations[0].id,
+                statusInProgressValue,
+                statusInReviewValue,
               };
             }
 
@@ -383,6 +447,8 @@ jobs:
 
             core.setOutput('project_id', project.projectId);
             core.setOutput('target_iteration_id', project.targetIterationId);
+            core.setOutput('status_in_progress_value', project.statusInProgressValue);
+            core.setOutput('status_in_review_value', project.statusInReviewValue);
             core.setOutput('issue_number', String(issue.number));
             core.setOutput('issue_node_id', issue.node_id);
             core.setOutput('pull_number', String(pullRequest.number));
@@ -393,6 +459,7 @@ jobs:
             core.setOutput('backlog_repo_name', backlogRepoName);
             core.setOutput('pull_request_repo_owner', pullRequestRepoOwner);
             core.setOutput('pull_request_repo_name', pullRequestRepoName);
+            core.info(`Selected sandbox statuses: in-progress="${project.statusInProgressValue}", in-review="${project.statusInReviewValue}", done="${statusDoneValue}".`);
 
   run-link-open-scenario:
     name: Run link PR open scenario
@@ -409,6 +476,8 @@ jobs:
       iteration_field_name: Iteration
       status_field_name: Status
       status_done_value: Done
+      status_in_progress_value: ${{ needs.prepare-link-scenario.outputs.status_in_progress_value }}
+      status_in_review_value: ${{ needs.prepare-link-scenario.outputs.status_in_review_value }}
       pull_request_node_id: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
       pull_request_number: ${{ needs.prepare-link-scenario.outputs.pull_number }}
       pull_request_repo_owner: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_owner }}
@@ -487,6 +556,8 @@ jobs:
           PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
           ITERATION_FIELD_NAME: ${{ env.ITERATION_FIELD_NAME }}
           TARGET_ITERATION_ID: ${{ needs.prepare-link-scenario.outputs.target_iteration_id }}
+          STATUS_FIELD_NAME: ${{ env.STATUS_FIELD_NAME }}
+          STATUS_IN_PROGRESS_VALUE: ${{ needs.prepare-link-scenario.outputs.status_in_progress_value }}
           PULL_NODE_ID: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
           PULL_NUMBER: ${{ needs.prepare-link-scenario.outputs.pull_number }}
           PULL_REQUEST_REPO_OWNER: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_owner }}
@@ -498,6 +569,8 @@ jobs:
             const projectId = process.env.PROJECT_ID;
             const iterationFieldName = process.env.ITERATION_FIELD_NAME;
             const targetIterationId = process.env.TARGET_ITERATION_ID;
+            const statusFieldName = process.env.STATUS_FIELD_NAME;
+            const statusInProgressValue = process.env.STATUS_IN_PROGRESS_VALUE;
             const pullNodeId = process.env.PULL_NODE_ID;
             const pullNumber = Number(process.env.PULL_NUMBER);
             const owner = process.env.PULL_REQUEST_REPO_OWNER;
@@ -544,7 +617,7 @@ jobs:
             }
 
             const PULL_REQUEST_PROJECT_ITEMS_QUERY = `
-              query($nodeId: ID!, $fieldName: String!) {
+              query($nodeId: ID!, $iterationFieldName: String!, $statusFieldName: String!) {
                 node(id: $nodeId) {
                   ... on PullRequest {
                     projectItems(first: 100) {
@@ -553,9 +626,14 @@ jobs:
                         project {
                           id
                         }
-                        fieldValueByName(name: $fieldName) {
+                        fieldValueByName(name: $iterationFieldName) {
                           ... on ProjectV2ItemFieldIterationValue {
                             iterationId
+                          }
+                        }
+                        statusValue: fieldValueByName(name: $statusFieldName) {
+                          ... on ProjectV2ItemFieldSingleSelectValue {
+                            name
                           }
                         }
                       }
@@ -568,7 +646,8 @@ jobs:
             await withRetry('Assert open scenario', async () => {
               const projectData = await github.graphql(PULL_REQUEST_PROJECT_ITEMS_QUERY, {
                 nodeId: pullNodeId,
-                fieldName: iterationFieldName,
+                iterationFieldName,
+                statusFieldName,
               });
 
               const projectItems = projectData.node?.projectItems?.nodes?.filter((item) => item.project?.id === projectId) ?? [];
@@ -579,6 +658,11 @@ jobs:
               const iterationId = projectItems[0].fieldValueByName?.iterationId ?? null;
               if (iterationId !== targetIterationId) {
                 throw new Error(`Expected PR iteration ${targetIterationId}, got ${iterationId || 'none'}.`);
+              }
+
+              const statusValue = projectItems[0].statusValue?.name ?? null;
+              if (statusValue !== statusInProgressValue) {
+                throw new Error(`Expected PR status ${statusInProgressValue}, got ${statusValue || 'none'}.`);
               }
 
               const pullResponse = await github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
@@ -594,7 +678,7 @@ jobs:
               }
             });
 
-            core.info(`PR #${pullNumber} is in the project, has iteration ${targetIterationId}, and includes the closing reference.`);
+            core.info(`PR #${pullNumber} is in the project, has iteration ${targetIterationId}, status ${statusInProgressValue}, and includes the closing reference.`);
 
   rerun-link-open-scenario:
     name: Rerun link PR open scenario for idempotency
@@ -612,6 +696,8 @@ jobs:
       iteration_field_name: Iteration
       status_field_name: Status
       status_done_value: Done
+      status_in_progress_value: ${{ needs.prepare-link-scenario.outputs.status_in_progress_value }}
+      status_in_review_value: ${{ needs.prepare-link-scenario.outputs.status_in_review_value }}
       pull_request_node_id: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
       pull_request_number: ${{ needs.prepare-link-scenario.outputs.pull_number }}
       pull_request_repo_owner: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_owner }}
@@ -799,13 +885,197 @@ jobs:
 
             core.info(`PR #${pullNumber} rerun stayed idempotent.`);
 
+  run-link-review-requested-scenario:
+    name: Run link PR review requested scenario
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs:
+      - resolve-auth
+      - prepare-link-scenario
+      - assert-link-idempotency-scenario
+    uses: ./.github/workflows/link-pr-to-project.yml
+    with:
+      project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+      project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
+      backlog_repo: ${{ needs.prepare-link-scenario.outputs.backlog_repo_name }}
+      backlog_repo_owner: ${{ needs.prepare-link-scenario.outputs.backlog_repo_owner }}
+      iteration_field_name: Iteration
+      status_field_name: Status
+      status_done_value: Done
+      status_in_progress_value: ${{ needs.prepare-link-scenario.outputs.status_in_progress_value }}
+      status_in_review_value: ${{ needs.prepare-link-scenario.outputs.status_in_review_value }}
+      pull_request_node_id: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
+      pull_request_number: ${{ needs.prepare-link-scenario.outputs.pull_number }}
+      pull_request_repo_owner: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_owner }}
+      pull_request_repo_name: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_name }}
+      head_ref: ${{ needs.prepare-link-scenario.outputs.branch_name }}
+      action: review_requested
+      requested_reviewers_json: '[{"login":"octocat"},{"login":"github-actions[bot]"}]'
+      auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
+      installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+    secrets:
+      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
+      app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+      app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+
+  assert-link-review-requested-scenario:
+    name: Assert link PR review requested scenario
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs:
+      - resolve-auth
+      - prepare-link-scenario
+      - run-link-review-requested-scenario
+    runs-on: ubuntu-latest
+    steps:
+      - name: Normalize GitHub App private key
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: normalize-key
+        shell: bash
+        env:
+          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+        run: |
+          if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
+            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          else
+            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub App installation token
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          owner: ${{ env.INSTALLATION_OWNER }}
+          skip-token-revoke: true
+
+      - name: Resolve job auth token
+        id: auth
+        shell: bash
+        env:
+          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          case "$AUTH_MODE" in
+            pat)
+              TOKEN="$DIRECT_TOKEN"
+              ;;
+            app)
+              TOKEN="$APP_TOKEN"
+              ;;
+            *)
+              echo "Unsupported auth mode: $AUTH_MODE" >&2
+              exit 1
+              ;;
+          esac
+
+          if [ -z "$TOKEN" ]; then
+            echo "Resolved token is empty for auth_mode=$AUTH_MODE" >&2
+            exit 1
+          fi
+
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Assert PR status is Need Review in project
+        uses: actions/github-script@v8
+        env:
+          PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
+          STATUS_FIELD_NAME: ${{ env.STATUS_FIELD_NAME }}
+          STATUS_IN_REVIEW_VALUE: ${{ needs.prepare-link-scenario.outputs.status_in_review_value }}
+          PULL_NODE_ID: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
+        with:
+          github-token: ${{ steps.auth.outputs.token }}
+          script: |
+            const projectId = process.env.PROJECT_ID;
+            const statusFieldName = process.env.STATUS_FIELD_NAME;
+            const statusInReviewValue = process.env.STATUS_IN_REVIEW_VALUE;
+            const pullNodeId = process.env.PULL_NODE_ID;
+
+            function sleep(ms) {
+              return new Promise((resolve) => setTimeout(resolve, ms));
+            }
+
+            function isRetryable(error) {
+              const status = error?.status ?? error?.response?.status ?? 0;
+              if (status >= 500) {
+                return true;
+              }
+
+              const message = String(error?.message || '').toLowerCase();
+              return message.includes('fetch failed') || message.includes('server error');
+            }
+
+            async function withRetry(label, fn, attempts = 8, delayMs = 4000) {
+              let lastError;
+
+              for (let attempt = 1; attempt <= attempts; attempt += 1) {
+                try {
+                  return await fn();
+                } catch (error) {
+                  lastError = error;
+                  const shouldRetry = attempt < attempts && (isRetryable(error) || error instanceof Error);
+                  if (!shouldRetry) {
+                    throw error;
+                  }
+
+                  core.info(`${label} attempt ${attempt}/${attempts} failed: ${error.message}. Retrying in ${delayMs}ms...`);
+                  await sleep(delayMs);
+                }
+              }
+
+              throw lastError;
+            }
+
+            const PULL_REQUEST_STATUS_QUERY = `
+              query($nodeId: ID!, $statusFieldName: String!) {
+                node(id: $nodeId) {
+                  ... on PullRequest {
+                    projectItems(first: 100) {
+                      nodes {
+                        id
+                        project {
+                          id
+                        }
+                        fieldValueByName(name: $statusFieldName) {
+                          ... on ProjectV2ItemFieldSingleSelectValue {
+                            name
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const projectItem = await withRetry('Assert review requested scenario', async () => {
+              const data = await github.graphql(PULL_REQUEST_STATUS_QUERY, {
+                nodeId: pullNodeId,
+                statusFieldName,
+              });
+
+              const item = data.node?.projectItems?.nodes?.find((projectNode) => projectNode.project?.id === projectId) ?? null;
+              if (!item) {
+                throw new Error('PR project item is missing during review-requested assertion.');
+              }
+
+              const statusValue = item.fieldValueByName?.name ?? null;
+              if (statusValue !== statusInReviewValue) {
+                throw new Error(`Expected PR status ${statusInReviewValue}, got ${statusValue || 'none'}.`);
+              }
+
+              return item;
+            });
+
+            core.info(`PR project item ${projectItem.id} is marked as ${statusInReviewValue}.`);
+
   close-pr-before-status-check:
     name: Close PR before status check
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     needs:
       - resolve-auth
       - prepare-link-scenario
-      - assert-link-idempotency-scenario
+      - assert-link-review-requested-scenario
     runs-on: ubuntu-latest
     steps:
       - name: Normalize GitHub App private key
@@ -899,6 +1169,8 @@ jobs:
       iteration_field_name: Iteration
       status_field_name: Status
       status_done_value: Done
+      status_in_progress_value: ${{ needs.prepare-link-scenario.outputs.status_in_progress_value }}
+      status_in_review_value: ${{ needs.prepare-link-scenario.outputs.status_in_review_value }}
       pull_request_node_id: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
       pull_request_number: ${{ needs.prepare-link-scenario.outputs.pull_number }}
       pull_request_repo_owner: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_owner }}
@@ -1074,6 +1346,8 @@ jobs:
       - assert-link-open-scenario
       - rerun-link-open-scenario
       - assert-link-idempotency-scenario
+      - run-link-review-requested-scenario
+      - assert-link-review-requested-scenario
       - close-pr-before-status-check
       - run-link-closed-scenario
       - assert-link-closed-scenario

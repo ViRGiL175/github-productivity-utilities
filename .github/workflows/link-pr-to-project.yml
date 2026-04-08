@@ -34,6 +34,14 @@ on:
         required: false
         default: Done
         type: string
+      status_in_progress_value:
+        description: Status value to set when the PR is first added to the project; skipped when omitted
+        required: false
+        type: string
+      status_in_review_value:
+        description: Status value to set when a human reviewer is requested on the PR; skipped when omitted
+        required: false
+        type: string
       pull_request_node_id:
         description: Pull request node ID override; falls back to github.event.pull_request.node_id when omitted
         required: false
@@ -64,6 +72,10 @@ on:
         type: string
       action:
         description: Action override; falls back to github.event.action when omitted
+        required: false
+        type: string
+      requested_reviewers_json:
+        description: JSON array of requested reviewers with login fields; falls back to github.event.pull_request.requested_reviewers when omitted
         required: false
         type: string
       auth_mode:
@@ -237,6 +249,8 @@ jobs:
           ITERATION_FIELD_NAME: ${{ inputs.iteration_field_name }}
           STATUS_FIELD_NAME: ${{ inputs.status_field_name }}
           STATUS_DONE_VALUE: ${{ inputs.status_done_value }}
+          STATUS_IN_PROGRESS_VALUE: ${{ inputs.status_in_progress_value }}
+          STATUS_IN_REVIEW_VALUE: ${{ inputs.status_in_review_value }}
           PULL_REQUEST_NODE_ID: ${{ inputs.pull_request_node_id }}
           PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
           PULL_REQUEST_REPO_OWNER: ${{ inputs.pull_request_repo_owner }}
@@ -244,6 +258,7 @@ jobs:
           PULL_REQUEST_BODY: ${{ inputs.pull_request_body }}
           HEAD_REF: ${{ inputs.head_ref }}
           ACTION: ${{ inputs.action }}
+          REQUESTED_REVIEWERS_JSON: ${{ inputs.requested_reviewers_json }}
         with:
           github-token: ${{ steps.auth.outputs.token }}
           script: |
@@ -254,6 +269,8 @@ jobs:
             const iterationFieldName = process.env.ITERATION_FIELD_NAME;
             const statusFieldName = process.env.STATUS_FIELD_NAME;
             const statusDoneValue = process.env.STATUS_DONE_VALUE;
+            const statusInProgressValue = process.env.STATUS_IN_PROGRESS_VALUE || '';
+            const statusInReviewValue = process.env.STATUS_IN_REVIEW_VALUE || '';
             const pullRequestFromEvent = context.payload.pull_request ?? null;
             const action = process.env.ACTION || context.payload.action || 'opened';
             const pullRequestBodyHint = process.env.PULL_REQUEST_BODY;
@@ -262,6 +279,7 @@ jobs:
             const pullRequestRepoOwner = process.env.PULL_REQUEST_REPO_OWNER || pullRequestFromEvent?.base?.repo?.owner?.login || context.repo.owner;
             const pullRequestRepoName = process.env.PULL_REQUEST_REPO_NAME || pullRequestFromEvent?.base?.repo?.name || context.repo.repo;
             const headRef = process.env.HEAD_REF || pullRequestFromEvent?.head?.ref || '';
+            const requestedReviewersJson = process.env.REQUESTED_REVIEWERS_JSON || '';
 
             if (!pullRequestNodeId || !Number.isInteger(pullRequestNumber) || pullRequestNumber <= 0) {
               throw new Error('Pull request context is required. Pass pull_request_node_id and pull_request_number, or run from a pull_request event.');
@@ -477,12 +495,28 @@ jobs:
                 throw new Error(`Status option "${statusDoneValue}" was not found in field ${statusFieldName} of project ${projectOwner}#${projectNumber}.`);
               }
 
+              const inProgressOption = statusInProgressValue
+                ? (statusField.options?.find((option) => option.name === statusInProgressValue) ?? null)
+                : null;
+              if (statusInProgressValue && !inProgressOption) {
+                core.warning(`Status option "${statusInProgressValue}" was not found in field ${statusFieldName}; in-progress status will be skipped.`);
+              }
+
+              const inReviewOption = statusInReviewValue
+                ? (statusField.options?.find((option) => option.name === statusInReviewValue) ?? null)
+                : null;
+              if (statusInReviewValue && !inReviewOption) {
+                core.warning(`Status option "${statusInReviewValue}" was not found in field ${statusFieldName}; in-review status will be skipped.`);
+              }
+
               return {
                 projectId: project.id,
                 projectTitle: project.title,
                 iterationFieldId: iterationField.id,
                 statusFieldId: statusField.id,
                 doneOptionId: doneOption.id,
+                inProgressOptionId: inProgressOption?.id ?? null,
+                inReviewOptionId: inReviewOption?.id ?? null,
               };
             }
 
@@ -524,13 +558,44 @@ jobs:
               });
             }
 
-            async function setDoneStatus(projectId, itemId) {
+            async function setStatus(projectId, itemId, optionId) {
               await github.graphql(UPDATE_STATUS_MUTATION, {
                 projectId,
                 itemId,
                 fieldId: project.statusFieldId,
-                optionId: project.doneOptionId,
+                optionId,
               });
+            }
+
+            async function getUserType(login) {
+              const response = await github.request('GET /users/{username}', {
+                username: login,
+                headers: {
+                  accept: 'application/vnd.github+json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+                },
+              });
+
+              return response.data.type;
+            }
+
+            function getRequestedReviewers() {
+              if (!requestedReviewersJson) {
+                return context.payload.pull_request?.requested_reviewers ?? [];
+              }
+
+              let parsedReviewers;
+              try {
+                parsedReviewers = JSON.parse(requestedReviewersJson);
+              } catch (error) {
+                throw new Error(`requested_reviewers_json must be valid JSON: ${error.message}`);
+              }
+
+              if (!Array.isArray(parsedReviewers)) {
+                throw new Error('requested_reviewers_json must be a JSON array.');
+              }
+
+              return parsedReviewers;
             }
 
             async function appendClosingReferenceIfMissing(issueNumber) {
@@ -576,20 +641,66 @@ jobs:
                 return;
               }
 
-              await setDoneStatus(project.projectId, pullRequestProjectItem.id);
+              await setStatus(project.projectId, pullRequestProjectItem.id, project.doneOptionId);
               core.info(`Set status ${statusFieldName}=${statusDoneValue} for PR #${pullRequest.number}.`);
+              return;
+            }
+
+            if (action === 'review_requested') {
+              if (!project.inReviewOptionId) {
+                core.info('status_in_review_value is not configured or not found; skipping.');
+                return;
+              }
+
+              const requestedReviewers = getRequestedReviewers();
+              const humanReviewers = [];
+              for (const reviewer of requestedReviewers) {
+                const login = reviewer?.login;
+                if (!login) {
+                  core.info('Skipping reviewer without a login field.');
+                  continue;
+                }
+
+                const userType = await getUserType(login);
+                if (userType === 'User') {
+                  humanReviewers.push(login);
+                } else {
+                  core.info(`Skipping reviewer @${login} (type: ${userType}).`);
+                }
+              }
+
+              if (humanReviewers.length === 0) {
+                core.info('No human reviewers requested; skipping status update.');
+                return;
+              }
+
+              const pullRequestProjectItem = await getPullRequestProjectItem(project.projectId);
+              if (!pullRequestProjectItem) {
+                core.info(`Pull request #${pullRequest.number} is not in project ${projectOwner}#${projectNumber}. Nothing to update.`);
+                return;
+              }
+
+              await setStatus(project.projectId, pullRequestProjectItem.id, project.inReviewOptionId);
+              core.info(`Set status ${statusFieldName}=${statusInReviewValue} for PR #${pullRequest.number} (reviewers: ${humanReviewers.join(', ')}).`);
               return;
             }
 
             let pullRequestProjectItem = await getPullRequestProjectItem(project.projectId);
             let pullRequestItemId = pullRequestProjectItem?.id;
+            let wasJustAdded = false;
 
             if (!pullRequestItemId) {
               pullRequestItemId = await addPullRequestToProject(project.projectId);
               core.info(`Added PR #${pullRequest.number} to project ${projectOwner}#${projectNumber}.`);
               pullRequestProjectItem = { id: pullRequestItemId, fieldValueByName: null };
+              wasJustAdded = true;
             } else {
               core.info(`PR #${pullRequest.number} is already in project ${projectOwner}#${projectNumber}.`);
+            }
+
+            if (wasJustAdded && project.inProgressOptionId) {
+              await setStatus(project.projectId, pullRequestItemId, project.inProgressOptionId);
+              core.info(`Set status ${statusFieldName}=${statusInProgressValue} for PR #${pullRequest.number}.`);
             }
 
             const issueNumber = extractIssueNumber(headRef);
