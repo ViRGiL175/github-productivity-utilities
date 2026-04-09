@@ -297,14 +297,14 @@ jobs:
             }
 
             async function listRepoAssigneeLogins(owner, repo) {
-              const response = await github.request('GET /repos/{owner}/{repo}/assignees', {
+              const assignees = await github.paginate('GET /repos/{owner}/{repo}/assignees', {
                 owner,
                 repo,
                 per_page: 100,
                 headers,
               });
 
-              return (response.data ?? [])
+              return (assignees ?? [])
                 .map((assignee) => assignee?.login)
                 .filter(Boolean);
             }

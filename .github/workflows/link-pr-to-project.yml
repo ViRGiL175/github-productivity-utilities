@@ -591,7 +591,7 @@ jobs:
             }
 
             async function getRepoAssigneeLogins(owner, repo) {
-              const response = await github.request('GET /repos/{owner}/{repo}/assignees', {
+              const assignees = await github.paginate('GET /repos/{owner}/{repo}/assignees', {
                 owner,
                 repo,
                 per_page: 100,
@@ -599,7 +599,7 @@ jobs:
               });
 
               return new Set(
-                (response.data ?? [])
+                (assignees ?? [])
                   .map((assignee) => assignee?.login)
                   .filter(Boolean),
               );
@@ -686,13 +686,22 @@ jobs:
                 return;
               }
 
-              await github.request('PATCH /repos/{owner}/{repo}/issues/{issue_number}', {
-                owner: pullRequestRepoOwner,
-                repo: pullRequestRepoName,
-                issue_number: pullRequest.number,
-                assignees: assigneesToCopy,
-                headers,
-              });
+              try {
+                await github.request('PATCH /repos/{owner}/{repo}/issues/{issue_number}', {
+                  owner: pullRequestRepoOwner,
+                  repo: pullRequestRepoName,
+                  issue_number: pullRequest.number,
+                  assignees: assigneesToCopy,
+                  headers,
+                });
+              } catch (error) {
+                const status = error?.status ?? error?.response?.status ?? 0;
+                if (status === 403) {
+                  throw new Error(`Failed to sync assignees to PR #${pullRequest.number}: token needs issues:write access on ${pullRequestRepoOwner}/${pullRequestRepoName}.`);
+                }
+
+                throw error;
+              }
 
               core.info(`Copied assignees ${assigneesToCopy.join(', ')} from issue #${issueNumber} to PR #${pullRequest.number}.`);
             }
