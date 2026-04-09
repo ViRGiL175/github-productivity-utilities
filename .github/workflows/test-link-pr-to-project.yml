@@ -948,7 +948,7 @@ jobs:
       pull_request_repo_name: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_name }}
       head_ref: ${{ needs.prepare-link-scenario.outputs.branch_name }}
       action: review_requested
-      requested_reviewers_json: '[{"login":"octocat"},{"login":"github-actions[bot]"}]'
+      requested_reviewers_json: '[{"login":"octocat"},{"login":"github-actions[bot]"},{"login":"Copilot"}]'
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
       installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
     secrets:
