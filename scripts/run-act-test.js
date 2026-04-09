@@ -49,38 +49,33 @@ const secretMeta = {
     placeholder: 'replace-with-your-copilot-fine-grained-pat',
     modes: ['pat', 'app'],
     failMessage: 'Update .secrets with a real USER_COPILOT_FGPAT (FGPAT with Copilot Requests permission) before running the Copilot integration test.',
-    warnMessage: null,
   },
   ORG_PROJECT_TOKEN: {
     placeholder: 'replace-with-your-project-token',
     modes: ['pat'],
     failMessage: 'Update .secrets with a real ORG_PROJECT_TOKEN before running act in pat mode. You can start from .secrets.example.',
-    warnMessage: 'Using placeholder ORG_PROJECT_TOKEN because dry run was requested.',
   },
   ORG_AUTOMATION_APP_ID: {
     placeholder: 'replace-with-your-github-app-id',
     modes: ['app'],
     failMessage: 'Update .secrets with real ORG_AUTOMATION_APP_ID and ORG_AUTOMATION_APP_PRIVATE_KEY before running act in app mode. You can start from .secrets.example.',
-    warnMessage: 'Using placeholder GitHub App credentials because dry run was requested.',
   },
   ORG_AUTOMATION_APP_PRIVATE_KEY: {
     placeholder: 'replace-with-your-github-app-private-key',
     modes: ['app'],
     failMessage: 'Update .secrets with real ORG_AUTOMATION_APP_ID and ORG_AUTOMATION_APP_PRIVATE_KEY before running act in app mode. You can start from .secrets.example.',
-    warnMessage: null,
   },
 };
 
 const workflowMap = new Map(workflowEntries.map((e) => [e.name, e]));
 
 function printHelp() {
-  console.log('Usage: node scripts/run-act-test.js [--files <workflow-file> [...workflow-file]] [--auth-mode <pat|app>] [--dry-run] [--list]');
+  console.log('Usage: node scripts/run-act-test.js [--files <workflow-file> [...workflow-file]] [--auth-mode <pat|app>] [--list]');
   console.log('');
   console.log('Options:');
   console.log('  --files, -f <files...> Run one or more test workflows by file name; defaults to all');
   console.log('  --all                  Run all test workflows (default when --files is omitted)');
   console.log('  --auth-mode <mode>     Select token source: pat or app');
-  console.log('  --dry-run              Pass --dryrun to act');
   console.log('  --list                 Print available test workflow file names');
   console.log('  --help, -h             Show this help');
 }
@@ -94,7 +89,6 @@ function parseArgs(argv) {
   const options = {
     files: [],
     authMode: 'pat',
-    dryRun: false,
     list: false,
   };
 
@@ -134,10 +128,6 @@ function parseArgs(argv) {
         index += 1;
         break;
       }
-      case '--dry-run':
-      case '--dryrun':
-        options.dryRun = true;
-        break;
       case '--list':
         options.list = true;
         break;
@@ -223,7 +213,7 @@ function readSecretsFile() {
   return readFileSync(path.join(repoRoot, '.secrets'), 'utf8');
 }
 
-function maybeValidateSecrets(dryRun, authMode, selectedWorkflows) {
+function maybeValidateSecrets(authMode, selectedWorkflows) {
   const content = readSecretsFile();
   const shownMessages = new Set();
 
@@ -236,28 +226,20 @@ function maybeValidateSecrets(dryRun, authMode, selectedWorkflows) {
     if (!meta.modes.includes(authMode)) continue;
     if (!content.includes(meta.placeholder)) continue;
 
-    if (dryRun) {
-      if (meta.warnMessage && !shownMessages.has(meta.warnMessage)) {
-        shownMessages.add(meta.warnMessage);
-        console.warn(meta.warnMessage);
-      }
-    } else if (!shownMessages.has(meta.failMessage)) {
+    if (!shownMessages.has(meta.failMessage)) {
       shownMessages.add(meta.failMessage);
       fail(meta.failMessage);
     }
   }
 }
 
-function runActWorkflow(actCommand, workflowName, workflowPath, dryRun, authMode) {
+function runActWorkflow(actCommand, workflowName, workflowPath, authMode) {
   const absoluteWorkflowPath = path.join(repoRoot, workflowPath);
   if (!existsSync(absoluteWorkflowPath)) {
     fail(`Workflow file '${workflowPath}' was not found.`);
   }
 
   const actArgs = ['workflow_dispatch', '-W', workflowPath, '--input', `auth_mode=${authMode}`];
-  if (dryRun) {
-    actArgs.push('--dryrun');
-  }
 
   console.log(`Running ${workflowName} via act with auth mode '${authMode}'...`);
 
@@ -294,10 +276,10 @@ function main() {
   ensureActAvailable(actCommand);
   ensureRequiredFiles();
   const selectedWorkflows = resolveWorkflowSelections(options.files);
-  maybeValidateSecrets(options.dryRun, options.authMode, selectedWorkflows);
+  maybeValidateSecrets(options.authMode, selectedWorkflows);
   for (const workflowFile of selectedWorkflows) {
     const entry = workflowMap.get(workflowFile);
-    runActWorkflow(actCommand, entry.name, entry.path, options.dryRun, options.authMode);
+    runActWorkflow(actCommand, entry.name, entry.path, options.authMode);
   }
 }
 
