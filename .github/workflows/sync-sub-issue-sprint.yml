@@ -1,3 +1,5 @@
+# Назначение: копирует sprint/iteration родительской issue в sub-issue и при необходимости добавляет sub-issue в проект.
+# Когда использовать: как reusable workflow на событии создания sub-issue, чтобы дочерние задачи наследовали спринт родителя.
 name: Sync sub-issue sprint from parent
 
 on:

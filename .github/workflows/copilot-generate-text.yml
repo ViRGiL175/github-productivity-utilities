@@ -1,3 +1,5 @@
+# Назначение: вызывает Copilot SDK внутри GitHub Actions и возвращает сгенерированный текст по prompt и контексту.
+# Когда использовать: как reusable workflow для текстовой генерации в CI, включая prompt, input_text и содержимое context_files.
 name: Copilot Generate Text
 
 on:
