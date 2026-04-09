@@ -280,6 +280,10 @@ jobs:
             const pullRequestRepoName = process.env.PULL_REQUEST_REPO_NAME || pullRequestFromEvent?.base?.repo?.name || context.repo.repo;
             const headRef = process.env.HEAD_REF || pullRequestFromEvent?.head?.ref || '';
             const requestedReviewersJson = process.env.REQUESTED_REVIEWERS_JSON || '';
+            const headers = {
+              accept: 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+            };
 
             if (!pullRequestNodeId || !Number.isInteger(pullRequestNumber) || pullRequestNumber <= 0) {
               throw new Error('Pull request context is required. Pass pull_request_node_id and pull_request_number, or run from a pull_request event.');
@@ -444,10 +448,7 @@ jobs:
             async function getProjectOwnerType(ownerLogin) {
               const response = await github.request('GET /users/{username}', {
                 username: ownerLogin,
-                headers: {
-                  accept: 'application/vnd.github+json',
-                  'X-GitHub-Api-Version': '2022-11-28',
-                },
+                headers,
               });
 
               return response.data.type;
@@ -568,15 +569,50 @@ jobs:
             }
 
             async function getUserType(login) {
-              const response = await github.request('GET /users/{username}', {
-                username: login,
-                headers: {
-                  accept: 'application/vnd.github+json',
-                  'X-GitHub-Api-Version': '2022-11-28',
-                },
+              try {
+                const response = await github.request('GET /users/{username}', {
+                  username: login,
+                  headers,
+                });
+
+                return response.data.type;
+              } catch (error) {
+                const status = error?.status ?? error?.response?.status ?? 0;
+                if (status === 404) {
+                  core.info(`Skipping reviewer @${login} because GitHub does not expose it via GET /users/{username}.`);
+                  return null;
+                }
+
+                throw error;
+              }
+            }
+
+            async function getIssueAssigneeLogins(owner, repo, issueNumber) {
+              const response = await github.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
+                owner,
+                repo,
+                issue_number: issueNumber,
+                headers,
               });
 
-              return response.data.type;
+              return (response.data.assignees ?? [])
+                .map((assignee) => assignee?.login)
+                .filter(Boolean);
+            }
+
+            async function getRepoAssigneeLogins(owner, repo) {
+              const assignees = await github.paginate('GET /repos/{owner}/{repo}/assignees', {
+                owner,
+                repo,
+                per_page: 100,
+                headers,
+              });
+
+              return new Set(
+                (assignees ?? [])
+                  .map((assignee) => assignee?.login)
+                  .filter(Boolean),
+              );
             }
 
             function getRequestedReviewers() {
@@ -604,10 +640,7 @@ jobs:
                 owner: pullRequestRepoOwner,
                 repo: pullRequestRepoName,
                 pull_number: pullRequest.number,
-                headers: {
-                  accept: 'application/vnd.github+json',
-                  'X-GitHub-Api-Version': '2022-11-28',
-                },
+                headers,
               });
 
               const currentBody = response.data.body || pullRequestBodyHint || '';
@@ -622,13 +655,65 @@ jobs:
                 repo: pullRequestRepoName,
                 pull_number: pullRequest.number,
                 body: `${currentBody}${suffix}`,
-                headers: {
-                  accept: 'application/vnd.github+json',
-                  'X-GitHub-Api-Version': '2022-11-28',
-                },
+                headers,
               });
 
               core.info(`Appended closing reference ${closesRef} to PR ${pullRequestRepoOwner}/${pullRequestRepoName}#${pullRequest.number}.`);
+            }
+
+            async function syncAssigneesFromIssueIfNeeded(issueNumber) {
+              const currentPullRequestAssignees = await getIssueAssigneeLogins(
+                pullRequestRepoOwner,
+                pullRequestRepoName,
+                pullRequest.number,
+              );
+
+              if (currentPullRequestAssignees.length > 0) {
+                core.info(`PR #${pullRequest.number} already has assignees (${currentPullRequestAssignees.join(', ')}). Skipping assignee sync.`);
+                return;
+              }
+
+              const issueAssigneeLogins = await getIssueAssigneeLogins(
+                backlogRepoOwner,
+                backlogRepo,
+                issueNumber,
+              );
+
+              if (issueAssigneeLogins.length === 0) {
+                core.info(`Issue #${issueNumber} has no assignees. Skipping assignee sync.`);
+                return;
+              }
+
+              const availablePullRequestAssignees = await getRepoAssigneeLogins(
+                pullRequestRepoOwner,
+                pullRequestRepoName,
+              );
+              const assigneesToCopy = [...new Set(issueAssigneeLogins)]
+                .filter((login) => availablePullRequestAssignees.has(login));
+
+              if (assigneesToCopy.length === 0) {
+                core.info(`None of the issue assignees (${issueAssigneeLogins.join(', ')}) can be assigned to PR repo ${pullRequestRepoOwner}/${pullRequestRepoName}. Skipping assignee sync.`);
+                return;
+              }
+
+              try {
+                await github.request('PATCH /repos/{owner}/{repo}/issues/{issue_number}', {
+                  owner: pullRequestRepoOwner,
+                  repo: pullRequestRepoName,
+                  issue_number: pullRequest.number,
+                  assignees: assigneesToCopy,
+                  headers,
+                });
+              } catch (error) {
+                const status = error?.status ?? error?.response?.status ?? 0;
+                if (status === 403) {
+                  throw new Error(`Failed to sync assignees to PR #${pullRequest.number}: token needs issues:write access on ${pullRequestRepoOwner}/${pullRequestRepoName}.`);
+                }
+
+                throw error;
+              }
+
+              core.info(`Copied assignees ${assigneesToCopy.join(', ')} from issue #${issueNumber} to PR #${pullRequest.number}.`);
             }
 
             const project = await getProjectMetadata();
@@ -661,11 +746,11 @@ jobs:
                   continue;
                 }
 
-                const userType = await getUserType(login);
+                const userType = reviewer?.type || await getUserType(login);
                 if (userType === 'User') {
                   humanReviewers.push(login);
                 } else {
-                  core.info(`Skipping reviewer @${login} (type: ${userType}).`);
+                  core.info(`Skipping reviewer @${login} (type: ${userType || 'unknown'}).`);
                 }
               }
 
@@ -708,6 +793,8 @@ jobs:
               core.info(`Could not extract issue number from branch "${headRef}". Skipping sprint sync and closing reference.`);
               return;
             }
+
+            await syncAssigneesFromIssueIfNeeded(issueNumber);
 
             const issueProjectItem = await getIssueProjectItem(project.projectId, issueNumber);
             if (!issueProjectItem) {

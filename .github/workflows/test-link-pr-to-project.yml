@@ -1,5 +1,5 @@
 # Integration test: создаёт issue и PR, проверяет привязку PR к Project V2,
-# перенос sprint из issue, установку начального статуса, перевод в Need Review
+# перенос sprint и assignee из issue, установку начального статуса, перевод в Need Review
 # при запросе human-reviewer и установку статуса Done при закрытии, плюс cleanup.
 # В `pat`-режиме issue и PR живут в одном репозитории.
 # В `app`-режиме issue живёт в backlog-репозитории, а PR — в отдельном client-репозитории.
@@ -74,6 +74,7 @@ jobs:
       pull_node_id: ${{ steps.prepare.outputs.pull_node_id }}
       branch_name: ${{ steps.prepare.outputs.branch_name }}
       closes_ref: ${{ steps.prepare.outputs.closes_ref }}
+      issue_assignee_login: ${{ steps.prepare.outputs.issue_assignee_login }}
       backlog_repo_owner: ${{ steps.prepare.outputs.backlog_repo_owner }}
       backlog_repo_name: ${{ steps.prepare.outputs.backlog_repo_name }}
       pull_request_repo_owner: ${{ steps.prepare.outputs.pull_request_repo_owner }}
@@ -295,6 +296,19 @@ jobs:
               return optionNames.find((name) => !excluded.has(name)) ?? null;
             }
 
+            async function listRepoAssigneeLogins(owner, repo) {
+              const assignees = await github.paginate('GET /repos/{owner}/{repo}/assignees', {
+                owner,
+                repo,
+                per_page: 100,
+                headers,
+              });
+
+              return (assignees ?? [])
+                .map((assignee) => assignee?.login)
+                .filter(Boolean);
+            }
+
             async function getProjectOwnerType(login) {
               const response = await github.request('GET /users/{username}', {
                 username: login,
@@ -395,12 +409,20 @@ jobs:
             }
 
             const project = await getProjectMetadata();
+            const backlogRepoAssignees = await listRepoAssigneeLogins(backlogRepoOwner, backlogRepoName);
+            const pullRequestRepoAssignees = new Set(await listRepoAssigneeLogins(pullRequestRepoOwner, pullRequestRepoName));
+            const issueAssigneeLogin = backlogRepoAssignees.find((login) => pullRequestRepoAssignees.has(login)) ?? null;
+
+            if (!issueAssigneeLogin) {
+              throw new Error(`Need at least one common assignable user between ${backlogRepoOwner}/${backlogRepoName} and ${pullRequestRepoOwner}/${pullRequestRepoName} to run link-pr-to-project integration tests.`);
+            }
 
             const issueResponse = await github.request('POST /repos/{owner}/{repo}/issues', {
               owner: backlogRepoOwner,
               repo: backlogRepoName,
               title: issueTitle,
               body: `ITEST run ${context.runId} for link-pr-to-project issue`,
+              assignees: [issueAssigneeLogin],
               headers,
             });
             const issue = issueResponse.data;
@@ -455,11 +477,12 @@ jobs:
             core.setOutput('pull_node_id', pullRequest.node_id);
             core.setOutput('branch_name', branchName);
             core.setOutput('closes_ref', `Closes ${backlogRepoOwner}/${backlogRepoName}#${issue.number}`);
+            core.setOutput('issue_assignee_login', issueAssigneeLogin);
             core.setOutput('backlog_repo_owner', backlogRepoOwner);
             core.setOutput('backlog_repo_name', backlogRepoName);
             core.setOutput('pull_request_repo_owner', pullRequestRepoOwner);
             core.setOutput('pull_request_repo_name', pullRequestRepoName);
-            core.info(`Selected sandbox statuses: in-progress="${project.statusInProgressValue}", in-review="${project.statusInReviewValue}", done="${statusDoneValue}".`);
+            core.info(`Selected sandbox statuses: in-progress="${project.statusInProgressValue}", in-review="${project.statusInReviewValue}", done="${statusDoneValue}". Issue assignee: @${issueAssigneeLogin}.`);
 
   run-link-open-scenario:
     name: Run link PR open scenario
@@ -563,6 +586,7 @@ jobs:
           PULL_REQUEST_REPO_OWNER: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_owner }}
           PULL_REQUEST_REPO_NAME: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_name }}
           CLOSES_REF: ${{ needs.prepare-link-scenario.outputs.closes_ref }}
+          ISSUE_ASSIGNEE_LOGIN: ${{ needs.prepare-link-scenario.outputs.issue_assignee_login }}
         with:
           github-token: ${{ steps.auth.outputs.token }}
           script: |
@@ -576,6 +600,7 @@ jobs:
             const owner = process.env.PULL_REQUEST_REPO_OWNER;
             const repo = process.env.PULL_REQUEST_REPO_NAME;
             const closesRef = process.env.CLOSES_REF;
+            const expectedAssigneeLogin = process.env.ISSUE_ASSIGNEE_LOGIN;
             const headers = {
               accept: 'application/vnd.github+json',
               'X-GitHub-Api-Version': '2022-11-28',
@@ -676,9 +701,23 @@ jobs:
               if (!body.includes(closesRef)) {
                 throw new Error(`Expected PR body to contain "${closesRef}".`);
               }
+
+              const pullIssueResponse = await github.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
+                owner,
+                repo,
+                issue_number: pullNumber,
+                headers,
+              });
+              const assigneeLogins = (pullIssueResponse.data.assignees ?? [])
+                .map((assignee) => assignee?.login)
+                .filter(Boolean);
+
+              if (!assigneeLogins.includes(expectedAssigneeLogin)) {
+                throw new Error(`Expected PR assignees to include ${expectedAssigneeLogin}, got ${assigneeLogins.join(', ') || 'none'}.`);
+              }
             });
 
-            core.info(`PR #${pullNumber} is in the project, has iteration ${targetIterationId}, status ${statusInProgressValue}, and includes the closing reference.`);
+            core.info(`PR #${pullNumber} is in the project, has iteration ${targetIterationId}, status ${statusInProgressValue}, includes the closing reference, and inherited assignee @${expectedAssigneeLogin}.`);
 
   rerun-link-open-scenario:
     name: Rerun link PR open scenario for idempotency
@@ -909,7 +948,7 @@ jobs:
       pull_request_repo_name: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_name }}
       head_ref: ${{ needs.prepare-link-scenario.outputs.branch_name }}
       action: review_requested
-      requested_reviewers_json: '[{"login":"octocat"},{"login":"github-actions[bot]"}]'
+      requested_reviewers_json: '[{"login":"octocat"},{"login":"github-actions[bot]"},{"login":"Copilot"}]'
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
       installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
     secrets:
