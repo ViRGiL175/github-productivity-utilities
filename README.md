@@ -72,6 +72,4 @@
 
 `node ./scripts/run-act-test.js --files test-ensure-next-iteration-reminder.yml test-link-pr-to-project.yml --auth-mode app`
 
-`node ./scripts/run-act-test.js --files test-ensure-next-iteration-reminder.yml --auth-mode pat --dry-run`
-
 Для `test-copilot-generate-text.yml` нужен `USER_COPILOT_FGPAT` с permission `Copilot Requests`, потому что это живой integration test через реальный Copilot SDK.
