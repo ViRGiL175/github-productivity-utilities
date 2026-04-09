@@ -244,7 +244,8 @@ jobs:
     with:
       project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
       project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
-      repositories_json: ${{ format('["{0}/{1}"]', needs.prepare-safe-scenario.outputs.repo_owner, needs.prepare-safe-scenario.outputs.repo_name) }}
+      repositories: |
+        ${{ needs.prepare-safe-scenario.outputs.repo_owner }}/${{ needs.prepare-safe-scenario.outputs.repo_name }}
       status_field_name: Status
       status_start_value: To do
       status_final_value: Done
@@ -378,7 +379,8 @@ jobs:
     with:
       project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
       project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
-      repositories_json: ${{ format('["{0}/{1}"]', needs.prepare-safe-scenario.outputs.repo_owner, needs.prepare-safe-scenario.outputs.repo_name) }}
+      repositories: |
+        ${{ needs.prepare-safe-scenario.outputs.repo_owner }}/${{ needs.prepare-safe-scenario.outputs.repo_name }}
       status_field_name: Status
       status_start_value: To do
       status_final_value: Done
