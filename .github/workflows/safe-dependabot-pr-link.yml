@@ -13,12 +13,16 @@ on:
         description: Project V2 number
         required: true
         type: number
+      repositories:
+        description: Newline-delimited list of repository names or owner/name entries to reconcile
+        required: false
+        type: string
       repositories_json:
-        description: JSON array of repository names or owner/name entries to reconcile
-        required: true
+        description: Deprecated JSON array of repository names or owner/name entries to reconcile; use repositories instead
+        required: false
         type: string
       repository_owner:
-        description: Default owner used when repositories_json entries omit the owner; defaults to project_owner
+        description: Default owner used when repositories or repositories_json entries omit the owner; defaults to project_owner
         required: false
         type: string
       status_field_name:
@@ -169,6 +173,7 @@ jobs:
         env:
           PROJECT_OWNER: ${{ inputs.project_owner }}
           PROJECT_NUMBER: ${{ inputs.project_number }}
+          REPOSITORIES: ${{ inputs.repositories }}
           REPOSITORIES_JSON: ${{ inputs.repositories_json }}
           REPOSITORY_OWNER: ${{ inputs.repository_owner || inputs.project_owner }}
           STATUS_FIELD_NAME: ${{ inputs.status_field_name }}
@@ -182,7 +187,8 @@ jobs:
           script: |
             const projectOwner = process.env.PROJECT_OWNER;
             const projectNumber = Number(process.env.PROJECT_NUMBER);
-            const repositoriesJson = process.env.REPOSITORIES_JSON;
+            const repositoriesInput = process.env.REPOSITORIES || '';
+            const repositoriesJsonInput = process.env.REPOSITORIES_JSON || '';
             const defaultRepositoryOwner = process.env.REPOSITORY_OWNER || projectOwner;
             const statusFieldName = process.env.STATUS_FIELD_NAME;
             const statusStartValue = process.env.STATUS_START_VALUE;
@@ -295,16 +301,39 @@ jobs:
               }
             `;
 
-            function parseRepositories(value, ownerFallback) {
-              const parsed = JSON.parse(value);
-              if (!Array.isArray(parsed) || parsed.length === 0) {
-                throw new Error('repositories_json must be a non-empty JSON array.');
+            function parseRepositories(repositoriesValue, repositoriesJsonValue, ownerFallback) {
+              const textEntries = repositoriesValue
+                .split(/\r?\n/)
+                .map((entry) => entry.trim())
+                .filter((entry) => entry && !entry.startsWith('#'));
+
+              let entries = textEntries;
+
+              if (entries.length === 0) {
+                if (!repositoriesJsonValue.trim()) {
+                  throw new Error('Either repositories or repositories_json must be provided.');
+                }
+
+                let parsed;
+                try {
+                  parsed = JSON.parse(repositoriesJsonValue);
+                } catch (error) {
+                  throw new Error(`repositories_json must be a valid JSON array: ${error.message}`);
+                }
+
+                if (!Array.isArray(parsed) || parsed.length === 0) {
+                  throw new Error('repositories_json must be a non-empty JSON array when repositories is not provided.');
+                }
+
+                entries = parsed;
+              } else if (repositoriesJsonValue.trim()) {
+                core.warning('Both repositories and deprecated repositories_json were provided. Using repositories.');
               }
 
               const uniqueRepositories = new Map();
-              for (const entry of parsed) {
+              for (const entry of entries) {
                 if (typeof entry !== 'string' || entry.trim() === '') {
-                  throw new Error('Each repositories_json entry must be a non-empty string.');
+                  throw new Error('Each repository entry must be a non-empty string.');
                 }
 
                 const parts = entry.split('/').filter(Boolean);
@@ -469,7 +498,7 @@ jobs:
               core.info(`Set status ${statusFieldName}=${targetStatusName} for ${repository.nameWithOwner}#${pullRequest.number}.`);
             }
 
-            const repositories = parseRepositories(repositoriesJson, defaultRepositoryOwner);
+            const repositories = parseRepositories(repositoriesInput, repositoriesJsonInput, defaultRepositoryOwner);
             const closedCutoffDate = getClosedCutoffDate(closedLookbackDays);
             project = await getProjectMetadata();
             const counters = { added: 0, updated: 0, unchanged: 0, openSeen: 0, closedSeen: 0 };
