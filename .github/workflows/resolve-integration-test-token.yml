@@ -1,3 +1,5 @@
+# Назначение: централизованно резолвит токен для интеграционных тестов из PAT или GitHub App.
+# Когда использовать: как reusable workflow в test-* сценариях, чтобы не дублировать валидацию auth_mode и выпуск app token.
 name: Resolve integration test token
 
 on:

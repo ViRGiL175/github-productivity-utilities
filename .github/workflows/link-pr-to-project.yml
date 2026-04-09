@@ -1,3 +1,5 @@
+# Назначение: добавляет PR в Project V2, синхронизирует sprint, assignee, closing reference и статус по событиям PR.
+# Когда использовать: как reusable workflow на opened, review_requested и closed для поддержки связи PR с backlog issue и проектом.
 name: Link PR to Project
 
 on:

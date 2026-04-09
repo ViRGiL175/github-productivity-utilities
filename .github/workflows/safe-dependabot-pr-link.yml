@@ -1,3 +1,5 @@
+# Назначение: безопасно добавляет Dependabot PR в Project V2 и выставляет им стартовый или финальный статус.
+# Когда использовать: как reusable workflow для массовой reconciliation Dependabot PR по списку репозиториев без branch-based linkage.
 name: Safe Dependabot PR link
 
 on:

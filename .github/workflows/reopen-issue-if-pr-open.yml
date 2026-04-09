@@ -1,3 +1,5 @@
+# Назначение: переоткрывает issue, если к ней всё ещё привязаны открытые PR с closing keywords.
+# Когда использовать: как reusable workflow после закрытия issue, чтобы backlog не закрывался раньше времени при живом связанном PR.
 name: Reopen issue if linked PRs are open
 
 on:
