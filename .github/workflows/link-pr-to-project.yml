@@ -569,12 +569,22 @@ jobs:
             }
 
             async function getUserType(login) {
-              const response = await github.request('GET /users/{username}', {
-                username: login,
-                headers,
-              });
+              try {
+                const response = await github.request('GET /users/{username}', {
+                  username: login,
+                  headers,
+                });
 
-              return response.data.type;
+                return response.data.type;
+              } catch (error) {
+                const status = error?.status ?? error?.response?.status ?? 0;
+                if (status === 404) {
+                  core.info(`Skipping reviewer @${login} because GitHub does not expose it via GET /users/{username}.`);
+                  return null;
+                }
+
+                throw error;
+              }
             }
 
             async function getIssueAssigneeLogins(owner, repo, issueNumber) {
@@ -736,11 +746,11 @@ jobs:
                   continue;
                 }
 
-                const userType = await getUserType(login);
+                const userType = reviewer?.type || await getUserType(login);
                 if (userType === 'User') {
                   humanReviewers.push(login);
                 } else {
-                  core.info(`Skipping reviewer @${login} (type: ${userType}).`);
+                  core.info(`Skipping reviewer @${login} (type: ${userType || 'unknown'}).`);
                 }
               }
 
