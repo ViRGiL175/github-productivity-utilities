@@ -1,5 +1,4 @@
-# Integration test: создаёт issue, прогоняет AI-label workflow для успешного и rejected сценариев,
-# проверяет issue labels + Project V2 field update, затем закрывает тестовые issue и удаляет project items.
+# Integration test: creates real issues, runs AI label workflow, verifies labels + Project V2 fields, then cleans up.
 name: Test ai-label-issue
 
 on:
@@ -23,6 +22,7 @@ on:
       - '.github/workflows/ai-label-issue.yml'
       - '.github/workflows/test-ai-label-issue.yml'
       - '.github/workflows/copilot-generate-text.yml'
+      - '.github/workflows/resolve-integration-test-token.yml'
       - '.secrets.example'
       - 'README.md'
       - 'scripts/run-act-test.js'
@@ -60,8 +60,8 @@ jobs:
       app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
       app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
 
-  prepare-ai-label-scenario:
-    name: Prepare AI label scenario
+  prepare-label-scenario:
+    name: Prepare label scenario
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     needs:
@@ -75,56 +75,6 @@ jobs:
       reject_issue_node_id: ${{ steps.prepare.outputs.reject_issue_node_id }}
       reject_issue_url: ${{ steps.prepare.outputs.reject_issue_url }}
     steps:
-      - name: Normalize GitHub App private key
-        if: ${{ env.AUTH_MODE == 'app' }}
-        id: normalize-key
-        shell: bash
-        env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
-        run: |
-          if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
-            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
-          else
-            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Create GitHub App installation token
-        if: ${{ env.AUTH_MODE == 'app' }}
-        id: app-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
-          private-key: ${{ steps.normalize-key.outputs.private_key }}
-          owner: ${{ env.INSTALLATION_OWNER }}
-          skip-token-revoke: true
-
-      - name: Resolve job auth token
-        id: auth
-        shell: bash
-        env:
-          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
-          APP_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          case "$AUTH_MODE" in
-            pat)
-              TOKEN="$DIRECT_TOKEN"
-              ;;
-            app)
-              TOKEN="$APP_TOKEN"
-              ;;
-            *)
-              echo "Unsupported auth mode: $AUTH_MODE" >&2
-              exit 1
-              ;;
-          esac
-
-          if [ -z "$TOKEN" ]; then
-            echo "Resolved token is empty for auth_mode=$AUTH_MODE" >&2
-            exit 1
-          fi
-
-          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
-
       - name: Create test issues and label
         id: prepare
         uses: actions/github-script@v8
@@ -139,8 +89,9 @@ jobs:
           SUCCESS_TITLE: ITEST-${{ github.run_id }} ai label success
           REJECT_TITLE: ITEST-${{ github.run_id }} ai label rejected
         with:
-          github-token: ${{ steps.auth.outputs.token }}
+          github-token: ${{ needs.resolve-auth.outputs.token }}
           script: |
+            const headers = { accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
             const projectOwner = process.env.PROJECT_OWNER;
             const projectNumber = Number(process.env.PROJECT_NUMBER);
             const statusFieldName = process.env.STATUS_FIELD_NAME;
@@ -148,173 +99,73 @@ jobs:
             const owner = process.env.REPO_OWNER;
             const repo = process.env.REPO_NAME;
             const testLabel = process.env.TEST_LABEL;
-            const successTitle = process.env.SUCCESS_TITLE;
-            const rejectTitle = process.env.REJECT_TITLE;
-            const headers = {
-              accept: 'application/vnd.github+json',
-              'X-GitHub-Api-Version': '2022-11-28',
-            };
 
-            const ORGANIZATION_PROJECT_QUERY = `
-              query($owner: String!, $number: Int!) {
-                organization(login: $owner) {
-                  projectV2(number: $number) {
-                    id
-                    fields(first: 100) {
-                      nodes {
-                        __typename
-                        ... on ProjectV2FieldCommon {
-                          id
-                          name
-                        }
-                        ... on ProjectV2SingleSelectField {
-                          options {
-                            id
-                            name
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            `;
-
-            const USER_PROJECT_QUERY = `
-              query($owner: String!, $number: Int!) {
-                user(login: $owner) {
-                  projectV2(number: $number) {
-                    id
-                    fields(first: 100) {
-                      nodes {
-                        __typename
-                        ... on ProjectV2FieldCommon {
-                          id
-                          name
-                        }
-                        ... on ProjectV2SingleSelectField {
-                          options {
-                            id
-                            name
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            `;
-
-            async function getProjectOwnerType(login) {
-              const response = await github.request('GET /users/{username}', {
-                username: login,
-                headers,
-              });
-
-              return response.data.type;
-            }
-
-            async function getProjectMetadata() {
-              const ownerType = await getProjectOwnerType(projectOwner);
-              const query = ownerType === 'Organization' ? ORGANIZATION_PROJECT_QUERY : USER_PROJECT_QUERY;
-              const data = await github.graphql(query, {
-                owner: projectOwner,
-                number: projectNumber,
-              });
-
-              const project = ownerType === 'Organization'
-                ? data.organization?.projectV2
-                : data.user?.projectV2;
-
-              if (!project) {
-                throw new Error(`Project ${projectOwner}#${projectNumber} was not found.`);
-              }
-
-              const statusField = project.fields.nodes.find((field) =>
-                field?.__typename === 'ProjectV2SingleSelectField' && field.name === statusFieldName,
-              );
-              if (!statusField) {
-                throw new Error(`Status field "${statusFieldName}" was not found.`);
-              }
-
-              const doneOption = statusField.options?.find((option) => option.name === statusDoneValue);
-              if (!doneOption) {
-                throw new Error(`Status option "${statusDoneValue}" was not found.`);
-              }
-
+            async function getProject() {
+              const ownerType = (await github.request('GET /users/{username}', { username: projectOwner, headers })).data.type;
+              const fields = 'id fields(first:100){nodes{__typename ... on ProjectV2FieldCommon{id name} ... on ProjectV2SingleSelectField{options{id name}}}}';
+              const query = ownerType === 'Organization'
+                ? `query($owner:String!,$number:Int!){organization(login:$owner){projectV2(number:$number){${fields}}}}`
+                : `query($owner:String!,$number:Int!){user(login:$owner){projectV2(number:$number){${fields}}}}`;
+              const data = await github.graphql(query, { owner: projectOwner, number: projectNumber });
+              const project = ownerType === 'Organization' ? data.organization?.projectV2 : data.user?.projectV2;
+              if (!project) throw new Error(`Project ${projectOwner}#${projectNumber} was not found.`);
+              const status = project.fields.nodes.find((field) => field?.__typename === 'ProjectV2SingleSelectField' && field.name === statusFieldName);
+              if (!status) throw new Error(`Status field ${statusFieldName} was not found.`);
+              if (!status.options?.some((option) => option.name === statusDoneValue)) throw new Error(`Status option ${statusDoneValue} was not found.`);
               return project;
             }
 
             async function ensureLabel() {
               try {
-                await github.request('GET /repos/{owner}/{repo}/labels/{name}', {
-                  owner,
-                  repo,
-                  name: testLabel,
-                  headers,
-                });
+                await github.request('GET /repos/{owner}/{repo}/labels/{name}', { owner, repo, name: testLabel, headers });
               } catch (error) {
-                if (error.status !== 404) {
-                  throw error;
-                }
-
-                await github.request('POST /repos/{owner}/{repo}/labels', {
-                  owner,
-                  repo,
-                  name: testLabel,
-                  color: '5319e7',
-                  description: 'Integration-test label for ai-label-issue workflow.',
-                  headers,
-                });
+                if (error.status !== 404) throw error;
+                await github.request('POST /repos/{owner}/{repo}/labels', { owner, repo, name: testLabel, color: '5319e7', description: 'Integration-test label for AI workflows.', headers });
               }
             }
 
-            const project = await getProjectMetadata();
+            const project = await getProject();
             await ensureLabel();
-
-            const successResponse = await github.request('POST /repos/{owner}/{repo}/issues', {
+            const success = await github.request('POST /repos/{owner}/{repo}/issues', {
               owner,
               repo,
-              title: successTitle,
+              title: process.env.SUCCESS_TITLE,
               body: [
-                `ITEST run ${context.runId} for ai-label-issue success scenario.`,
+                `ITEST run ${context.runId} for ai-label success scenario.`,
                 '',
-                `This issue has enough explicit triage information.`,
                 `Set the project field ${statusFieldName} to ${statusDoneValue}.`,
                 `Apply the existing issue label ${testLabel}.`,
               ].join('\n'),
               headers,
             });
-
-            const rejectResponse = await github.request('POST /repos/{owner}/{repo}/issues', {
+            const rejected = await github.request('POST /repos/{owner}/{repo}/issues', {
               owner,
               repo,
-              title: rejectTitle,
+              title: process.env.REJECT_TITLE,
               body: [
-                `ITEST run ${context.runId} for ai-label-issue rejected scenario.`,
+                `ITEST run ${context.runId} for ai-label rejected scenario.`,
                 '',
-                'This issue is intentionally ambiguous and does not include enough information to choose any allowed project field value or issue label.',
-                'Do not infer status or labels from this text.',
+                'This issue intentionally does not include enough information to choose any allowed project field value or issue label.',
               ].join('\n'),
               headers,
             });
 
             core.setOutput('project_id', project.id);
-            core.setOutput('success_issue_number', String(successResponse.data.number));
-            core.setOutput('success_issue_node_id', successResponse.data.node_id);
-            core.setOutput('success_issue_url', successResponse.data.html_url);
-            core.setOutput('reject_issue_number', String(rejectResponse.data.number));
-            core.setOutput('reject_issue_node_id', rejectResponse.data.node_id);
-            core.setOutput('reject_issue_url', rejectResponse.data.html_url);
+            core.setOutput('success_issue_number', String(success.data.number));
+            core.setOutput('success_issue_node_id', success.data.node_id);
+            core.setOutput('success_issue_url', success.data.html_url);
+            core.setOutput('reject_issue_number', String(rejected.data.number));
+            core.setOutput('reject_issue_node_id', rejected.data.node_id);
+            core.setOutput('reject_issue_url', rejected.data.html_url);
 
-  run-ai-label-success-scenario:
-    name: Run AI label success scenario
+  run-label-success-scenario:
+    name: Run label success scenario
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     needs:
-      - prepare-ai-label-scenario
+      - prepare-label-scenario
     uses: ./.github/workflows/ai-label-issue.yml
     with:
-      issue_url: ${{ needs.prepare-ai-label-scenario.outputs.success_issue_url }}
+      issue_url: ${{ needs.prepare-label-scenario.outputs.success_issue_url }}
       project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
       project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
       allowed_fields: |
@@ -329,154 +180,60 @@ jobs:
       app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
       copilot_token: ${{ secrets.USER_COPILOT_FGPAT }}
 
-  assert-ai-label-success-scenario:
-    name: Assert AI label success scenario
+  assert-label-success-scenario:
+    name: Assert label success scenario
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     needs:
-      - prepare-ai-label-scenario
-      - run-ai-label-success-scenario
+      - resolve-auth
+      - prepare-label-scenario
+      - run-label-success-scenario
     runs-on: ubuntu-latest
     steps:
-      - name: Normalize GitHub App private key
-        if: ${{ env.AUTH_MODE == 'app' }}
-        id: normalize-key
-        shell: bash
-        env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
-        run: |
-          if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
-            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
-          else
-            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Create GitHub App installation token
-        if: ${{ env.AUTH_MODE == 'app' }}
-        id: app-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
-          private-key: ${{ steps.normalize-key.outputs.private_key }}
-          owner: ${{ env.INSTALLATION_OWNER }}
-          skip-token-revoke: true
-
-      - name: Resolve job auth token
-        id: auth
-        shell: bash
-        env:
-          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
-          APP_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          case "$AUTH_MODE" in
-            pat)
-              TOKEN="$DIRECT_TOKEN"
-              ;;
-            app)
-              TOKEN="$APP_TOKEN"
-              ;;
-            *)
-              echo "Unsupported auth mode: $AUTH_MODE" >&2
-              exit 1
-              ;;
-          esac
-
-          if [ -z "$TOKEN" ]; then
-            echo "Resolved token is empty for auth_mode=$AUTH_MODE" >&2
-            exit 1
-          fi
-
-          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
-
       - name: Assert label and project field were set
         uses: actions/github-script@v8
         env:
-          PROJECT_ID: ${{ needs.prepare-ai-label-scenario.outputs.project_id }}
-          ISSUE_NUMBER: ${{ needs.prepare-ai-label-scenario.outputs.success_issue_number }}
-          ISSUE_NODE_ID: ${{ needs.prepare-ai-label-scenario.outputs.success_issue_node_id }}
+          PROJECT_ID: ${{ needs.prepare-label-scenario.outputs.project_id }}
+          ISSUE_NUMBER: ${{ needs.prepare-label-scenario.outputs.success_issue_number }}
+          ISSUE_NODE_ID: ${{ needs.prepare-label-scenario.outputs.success_issue_node_id }}
           REPO_OWNER: ${{ env.REPO_OWNER }}
           REPO_NAME: ${{ env.REPO_NAME }}
           STATUS_FIELD_NAME: ${{ env.STATUS_FIELD_NAME }}
           STATUS_DONE_VALUE: ${{ env.STATUS_DONE_VALUE }}
           TEST_LABEL: ${{ env.TEST_LABEL }}
         with:
-          github-token: ${{ steps.auth.outputs.token }}
+          github-token: ${{ needs.resolve-auth.outputs.token }}
           script: |
-            const projectId = process.env.PROJECT_ID;
-            const issueNumber = Number(process.env.ISSUE_NUMBER);
-            const issueNodeId = process.env.ISSUE_NODE_ID;
+            const headers = { accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
             const owner = process.env.REPO_OWNER;
             const repo = process.env.REPO_NAME;
+            const issueNumber = Number(process.env.ISSUE_NUMBER);
+            const issueNodeId = process.env.ISSUE_NODE_ID;
+            const projectId = process.env.PROJECT_ID;
             const statusFieldName = process.env.STATUS_FIELD_NAME;
             const statusDoneValue = process.env.STATUS_DONE_VALUE;
             const testLabel = process.env.TEST_LABEL;
-            const headers = {
-              accept: 'application/vnd.github+json',
-              'X-GitHub-Api-Version': '2022-11-28',
-            };
+            const issue = await github.request('GET /repos/{owner}/{repo}/issues/{issue_number}', { owner, repo, issue_number: issueNumber, headers });
+            const labels = (issue.data.labels ?? []).map((label) => label.name);
+            if (!labels.includes(testLabel)) throw new Error(`Expected ${testLabel} label, got: ${labels.join(', ') || 'none'}.`);
+            if (!labels.includes('ai-label-processed')) throw new Error(`Expected ai-label-processed label, got: ${labels.join(', ') || 'none'}.`);
+            if (labels.includes('ai-label-rejected')) throw new Error('Did not expect ai-label-rejected label on success scenario.');
 
-            const ISSUE_PROJECT_ITEMS_QUERY = `
-              query($issueId: ID!, $statusFieldName: String!) {
-                node(id: $issueId) {
-                  ... on Issue {
-                    projectItems(first: 100) {
-                      nodes {
-                        id
-                        project {
-                          id
-                        }
-                        fieldValueByName(name: $statusFieldName) {
-                          ... on ProjectV2ItemFieldSingleSelectValue {
-                            name
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            `;
-
-            const issueResponse = await github.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
-              owner,
-              repo,
-              issue_number: issueNumber,
-              headers,
-            });
-            const labels = (issueResponse.data.labels ?? []).map((label) => label.name);
-
-            if (!labels.includes(testLabel)) {
-              throw new Error(`Expected ${testLabel} label, got: ${labels.join(', ') || 'none'}.`);
-            }
-            if (!labels.includes('ai-processed')) {
-              throw new Error(`Expected ai-processed label, got: ${labels.join(', ') || 'none'}.`);
-            }
-            if (labels.includes('ai-rejected')) {
-              throw new Error('Did not expect ai-rejected label on success scenario.');
-            }
-
-            const projectData = await github.graphql(ISSUE_PROJECT_ITEMS_QUERY, {
-              issueId: issueNodeId,
-              statusFieldName,
-            });
-            const item = projectData.node?.projectItems?.nodes?.find((node) => node.project?.id === projectId) ?? null;
-            if (!item) {
-              throw new Error('Expected issue to be added to the project.');
-            }
-
+            const query = `query($issueId:ID!,$statusFieldName:String!){node(id:$issueId){... on Issue{projectItems(first:100){nodes{id project{id} fieldValueByName(name:$statusFieldName){... on ProjectV2ItemFieldSingleSelectValue{name}}}}}}}`;
+            const data = await github.graphql(query, { issueId: issueNodeId, statusFieldName });
+            const item = data.node?.projectItems?.nodes?.find((node) => node.project?.id === projectId) ?? null;
+            if (!item) throw new Error('Expected issue to be added to the project.');
             const actualStatus = item.fieldValueByName?.name ?? null;
-            if (actualStatus !== statusDoneValue) {
-              throw new Error(`Expected ${statusFieldName}=${statusDoneValue}, got ${actualStatus || 'none'}.`);
-            }
+            if (actualStatus !== statusDoneValue) throw new Error(`Expected ${statusFieldName}=${statusDoneValue}, got ${actualStatus || 'none'}.`);
 
-  run-ai-label-rejected-scenario:
-    name: Run AI label rejected scenario
+  run-label-rejected-scenario:
+    name: Run label rejected scenario
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     needs:
-      - prepare-ai-label-scenario
-      - assert-ai-label-success-scenario
+      - prepare-label-scenario
+      - assert-label-success-scenario
     uses: ./.github/workflows/ai-label-issue.yml
     with:
-      issue_url: ${{ needs.prepare-ai-label-scenario.outputs.reject_issue_url }}
+      issue_url: ${{ needs.prepare-label-scenario.outputs.reject_issue_url }}
       project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
       project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
       allowed_fields: |
@@ -491,246 +248,75 @@ jobs:
       app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
       copilot_token: ${{ secrets.USER_COPILOT_FGPAT }}
 
-  assert-ai-label-rejected-scenario:
-    name: Assert AI label rejected scenario
+  assert-label-rejected-scenario:
+    name: Assert label rejected scenario
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     needs:
-      - prepare-ai-label-scenario
-      - run-ai-label-rejected-scenario
+      - resolve-auth
+      - prepare-label-scenario
+      - run-label-rejected-scenario
     runs-on: ubuntu-latest
     steps:
-      - name: Normalize GitHub App private key
-        if: ${{ env.AUTH_MODE == 'app' }}
-        id: normalize-key
-        shell: bash
-        env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
-        run: |
-          if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
-            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
-          else
-            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Create GitHub App installation token
-        if: ${{ env.AUTH_MODE == 'app' }}
-        id: app-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
-          private-key: ${{ steps.normalize-key.outputs.private_key }}
-          owner: ${{ env.INSTALLATION_OWNER }}
-          skip-token-revoke: true
-
-      - name: Resolve job auth token
-        id: auth
-        shell: bash
-        env:
-          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
-          APP_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          case "$AUTH_MODE" in
-            pat)
-              TOKEN="$DIRECT_TOKEN"
-              ;;
-            app)
-              TOKEN="$APP_TOKEN"
-              ;;
-            *)
-              echo "Unsupported auth mode: $AUTH_MODE" >&2
-              exit 1
-              ;;
-          esac
-
-          if [ -z "$TOKEN" ]; then
-            echo "Resolved token is empty for auth_mode=$AUTH_MODE" >&2
-            exit 1
-          fi
-
-          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
-
       - name: Assert rejected labels were set
         uses: actions/github-script@v8
         env:
-          ISSUE_NUMBER: ${{ needs.prepare-ai-label-scenario.outputs.reject_issue_number }}
+          ISSUE_NUMBER: ${{ needs.prepare-label-scenario.outputs.reject_issue_number }}
           REPO_OWNER: ${{ env.REPO_OWNER }}
           REPO_NAME: ${{ env.REPO_NAME }}
         with:
-          github-token: ${{ steps.auth.outputs.token }}
+          github-token: ${{ needs.resolve-auth.outputs.token }}
           script: |
-            const issueNumber = Number(process.env.ISSUE_NUMBER);
+            const headers = { accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
             const owner = process.env.REPO_OWNER;
             const repo = process.env.REPO_NAME;
-            const headers = {
-              accept: 'application/vnd.github+json',
-              'X-GitHub-Api-Version': '2022-11-28',
-            };
+            const issueNumber = Number(process.env.ISSUE_NUMBER);
+            const issue = await github.request('GET /repos/{owner}/{repo}/issues/{issue_number}', { owner, repo, issue_number: issueNumber, headers });
+            const labels = (issue.data.labels ?? []).map((label) => label.name);
+            if (!labels.includes('ai-label-rejected')) throw new Error(`Expected ai-label-rejected label, got: ${labels.join(', ') || 'none'}.`);
+            if (!labels.includes('ai-label-processed')) throw new Error(`Expected ai-label-processed label, got: ${labels.join(', ') || 'none'}.`);
 
-            const issueResponse = await github.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
-              owner,
-              repo,
-              issue_number: issueNumber,
-              headers,
-            });
-            const labels = (issueResponse.data.labels ?? []).map((label) => label.name);
-
-            if (!labels.includes('ai-rejected')) {
-              throw new Error(`Expected ai-rejected label, got: ${labels.join(', ') || 'none'}.`);
-            }
-            if (!labels.includes('ai-processed')) {
-              throw new Error(`Expected ai-processed label, got: ${labels.join(', ') || 'none'}.`);
-            }
-
-  cleanup-ai-label-scenario:
-    name: Cleanup AI label scenario
-    if: ${{ always() && needs.prepare-ai-label-scenario.outputs.success_issue_number != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+  cleanup-label-scenario:
+    name: Cleanup label scenario
+    if: ${{ always() && needs.prepare-label-scenario.outputs.success_issue_number != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     needs:
-      - prepare-ai-label-scenario
-      - run-ai-label-success-scenario
-      - assert-ai-label-success-scenario
-      - run-ai-label-rejected-scenario
-      - assert-ai-label-rejected-scenario
+      - resolve-auth
+      - prepare-label-scenario
+      - run-label-success-scenario
+      - assert-label-success-scenario
+      - run-label-rejected-scenario
+      - assert-label-rejected-scenario
     runs-on: ubuntu-latest
     steps:
-      - name: Normalize GitHub App private key
-        if: ${{ env.AUTH_MODE == 'app' }}
-        id: normalize-key
-        shell: bash
-        env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
-        run: |
-          if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
-            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
-          else
-            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Create GitHub App installation token
-        if: ${{ env.AUTH_MODE == 'app' }}
-        id: app-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
-          private-key: ${{ steps.normalize-key.outputs.private_key }}
-          owner: ${{ env.INSTALLATION_OWNER }}
-          skip-token-revoke: true
-
-      - name: Resolve job auth token
-        id: auth
-        shell: bash
-        env:
-          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
-          APP_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          case "$AUTH_MODE" in
-            pat)
-              TOKEN="$DIRECT_TOKEN"
-              ;;
-            app)
-              TOKEN="$APP_TOKEN"
-              ;;
-            *)
-              echo "Unsupported auth mode: $AUTH_MODE" >&2
-              exit 1
-              ;;
-          esac
-
-          if [ -z "$TOKEN" ]; then
-            echo "Resolved token is empty for auth_mode=$AUTH_MODE" >&2
-            exit 1
-          fi
-
-          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
-
       - name: Remove project items and close issues
         uses: actions/github-script@v8
         env:
-          PROJECT_ID: ${{ needs.prepare-ai-label-scenario.outputs.project_id }}
-          SUCCESS_ISSUE_NUMBER: ${{ needs.prepare-ai-label-scenario.outputs.success_issue_number }}
-          SUCCESS_ISSUE_NODE_ID: ${{ needs.prepare-ai-label-scenario.outputs.success_issue_node_id }}
-          REJECT_ISSUE_NUMBER: ${{ needs.prepare-ai-label-scenario.outputs.reject_issue_number }}
-          REJECT_ISSUE_NODE_ID: ${{ needs.prepare-ai-label-scenario.outputs.reject_issue_node_id }}
+          PROJECT_ID: ${{ needs.prepare-label-scenario.outputs.project_id }}
+          SUCCESS_ISSUE_NUMBER: ${{ needs.prepare-label-scenario.outputs.success_issue_number }}
+          SUCCESS_ISSUE_NODE_ID: ${{ needs.prepare-label-scenario.outputs.success_issue_node_id }}
+          REJECT_ISSUE_NUMBER: ${{ needs.prepare-label-scenario.outputs.reject_issue_number }}
+          REJECT_ISSUE_NODE_ID: ${{ needs.prepare-label-scenario.outputs.reject_issue_node_id }}
           REPO_OWNER: ${{ env.REPO_OWNER }}
           REPO_NAME: ${{ env.REPO_NAME }}
         with:
-          github-token: ${{ steps.auth.outputs.token }}
+          github-token: ${{ needs.resolve-auth.outputs.token }}
           script: |
+            const headers = { accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
             const projectId = process.env.PROJECT_ID;
             const owner = process.env.REPO_OWNER;
             const repo = process.env.REPO_NAME;
             const issues = [
-              {
-                number: Number(process.env.SUCCESS_ISSUE_NUMBER),
-                nodeId: process.env.SUCCESS_ISSUE_NODE_ID,
-              },
-              {
-                number: Number(process.env.REJECT_ISSUE_NUMBER),
-                nodeId: process.env.REJECT_ISSUE_NODE_ID,
-              },
+              { number: Number(process.env.SUCCESS_ISSUE_NUMBER), nodeId: process.env.SUCCESS_ISSUE_NODE_ID },
+              { number: Number(process.env.REJECT_ISSUE_NUMBER), nodeId: process.env.REJECT_ISSUE_NODE_ID },
             ];
-            const headers = {
-              accept: 'application/vnd.github+json',
-              'X-GitHub-Api-Version': '2022-11-28',
-            };
-
-            const ISSUE_PROJECT_ITEMS_QUERY = `
-              query($issueId: ID!) {
-                node(id: $issueId) {
-                  ... on Issue {
-                    projectItems(first: 100) {
-                      nodes {
-                        id
-                        project {
-                          id
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            `;
-
-            const DELETE_ITEM_MUTATION = `
-              mutation($input: DeleteProjectV2ItemInput!) {
-                deleteProjectV2Item(input: $input) {
-                  deletedItemId
-                }
-              }
-            `;
-
-            async function deleteIssueProjectItem(issueNodeId) {
-              if (!issueNodeId || !projectId) {
-                return;
-              }
-
-              const data = await github.graphql(ISSUE_PROJECT_ITEMS_QUERY, {
-                issueId: issueNodeId,
-              });
-              const item = data.node?.projectItems?.nodes?.find((projectItem) => projectItem.project?.id === projectId) ?? null;
-              if (!item) {
-                return;
-              }
-
-              await github.graphql(DELETE_ITEM_MUTATION, {
-                input: {
-                  projectId,
-                  itemId: item.id,
-                },
-              });
-            }
-
+            const query = `query($issueId:ID!){node(id:$issueId){... on Issue{projectItems(first:100){nodes{id project{id}}}}}}`;
+            const mutation = `mutation($input:DeleteProjectV2ItemInput!){deleteProjectV2Item(input:$input){deletedItemId}}`;
             for (const issue of issues) {
-              await deleteIssueProjectItem(issue.nodeId);
-
-              if (issue.number > 0) {
-                await github.request('PATCH /repos/{owner}/{repo}/issues/{issue_number}', {
-                  owner,
-                  repo,
-                  issue_number: issue.number,
-                  state: 'closed',
-                  headers,
-                });
+              if (issue.nodeId && projectId) {
+                const data = await github.graphql(query, { issueId: issue.nodeId });
+                const item = data.node?.projectItems?.nodes?.find((projectItem) => projectItem.project?.id === projectId) ?? null;
+                if (item) await github.graphql(mutation, { input: { projectId, itemId: item.id } });
               }
+              if (issue.number > 0) await github.request('PATCH /repos/{owner}/{repo}/issues/{issue_number}', { owner, repo, issue_number: issue.number, state: 'closed', headers });
             }
 
   test-skipped-for-fork-pr:

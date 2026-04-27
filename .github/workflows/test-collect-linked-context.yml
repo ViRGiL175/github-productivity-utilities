@@ -102,9 +102,6 @@ jobs:
       auth_mode: pat
     secrets:
       pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
-        See https://github.com/ViRGiL175/github-productivity-utilities/pull/84
-        and same via Dependabot redirect:
-        https://redirect.github.com/ViRGiL175/github-productivity-utilities/pull/84
 
   assert-dedup:
     name: '[3] Assert — exactly one item, not two'
@@ -142,8 +139,6 @@ jobs:
       auth_mode: pat
     secrets:
       pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
-        Bumps actions/checkout from 3 to 4.
-        Release notes: https://github.com/actions/checkout/releases/tag/v4.0.0
 
   assert-release:
     name: '[4] Assert — release context fetched'
