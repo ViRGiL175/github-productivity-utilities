@@ -317,7 +317,9 @@ jobs:
       issue_url: ${{ needs.prepare-ai-label-scenario.outputs.success_issue_url }}
       project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
       project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
-      allowed_parameters: '{"issue":["labels"],"project_fields":["Status"]}'
+      allowed_fields: |
+        labels
+        Status
       model: ${{ github.event_name == 'workflow_dispatch' && inputs.model || 'gpt-4.1' }}
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
       installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
@@ -477,7 +479,9 @@ jobs:
       issue_url: ${{ needs.prepare-ai-label-scenario.outputs.reject_issue_url }}
       project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
       project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
-      allowed_parameters: '{"issue":["labels"],"project_fields":["Status"]}'
+      allowed_fields: |
+        labels
+        Status
       model: ${{ github.event_name == 'workflow_dispatch' && inputs.model || 'gpt-4.1' }}
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
       installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
