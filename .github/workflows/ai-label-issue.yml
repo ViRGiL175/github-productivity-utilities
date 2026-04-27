@@ -1,0 +1,1249 @@
+# Назначение: анализирует issue через Copilot и автоматически выставляет только явно разрешённые issue/project параметры.
+# Когда использовать: как reusable workflow или вручную, когда нужно LLM-assisted triage без права менять неразрешённые поля.
+name: AI label issue
+
+on:
+  workflow_call:
+    inputs:
+      issue_url:
+        description: Full GitHub issue URL to process
+        required: true
+        type: string
+      project_owner:
+        description: Login of the organization or user that owns the Project V2 board
+        required: true
+        type: string
+      project_number:
+        description: Project V2 number
+        required: true
+        type: number
+      allowed_parameters:
+        description: JSON object/array describing allowed issue parameters and project fields
+        required: true
+        type: string
+      model:
+        description: Copilot model ID to use for classification
+        required: false
+        default: gpt-4.1
+        type: string
+      auth_mode:
+        description: Auth mode used to resolve a token when project_token is not provided
+        required: false
+        default: pat
+        type: string
+      installation_owner:
+        description: Installation owner used to mint a GitHub App token when auth_mode=app
+        required: false
+        type: string
+    outputs:
+      decision:
+        description: Raw AI JSON decision
+        value: ${{ jobs.decide.outputs.text }}
+      result:
+        description: Processing result (applied or rejected)
+        value: ${{ jobs.apply.outputs.result }}
+    secrets:
+      project_token:
+        required: false
+      pat_token:
+        required: false
+      app_id:
+        required: false
+      app_private_key:
+        required: false
+      copilot_token:
+        required: false
+      ORG_PROJECT_TOKEN:
+        required: false
+      ORG_AUTOMATION_APP_ID:
+        required: false
+      ORG_AUTOMATION_APP_PRIVATE_KEY:
+        required: false
+      USER_COPILOT_FGPAT:
+        required: false
+  workflow_dispatch:
+    inputs:
+      issue_url:
+        description: Full GitHub issue URL to process
+        required: true
+        type: string
+      project_owner:
+        description: Login of the organization or user that owns the Project V2 board
+        required: true
+        type: string
+      project_number:
+        description: Project V2 number
+        required: true
+        type: number
+      allowed_parameters:
+        description: 'JSON, for example: {"issue":["labels"],"project_fields":["Status","Priority"]}'
+        required: true
+        type: string
+      model:
+        description: Copilot model ID to use for classification
+        required: false
+        default: gpt-4.1
+        type: string
+      auth_mode:
+        description: Token source to use
+        required: false
+        default: pat
+        type: choice
+        options:
+          - pat
+          - app
+      installation_owner:
+        description: Installation owner used when auth_mode=app
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  collect-context:
+    name: Collect issue and project context
+    runs-on: ubuntu-latest
+    outputs:
+      issue_context: ${{ steps.collect.outputs.issue_context }}
+      issue_owner: ${{ steps.collect.outputs.issue_owner }}
+      issue_repo: ${{ steps.collect.outputs.issue_repo }}
+      issue_number: ${{ steps.collect.outputs.issue_number }}
+      issue_node_id: ${{ steps.collect.outputs.issue_node_id }}
+      project_id: ${{ steps.collect.outputs.project_id }}
+    env:
+      AUTH_MODE: ${{ inputs.auth_mode }}
+      INSTALLATION_OWNER: ${{ inputs.installation_owner }}
+      DIRECT_TOKEN: ${{ secrets.project_token }}
+      PAT_TOKEN: ${{ secrets.pat_token || secrets.ORG_PROJECT_TOKEN }}
+      APP_ID: ${{ secrets.app_id || secrets.ORG_AUTOMATION_APP_ID }}
+      APP_PRIVATE_KEY: ${{ secrets.app_private_key || secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+    steps:
+      - name: Validate workflow auth configuration
+        shell: bash
+        run: |
+          if [ -n "$DIRECT_TOKEN" ]; then
+            exit 0
+          fi
+
+          case "$AUTH_MODE" in
+            pat)
+              if [ -z "$PAT_TOKEN" ]; then
+                echo "pat_token secret is required when auth_mode=pat and project_token is not provided" >&2
+                exit 1
+              fi
+              ;;
+            app)
+              if [ -z "$APP_ID" ] || [ -z "$APP_PRIVATE_KEY" ] || [ -z "$INSTALLATION_OWNER" ]; then
+                echo "app_id, app_private_key, and installation_owner are required when auth_mode=app and project_token is not provided" >&2
+                exit 1
+              fi
+              ;;
+            *)
+              echo "Unsupported auth_mode: $AUTH_MODE" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Normalize GitHub App private key
+        if: ${{ env.DIRECT_TOKEN == '' && env.AUTH_MODE == 'app' }}
+        id: normalize-key
+        shell: bash
+        run: |
+          if [[ "$APP_PRIVATE_KEY" == *'\n'* ]]; then
+            printf 'private_key<<EOF\n%b\nEOF\n' "$APP_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          else
+            printf 'private_key<<EOF\n%s\nEOF\n' "$APP_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub App installation token
+        if: ${{ env.DIRECT_TOKEN == '' && env.AUTH_MODE == 'app' }}
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ env.APP_ID }}
+          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          owner: ${{ inputs.installation_owner }}
+          skip-token-revoke: true
+
+      - name: Resolve workflow auth token
+        id: auth
+        shell: bash
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          if [ -n "$DIRECT_TOKEN" ]; then
+            TOKEN="$DIRECT_TOKEN"
+          else
+            case "$AUTH_MODE" in
+              pat)
+                TOKEN="$PAT_TOKEN"
+                ;;
+              app)
+                TOKEN="$APP_TOKEN"
+                ;;
+              *)
+                echo "Unsupported auth_mode: $AUTH_MODE" >&2
+                exit 1
+                ;;
+            esac
+          fi
+
+          if [ -z "$TOKEN" ]; then
+            echo "Resolved token is empty" >&2
+            exit 1
+          fi
+
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Collect issue context
+        id: collect
+        uses: actions/github-script@v8
+        env:
+          ISSUE_URL: ${{ inputs.issue_url }}
+          PROJECT_OWNER: ${{ inputs.project_owner }}
+          PROJECT_NUMBER: ${{ inputs.project_number }}
+          ALLOWED_PARAMETERS: ${{ inputs.allowed_parameters }}
+        with:
+          github-token: ${{ steps.auth.outputs.token }}
+          script: |
+            const issueUrl = process.env.ISSUE_URL;
+            const projectOwner = process.env.PROJECT_OWNER;
+            const projectNumber = Number(process.env.PROJECT_NUMBER);
+            const allowedParametersRaw = process.env.ALLOWED_PARAMETERS;
+            const headers = {
+              accept: 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+            };
+
+            function parseIssueUrl(value) {
+              let url;
+              try {
+                url = new URL(value);
+              } catch (error) {
+                throw new Error(`issue_url must be a valid URL: ${error.message}`);
+              }
+
+              if (url.hostname !== 'github.com') {
+                throw new Error(`issue_url must point to github.com, got ${url.hostname}.`);
+              }
+
+              const parts = url.pathname.split('/').filter(Boolean);
+              if (parts.length < 4 || parts[2] !== 'issues') {
+                throw new Error('issue_url must look like https://github.com/OWNER/REPO/issues/NUMBER.');
+              }
+
+              const number = Number(parts[3]);
+              if (!Number.isInteger(number) || number <= 0) {
+                throw new Error(`Invalid issue number in issue_url: ${parts[3]}.`);
+              }
+
+              return { owner: parts[0], repo: parts[1], number };
+            }
+
+            function normalizeAllowedParameters(raw) {
+              let parsed;
+              try {
+                parsed = JSON.parse(raw);
+              } catch (error) {
+                throw new Error(`allowed_parameters must be valid JSON: ${error.message}`);
+              }
+
+              const issue = new Set();
+              const projectFields = new Set();
+              const addIssueParameter = (name) => {
+                const normalized = String(name || '').trim();
+                if (normalized) {
+                  issue.add(normalized);
+                }
+              };
+              const addProjectField = (name) => {
+                const normalized = String(name || '').trim();
+                if (normalized) {
+                  projectFields.add(normalized);
+                }
+              };
+
+              if (Array.isArray(parsed)) {
+                for (const entry of parsed) {
+                  const value = String(entry || '').trim();
+                  if (!value) {
+                    continue;
+                  }
+
+                  if (value.startsWith('issue.')) {
+                    addIssueParameter(value.slice('issue.'.length));
+                  } else if (value.startsWith('project.')) {
+                    addProjectField(value.slice('project.'.length));
+                  } else if (['labels', 'assignees', 'milestone'].includes(value)) {
+                    addIssueParameter(value);
+                  } else {
+                    addProjectField(value);
+                  }
+                }
+              } else if (parsed && typeof parsed === 'object') {
+                for (const value of parsed.issue ?? parsed.issue_parameters ?? []) {
+                  addIssueParameter(value);
+                }
+                for (const value of parsed.project_fields ?? parsed.project ?? []) {
+                  addProjectField(value);
+                }
+              } else {
+                throw new Error('allowed_parameters must be a JSON object or array.');
+              }
+
+              return {
+                issue: [...issue],
+                project_fields: [...projectFields],
+              };
+            }
+
+            const ORGANIZATION_PROJECT_QUERY = `
+              query($owner: String!, $number: Int!) {
+                organization(login: $owner) {
+                  projectV2(number: $number) {
+                    id
+                    title
+                    fields(first: 100) {
+                      nodes {
+                        __typename
+                        ... on ProjectV2FieldCommon {
+                          id
+                          name
+                        }
+                        ... on ProjectV2SingleSelectField {
+                          options {
+                            id
+                            name
+                            description
+                          }
+                        }
+                        ... on ProjectV2IterationField {
+                          configuration {
+                            completedIterations {
+                              id
+                              title
+                              startDate
+                              duration
+                            }
+                            iterations {
+                              id
+                              title
+                              startDate
+                              duration
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const USER_PROJECT_QUERY = `
+              query($owner: String!, $number: Int!) {
+                user(login: $owner) {
+                  projectV2(number: $number) {
+                    id
+                    title
+                    fields(first: 100) {
+                      nodes {
+                        __typename
+                        ... on ProjectV2FieldCommon {
+                          id
+                          name
+                        }
+                        ... on ProjectV2SingleSelectField {
+                          options {
+                            id
+                            name
+                            description
+                          }
+                        }
+                        ... on ProjectV2IterationField {
+                          configuration {
+                            completedIterations {
+                              id
+                              title
+                              startDate
+                              duration
+                            }
+                            iterations {
+                              id
+                              title
+                              startDate
+                              duration
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const ISSUE_PROJECT_ITEMS_QUERY = `
+              query($issueId: ID!) {
+                node(id: $issueId) {
+                  ... on Issue {
+                    projectItems(first: 100) {
+                      nodes {
+                        id
+                        project {
+                          id
+                        }
+                        fieldValues(first: 100) {
+                          nodes {
+                            __typename
+                            ... on ProjectV2ItemFieldTextValue {
+                              text
+                              field {
+                                ... on ProjectV2FieldCommon {
+                                  name
+                                }
+                              }
+                            }
+                            ... on ProjectV2ItemFieldNumberValue {
+                              number
+                              field {
+                                ... on ProjectV2FieldCommon {
+                                  name
+                                }
+                              }
+                            }
+                            ... on ProjectV2ItemFieldDateValue {
+                              date
+                              field {
+                                ... on ProjectV2FieldCommon {
+                                  name
+                                }
+                              }
+                            }
+                            ... on ProjectV2ItemFieldSingleSelectValue {
+                              name
+                              optionId
+                              field {
+                                ... on ProjectV2FieldCommon {
+                                  name
+                                }
+                              }
+                            }
+                            ... on ProjectV2ItemFieldIterationValue {
+                              title
+                              iterationId
+                              field {
+                                ... on ProjectV2FieldCommon {
+                                  name
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            async function getProjectOwnerType(login) {
+              const response = await github.request('GET /users/{username}', {
+                username: login,
+                headers,
+              });
+
+              return response.data.type;
+            }
+
+            async function getProjectMetadata() {
+              const ownerType = await getProjectOwnerType(projectOwner);
+              const query = ownerType === 'Organization' ? ORGANIZATION_PROJECT_QUERY : USER_PROJECT_QUERY;
+              const data = await github.graphql(query, {
+                owner: projectOwner,
+                number: projectNumber,
+              });
+
+              const project = ownerType === 'Organization'
+                ? data.organization?.projectV2
+                : data.user?.projectV2;
+
+              if (!project) {
+                throw new Error(`Project ${projectOwner}#${projectNumber} was not found.`);
+              }
+
+              return project;
+            }
+
+            function simplifyProjectField(field) {
+              const base = {
+                name: field.name,
+                type: field.__typename,
+                description: null,
+              };
+
+              if (field.__typename === 'ProjectV2SingleSelectField') {
+                return {
+                  ...base,
+                  options: (field.options ?? []).map((option) => ({
+                    name: option.name,
+                    description: option.description ?? null,
+                  })),
+                };
+              }
+
+              if (field.__typename === 'ProjectV2IterationField') {
+                return {
+                  ...base,
+                  options: [
+                    ...(field.configuration?.iterations ?? []),
+                    ...(field.configuration?.completedIterations ?? []),
+                  ].map((iteration) => ({
+                    name: iteration.title,
+                    startDate: iteration.startDate,
+                    duration: iteration.duration,
+                    description: null,
+                  })),
+                };
+              }
+
+              return base;
+            }
+
+            function simplifyFieldValue(value) {
+              const fieldName = value.field?.name;
+              if (!fieldName) {
+                return null;
+              }
+
+              switch (value.__typename) {
+                case 'ProjectV2ItemFieldTextValue':
+                  return [fieldName, value.text ?? ''];
+                case 'ProjectV2ItemFieldNumberValue':
+                  return [fieldName, value.number ?? null];
+                case 'ProjectV2ItemFieldDateValue':
+                  return [fieldName, value.date ?? null];
+                case 'ProjectV2ItemFieldSingleSelectValue':
+                  return [fieldName, value.name ?? null];
+                case 'ProjectV2ItemFieldIterationValue':
+                  return [fieldName, value.title ?? null];
+                default:
+                  return [fieldName, null];
+              }
+            }
+
+            const issueRef = parseIssueUrl(issueUrl);
+            const allowed = normalizeAllowedParameters(allowedParametersRaw);
+            const issueResponse = await github.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
+              owner: issueRef.owner,
+              repo: issueRef.repo,
+              issue_number: issueRef.number,
+              headers,
+            });
+            const issue = issueResponse.data;
+
+            if (issue.pull_request) {
+              throw new Error('issue_url points to a pull request. Pass a real issue URL.');
+            }
+
+            const [repoLabels, repoAssignees, repoMilestones, project] = await Promise.all([
+              github.paginate('GET /repos/{owner}/{repo}/labels', {
+                owner: issueRef.owner,
+                repo: issueRef.repo,
+                per_page: 100,
+                headers,
+              }),
+              github.paginate('GET /repos/{owner}/{repo}/assignees', {
+                owner: issueRef.owner,
+                repo: issueRef.repo,
+                per_page: 100,
+                headers,
+              }),
+              github.paginate('GET /repos/{owner}/{repo}/milestones', {
+                owner: issueRef.owner,
+                repo: issueRef.repo,
+                state: 'all',
+                per_page: 100,
+                headers,
+              }),
+              getProjectMetadata(),
+            ]);
+
+            const projectItemsData = await github.graphql(ISSUE_PROJECT_ITEMS_QUERY, {
+              issueId: issue.node_id,
+            });
+            const projectItem = projectItemsData.node?.projectItems?.nodes?.find((item) => item.project?.id === project.id) ?? null;
+            const currentProjectValues = {};
+            for (const value of projectItem?.fieldValues?.nodes ?? []) {
+              const pair = simplifyFieldValue(value);
+              if (pair) {
+                currentProjectValues[pair[0]] = pair[1];
+              }
+            }
+
+            const projectFields = (project.fields?.nodes ?? [])
+              .filter(Boolean)
+              .map(simplifyProjectField);
+
+            const allowedProjectFieldSet = new Set(allowed.project_fields);
+            const missingAllowedProjectFields = allowed.project_fields.filter((fieldName) =>
+              !projectFields.some((field) => field.name === fieldName),
+            );
+            if (missingAllowedProjectFields.length > 0) {
+              throw new Error(`Allowed project field(s) were not found: ${missingAllowedProjectFields.join(', ')}.`);
+            }
+
+            const contextPayload = {
+              issue: {
+                owner: issueRef.owner,
+                repo: issueRef.repo,
+                number: issue.number,
+                title: issue.title,
+                body: issue.body ?? '',
+                state: issue.state,
+                labels: (issue.labels ?? []).map((label) => ({
+                  name: label.name,
+                  description: label.description ?? null,
+                })),
+                assignees: (issue.assignees ?? []).map((assignee) => assignee.login),
+                milestone: issue.milestone ? {
+                  title: issue.milestone.title,
+                  description: issue.milestone.description ?? null,
+                  state: issue.milestone.state,
+                } : null,
+              },
+              available_issue_parameters: {
+                labels: repoLabels.map((label) => ({
+                  name: label.name,
+                  description: label.description ?? null,
+                })),
+                assignees: repoAssignees.map((assignee) => ({
+                  login: assignee.login,
+                  name: assignee.name ?? null,
+                })),
+                milestones: repoMilestones.map((milestone) => ({
+                  title: milestone.title,
+                  description: milestone.description ?? null,
+                  state: milestone.state,
+                })),
+              },
+              project: {
+                owner: projectOwner,
+                number: projectNumber,
+                title: project.title,
+                fields: projectFields,
+                current_values: currentProjectValues,
+              },
+              allowed_parameters: allowed,
+            };
+
+            const json = JSON.stringify(contextPayload, null, 2);
+            core.setOutput('issue_context', json);
+            core.setOutput('issue_owner', issueRef.owner);
+            core.setOutput('issue_repo', issueRef.repo);
+            core.setOutput('issue_number', String(issue.number));
+            core.setOutput('issue_node_id', issue.node_id);
+            core.setOutput('project_id', project.id);
+
+  decide:
+    name: Ask AI for allowed parameter values
+    needs: collect-context
+    uses: ./.github/workflows/copilot-generate-text.yml
+    with:
+      model: ${{ inputs.model }}
+      prompt_text: |
+        You decide whether a GitHub issue has enough information to automatically set explicitly allowed issue/project parameters.
+
+        Return ONLY a valid JSON object. No markdown fences, no comments, no prose.
+
+        Required schema:
+        {
+          "sufficient": true,
+          "reason": "short reason",
+          "issue": {
+            "labels": ["existing label name"],
+            "assignees": ["existing assignee login"],
+            "milestone": "existing milestone title"
+          },
+          "project_fields": {
+            "Field name": "Allowed option/value"
+          }
+        }
+
+        If the issue lacks enough information, return:
+        {
+          "sufficient": false,
+          "reason": "what information is missing",
+          "issue": {},
+          "project_fields": {}
+        }
+
+        Rules:
+        - You may set only parameters listed in allowed_parameters.
+        - Use only available labels, assignees, milestones, project fields, and project options from the provided context.
+        - Do not invent labels, assignees, milestones, project field names, or single-select/iteration option names.
+        - Prefer doing nothing over guessing.
+        - For date fields use YYYY-MM-DD.
+        - For number fields return a JSON number.
+      input_text: ${{ needs.collect-context.outputs.issue_context }}
+    secrets:
+      copilot_token: ${{ secrets.copilot_token || secrets.USER_COPILOT_FGPAT }}
+
+  apply:
+    name: Apply allowed AI decision
+    needs:
+      - collect-context
+      - decide
+    runs-on: ubuntu-latest
+    outputs:
+      result: ${{ steps.apply.outputs.result }}
+    env:
+      AUTH_MODE: ${{ inputs.auth_mode }}
+      INSTALLATION_OWNER: ${{ inputs.installation_owner }}
+      DIRECT_TOKEN: ${{ secrets.project_token }}
+      PAT_TOKEN: ${{ secrets.pat_token || secrets.ORG_PROJECT_TOKEN }}
+      APP_ID: ${{ secrets.app_id || secrets.ORG_AUTOMATION_APP_ID }}
+      APP_PRIVATE_KEY: ${{ secrets.app_private_key || secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+    steps:
+      - name: Validate workflow auth configuration
+        shell: bash
+        run: |
+          if [ -n "$DIRECT_TOKEN" ]; then
+            exit 0
+          fi
+
+          case "$AUTH_MODE" in
+            pat)
+              if [ -z "$PAT_TOKEN" ]; then
+                echo "pat_token secret is required when auth_mode=pat and project_token is not provided" >&2
+                exit 1
+              fi
+              ;;
+            app)
+              if [ -z "$APP_ID" ] || [ -z "$APP_PRIVATE_KEY" ] || [ -z "$INSTALLATION_OWNER" ]; then
+                echo "app_id, app_private_key, and installation_owner are required when auth_mode=app and project_token is not provided" >&2
+                exit 1
+              fi
+              ;;
+            *)
+              echo "Unsupported auth_mode: $AUTH_MODE" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Normalize GitHub App private key
+        if: ${{ env.DIRECT_TOKEN == '' && env.AUTH_MODE == 'app' }}
+        id: normalize-key
+        shell: bash
+        run: |
+          if [[ "$APP_PRIVATE_KEY" == *'\n'* ]]; then
+            printf 'private_key<<EOF\n%b\nEOF\n' "$APP_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          else
+            printf 'private_key<<EOF\n%s\nEOF\n' "$APP_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub App installation token
+        if: ${{ env.DIRECT_TOKEN == '' && env.AUTH_MODE == 'app' }}
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ env.APP_ID }}
+          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          owner: ${{ inputs.installation_owner }}
+          skip-token-revoke: true
+
+      - name: Resolve workflow auth token
+        id: auth
+        shell: bash
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          if [ -n "$DIRECT_TOKEN" ]; then
+            TOKEN="$DIRECT_TOKEN"
+          else
+            case "$AUTH_MODE" in
+              pat)
+                TOKEN="$PAT_TOKEN"
+                ;;
+              app)
+                TOKEN="$APP_TOKEN"
+                ;;
+              *)
+                echo "Unsupported auth_mode: $AUTH_MODE" >&2
+                exit 1
+                ;;
+            esac
+          fi
+
+          if [ -z "$TOKEN" ]; then
+            echo "Resolved token is empty" >&2
+            exit 1
+          fi
+
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Apply decision
+        id: apply
+        uses: actions/github-script@v8
+        env:
+          ISSUE_OWNER: ${{ needs.collect-context.outputs.issue_owner }}
+          ISSUE_REPO: ${{ needs.collect-context.outputs.issue_repo }}
+          ISSUE_NUMBER: ${{ needs.collect-context.outputs.issue_number }}
+          ISSUE_NODE_ID: ${{ needs.collect-context.outputs.issue_node_id }}
+          PROJECT_OWNER: ${{ inputs.project_owner }}
+          PROJECT_NUMBER: ${{ inputs.project_number }}
+          ALLOWED_PARAMETERS: ${{ inputs.allowed_parameters }}
+          AI_RESPONSE: ${{ needs.decide.outputs.text }}
+        with:
+          github-token: ${{ steps.auth.outputs.token }}
+          script: |
+            const owner = process.env.ISSUE_OWNER;
+            const repo = process.env.ISSUE_REPO;
+            const issueNumber = Number(process.env.ISSUE_NUMBER);
+            const issueNodeId = process.env.ISSUE_NODE_ID;
+            const projectOwner = process.env.PROJECT_OWNER;
+            const projectNumber = Number(process.env.PROJECT_NUMBER);
+            const allowedParametersRaw = process.env.ALLOWED_PARAMETERS;
+            const aiResponse = process.env.AI_RESPONSE || '';
+            const processedLabel = 'ai-processed';
+            const rejectedLabel = 'ai-rejected';
+            const headers = {
+              accept: 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+            };
+
+            function normalizeAllowedParameters(raw) {
+              let parsed;
+              try {
+                parsed = JSON.parse(raw);
+              } catch (error) {
+                throw new Error(`allowed_parameters must be valid JSON: ${error.message}`);
+              }
+
+              const issue = new Set();
+              const projectFields = new Set();
+              const addIssueParameter = (name) => {
+                const normalized = String(name || '').trim();
+                if (normalized) {
+                  issue.add(normalized);
+                }
+              };
+              const addProjectField = (name) => {
+                const normalized = String(name || '').trim();
+                if (normalized) {
+                  projectFields.add(normalized);
+                }
+              };
+
+              if (Array.isArray(parsed)) {
+                for (const entry of parsed) {
+                  const value = String(entry || '').trim();
+                  if (!value) {
+                    continue;
+                  }
+
+                  if (value.startsWith('issue.')) {
+                    addIssueParameter(value.slice('issue.'.length));
+                  } else if (value.startsWith('project.')) {
+                    addProjectField(value.slice('project.'.length));
+                  } else if (['labels', 'assignees', 'milestone'].includes(value)) {
+                    addIssueParameter(value);
+                  } else {
+                    addProjectField(value);
+                  }
+                }
+              } else if (parsed && typeof parsed === 'object') {
+                for (const value of parsed.issue ?? parsed.issue_parameters ?? []) {
+                  addIssueParameter(value);
+                }
+                for (const value of parsed.project_fields ?? parsed.project ?? []) {
+                  addProjectField(value);
+                }
+              } else {
+                throw new Error('allowed_parameters must be a JSON object or array.');
+              }
+
+              return {
+                issue: issue,
+                project_fields: projectFields,
+              };
+            }
+
+            function parseJsonResponse(value) {
+              const trimmed = value.trim();
+              const withoutFence = trimmed
+                .replace(/^```(?:json)?\s*/i, '')
+                .replace(/\s*```$/i, '')
+                .trim();
+
+              try {
+                return JSON.parse(withoutFence);
+              } catch (error) {
+                throw new Error(`AI response must be valid JSON: ${error.message}. Response: ${trimmed.slice(0, 1000)}`);
+              }
+            }
+
+            async function labelExists(name) {
+              try {
+                await github.request('GET /repos/{owner}/{repo}/labels/{name}', {
+                  owner,
+                  repo,
+                  name,
+                  headers,
+                });
+                return true;
+              } catch (error) {
+                if (error.status === 404) {
+                  return false;
+                }
+                throw error;
+              }
+            }
+
+            async function ensureLabel(name, color, description) {
+              if (await labelExists(name)) {
+                return;
+              }
+
+              await github.request('POST /repos/{owner}/{repo}/labels', {
+                owner,
+                repo,
+                name,
+                color,
+                description,
+                headers,
+              });
+            }
+
+            async function addLabels(names) {
+              const labels = [...new Set(names.filter(Boolean))];
+              if (labels.length === 0) {
+                return;
+              }
+
+              await github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
+                owner,
+                repo,
+                issue_number: issueNumber,
+                labels,
+                headers,
+              });
+            }
+
+            async function setAssignees(logins) {
+              const assignees = [...new Set(logins.filter(Boolean))];
+              await github.request('PATCH /repos/{owner}/{repo}/issues/{issue_number}', {
+                owner,
+                repo,
+                issue_number: issueNumber,
+                assignees,
+                headers,
+              });
+            }
+
+            async function setMilestone(title) {
+              const milestones = await github.paginate('GET /repos/{owner}/{repo}/milestones', {
+                owner,
+                repo,
+                state: 'all',
+                per_page: 100,
+                headers,
+              });
+              const milestone = milestones.find((candidate) => candidate.title === String(title));
+              if (!milestone) {
+                throw new Error(`Milestone "${title}" was not found in ${owner}/${repo}.`);
+              }
+
+              await github.request('PATCH /repos/{owner}/{repo}/issues/{issue_number}', {
+                owner,
+                repo,
+                issue_number: issueNumber,
+                milestone: milestone.number,
+                headers,
+              });
+            }
+
+            const ORGANIZATION_PROJECT_QUERY = `
+              query($owner: String!, $number: Int!) {
+                organization(login: $owner) {
+                  projectV2(number: $number) {
+                    id
+                    title
+                    fields(first: 100) {
+                      nodes {
+                        __typename
+                        ... on ProjectV2FieldCommon {
+                          id
+                          name
+                        }
+                        ... on ProjectV2SingleSelectField {
+                          options {
+                            id
+                            name
+                          }
+                        }
+                        ... on ProjectV2IterationField {
+                          configuration {
+                            completedIterations {
+                              id
+                              title
+                            }
+                            iterations {
+                              id
+                              title
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const USER_PROJECT_QUERY = `
+              query($owner: String!, $number: Int!) {
+                user(login: $owner) {
+                  projectV2(number: $number) {
+                    id
+                    title
+                    fields(first: 100) {
+                      nodes {
+                        __typename
+                        ... on ProjectV2FieldCommon {
+                          id
+                          name
+                        }
+                        ... on ProjectV2SingleSelectField {
+                          options {
+                            id
+                            name
+                          }
+                        }
+                        ... on ProjectV2IterationField {
+                          configuration {
+                            completedIterations {
+                              id
+                              title
+                            }
+                            iterations {
+                              id
+                              title
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const ISSUE_PROJECT_ITEM_QUERY = `
+              query($issueId: ID!) {
+                node(id: $issueId) {
+                  ... on Issue {
+                    projectItems(first: 100) {
+                      nodes {
+                        id
+                        project {
+                          id
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const ADD_PROJECT_ITEM_MUTATION = `
+              mutation($projectId: ID!, $contentId: ID!) {
+                addProjectV2ItemById(input: { projectId: $projectId, contentId: $contentId }) {
+                  item {
+                    id
+                  }
+                }
+              }
+            `;
+
+            const UPDATE_FIELD_MUTATION = `
+              mutation($input: UpdateProjectV2ItemFieldValueInput!) {
+                updateProjectV2ItemFieldValue(input: $input) {
+                  projectV2Item {
+                    id
+                  }
+                }
+              }
+            `;
+
+            async function getProjectOwnerType(login) {
+              const response = await github.request('GET /users/{username}', {
+                username: login,
+                headers,
+              });
+
+              return response.data.type;
+            }
+
+            async function getProjectMetadata() {
+              const ownerType = await getProjectOwnerType(projectOwner);
+              const query = ownerType === 'Organization' ? ORGANIZATION_PROJECT_QUERY : USER_PROJECT_QUERY;
+              const data = await github.graphql(query, {
+                owner: projectOwner,
+                number: projectNumber,
+              });
+
+              const project = ownerType === 'Organization'
+                ? data.organization?.projectV2
+                : data.user?.projectV2;
+
+              if (!project) {
+                throw new Error(`Project ${projectOwner}#${projectNumber} was not found.`);
+              }
+
+              return project;
+            }
+
+            async function getOrAddProjectItem(projectId) {
+              const data = await github.graphql(ISSUE_PROJECT_ITEM_QUERY, {
+                issueId: issueNodeId,
+              });
+
+              const existing = data.node?.projectItems?.nodes?.find((item) => item.project?.id === projectId) ?? null;
+              if (existing) {
+                return existing.id;
+              }
+
+              const added = await github.graphql(ADD_PROJECT_ITEM_MUTATION, {
+                projectId,
+                contentId: issueNodeId,
+              });
+
+              return added.addProjectV2ItemById.item.id;
+            }
+
+            function fieldValueForDecision(field, rawValue) {
+              if (rawValue === null || rawValue === undefined || rawValue === '') {
+                return null;
+              }
+
+              switch (field.__typename) {
+                case 'ProjectV2SingleSelectField': {
+                  const option = (field.options ?? []).find((candidate) => candidate.name === String(rawValue));
+                  if (!option) {
+                    throw new Error(`Option "${rawValue}" was not found in project field "${field.name}".`);
+                  }
+                  return { singleSelectOptionId: option.id };
+                }
+                case 'ProjectV2IterationField': {
+                  const iterations = [
+                    ...(field.configuration?.iterations ?? []),
+                    ...(field.configuration?.completedIterations ?? []),
+                  ];
+                  const iteration = iterations.find((candidate) => candidate.title === String(rawValue));
+                  if (!iteration) {
+                    throw new Error(`Iteration "${rawValue}" was not found in project field "${field.name}".`);
+                  }
+                  return { iterationId: iteration.id };
+                }
+                case 'ProjectV2Field':
+                  if (typeof rawValue === 'number') {
+                    return { number: rawValue };
+                  }
+                  if (typeof rawValue === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(rawValue)) {
+                    return { date: rawValue };
+                  }
+                  return { text: String(rawValue) };
+                default:
+                  core.warning(`Field "${field.name}" has unsupported type ${field.__typename}; skipping.`);
+                  return null;
+              }
+            }
+
+            async function updateProjectField(project, itemId, field, rawValue) {
+              const value = fieldValueForDecision(field, rawValue);
+              if (!value) {
+                return;
+              }
+
+              await github.graphql(UPDATE_FIELD_MUTATION, {
+                input: {
+                  projectId: project.id,
+                  itemId,
+                  fieldId: field.id,
+                  value,
+                },
+              });
+            }
+
+            async function main() {
+              const allowed = normalizeAllowedParameters(allowedParametersRaw);
+              await ensureLabel(processedLabel, '0e8a16', 'Issue was processed by AI-assisted labeling automation.');
+              await ensureLabel(rejectedLabel, 'd73a4a', 'AI-assisted labeling could not confidently infer allowed parameters.');
+
+              const decision = parseJsonResponse(aiResponse);
+
+              if (decision.sufficient !== true) {
+                await addLabels([rejectedLabel]);
+                core.setOutput('result', 'rejected');
+                core.info(`AI rejected issue: ${decision.reason || 'no reason provided'}`);
+                return;
+              }
+
+              const issueDecision = decision.issue && typeof decision.issue === 'object' ? decision.issue : {};
+              if (allowed.issue.has('labels') && Array.isArray(issueDecision.labels)) {
+                await addLabels(issueDecision.labels.map(String));
+              } else if (issueDecision.labels !== undefined) {
+                core.warning('AI returned issue.labels, but labels are not allowed. Skipping.');
+              }
+
+              if (allowed.issue.has('assignees') && Array.isArray(issueDecision.assignees)) {
+                await setAssignees(issueDecision.assignees.map(String));
+              } else if (issueDecision.assignees !== undefined) {
+                core.warning('AI returned issue.assignees, but assignees are not allowed. Skipping.');
+              }
+
+              if (allowed.issue.has('milestone') && typeof issueDecision.milestone === 'string') {
+                await setMilestone(issueDecision.milestone);
+              } else if (issueDecision.milestone !== undefined) {
+                core.warning('AI returned issue.milestone, but milestone is not allowed. Skipping.');
+              }
+
+              const projectFieldsDecision = decision.project_fields && typeof decision.project_fields === 'object'
+                ? decision.project_fields
+                : {};
+              const allowedProjectUpdates = Object.entries(projectFieldsDecision)
+                .filter(([fieldName]) => allowed.project_fields.has(fieldName));
+
+              const skippedProjectFields = Object.keys(projectFieldsDecision)
+                .filter((fieldName) => !allowed.project_fields.has(fieldName));
+              for (const fieldName of skippedProjectFields) {
+                core.warning(`AI returned project field "${fieldName}", but it is not allowed. Skipping.`);
+              }
+
+              if (allowedProjectUpdates.length > 0) {
+                const project = await getProjectMetadata();
+                const itemId = await getOrAddProjectItem(project.id);
+                const fieldsByName = new Map((project.fields?.nodes ?? []).filter(Boolean).map((field) => [field.name, field]));
+
+                for (const [fieldName, rawValue] of allowedProjectUpdates) {
+                  const field = fieldsByName.get(fieldName);
+                  if (!field) {
+                    throw new Error(`Project field "${fieldName}" was not found in ${projectOwner}#${projectNumber}.`);
+                  }
+                  await updateProjectField(project, itemId, field, rawValue);
+                  core.info(`Updated project field ${fieldName}.`);
+                }
+              }
+
+              core.setOutput('result', 'applied');
+            }
+
+            try {
+              await main();
+            } finally {
+              await addLabels([processedLabel]);
+            }

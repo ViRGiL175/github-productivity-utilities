@@ -9,6 +9,7 @@
 | Workflow-файл | Описание |
 | --- | --- |
 | [`./.github/workflows/ensure-next-iteration-reminder.yml`](./.github/workflows/ensure-next-iteration-reminder.yml) | Гарантирует, что в целевой итерации есть reminder draft, чтобы lane следующего спринта оставался видимым. |
+| [`./.github/workflows/ai-label-issue.yml`](./.github/workflows/ai-label-issue.yml) | Анализирует issue через Copilot, выставляет только разрешённые issue/project параметры, а при нехватке данных помечает `ai-rejected`. |
 | [`./.github/workflows/link-pr-to-project.yml`](./.github/workflows/link-pr-to-project.yml) | Добавляет PR в Project V2, копирует sprint и assignee из связанной issue и ставит статус Done при закрытии. Для синхронизации assignee токену нужны права на запись в issues PR-репозитория. |
 | [`./.github/workflows/reopen-issue-if-pr-open.yml`](./.github/workflows/reopen-issue-if-pr-open.yml) | Переоткрывает issue автоматически, если связанные PR, которые должны её закрыть, всё ещё открыты. |
 | [`./.github/workflows/safe-dependabot-pr-link.yml`](./.github/workflows/safe-dependabot-pr-link.yml) | Безопасно синхронизирует PR от Dependabot по списку репозиториев: принимает многострочный `repositories`, открытым ставит стартовый статус, закрытым — финальный. |
@@ -49,6 +50,7 @@
 
 Поддерживаются test workflow-файлы:
 
+- `test-ai-label-issue.yml`
 - `test-copilot-generate-text.yml`
 - `test-ensure-next-iteration-reminder.yml`
 - `test-link-pr-to-project.yml`
