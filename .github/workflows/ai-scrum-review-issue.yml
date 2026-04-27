@@ -1,0 +1,365 @@
+# Назначение: проверяет issue через Copilot на Scrum-ready оформление с учётом templates вызывающего репозитория.
+# Когда использовать: как reusable workflow или вручную для backlog-readiness review без автолейблинга/project updates.
+name: AI Scrum review issue
+
+on:
+  workflow_call:
+    inputs:
+      issue_url:
+        description: Full GitHub issue URL to review
+        required: true
+        type: string
+      model:
+        description: Copilot model ID to use for review
+        required: false
+        default: gpt-4.1
+        type: string
+      auth_mode:
+        description: Auth mode used to resolve a token when issue_token is not provided
+        required: false
+        default: pat
+        type: string
+      installation_owner:
+        description: Installation owner used to mint a GitHub App token when auth_mode=app
+        required: false
+        type: string
+    outputs:
+      decision:
+        description: Raw AI JSON decision
+        value: ${{ jobs.decide.outputs.text }}
+      result:
+        description: Processing result (ready or rejected)
+        value: ${{ jobs.apply.outputs.result }}
+    secrets:
+      issue_token:
+        required: false
+      pat_token:
+        required: false
+      app_id:
+        required: false
+      app_private_key:
+        required: false
+      copilot_token:
+        required: false
+      ORG_PROJECT_TOKEN:
+        required: false
+      ORG_AUTOMATION_APP_ID:
+        required: false
+      ORG_AUTOMATION_APP_PRIVATE_KEY:
+        required: false
+      USER_COPILOT_FGPAT:
+        required: false
+  workflow_dispatch:
+    inputs:
+      issue_url:
+        description: Full GitHub issue URL to review
+        required: true
+        type: string
+      model:
+        description: Copilot model ID to use for review
+        required: false
+        default: gpt-4.1
+        type: string
+      auth_mode:
+        description: Token source to use
+        required: false
+        default: pat
+        type: choice
+        options:
+          - pat
+          - app
+      installation_owner:
+        description: Installation owner used when auth_mode=app
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  collect-context:
+    name: Collect issue and template context
+    runs-on: ubuntu-latest
+    outputs:
+      issue_context: ${{ steps.collect.outputs.issue_context }}
+      issue_owner: ${{ steps.collect.outputs.issue_owner }}
+      issue_repo: ${{ steps.collect.outputs.issue_repo }}
+      issue_number: ${{ steps.collect.outputs.issue_number }}
+    env:
+      AUTH_MODE: ${{ inputs.auth_mode }}
+      INSTALLATION_OWNER: ${{ inputs.installation_owner }}
+      DIRECT_TOKEN: ${{ secrets.issue_token }}
+      PAT_TOKEN: ${{ secrets.pat_token || secrets.ORG_PROJECT_TOKEN }}
+      APP_ID: ${{ secrets.app_id || secrets.ORG_AUTOMATION_APP_ID }}
+      APP_PRIVATE_KEY: ${{ secrets.app_private_key || secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+    steps:
+      - name: Validate workflow auth configuration
+        shell: bash
+        run: |
+          if [ -n "$DIRECT_TOKEN" ]; then exit 0; fi
+          case "$AUTH_MODE" in
+            pat) [ -n "$PAT_TOKEN" ] || { echo "pat_token secret is required when auth_mode=pat" >&2; exit 1; } ;;
+            app) [ -n "$APP_ID" ] && [ -n "$APP_PRIVATE_KEY" ] && [ -n "$INSTALLATION_OWNER" ] || { echo "app_id, app_private_key, and installation_owner are required when auth_mode=app" >&2; exit 1; } ;;
+            *) echo "Unsupported auth_mode: $AUTH_MODE" >&2; exit 1 ;;
+          esac
+
+      - name: Normalize GitHub App private key
+        if: ${{ env.DIRECT_TOKEN == '' && env.AUTH_MODE == 'app' }}
+        id: normalize-key
+        shell: bash
+        run: |
+          if [[ "$APP_PRIVATE_KEY" == *'\n'* ]]; then
+            printf 'private_key<<EOF\n%b\nEOF\n' "$APP_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          else
+            printf 'private_key<<EOF\n%s\nEOF\n' "$APP_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub App installation token
+        if: ${{ env.DIRECT_TOKEN == '' && env.AUTH_MODE == 'app' }}
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ env.APP_ID }}
+          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          owner: ${{ inputs.installation_owner }}
+          skip-token-revoke: true
+
+      - name: Resolve workflow auth token
+        id: auth
+        shell: bash
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          case "${DIRECT_TOKEN:+direct}:$AUTH_MODE" in
+            direct:*) TOKEN="$DIRECT_TOKEN" ;;
+            :pat) TOKEN="$PAT_TOKEN" ;;
+            :app) TOKEN="$APP_TOKEN" ;;
+            *) echo "Unsupported auth_mode: $AUTH_MODE" >&2; exit 1 ;;
+          esac
+          [ -n "$TOKEN" ] || { echo "Resolved token is empty" >&2; exit 1; }
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Collect Scrum context
+        id: collect
+        uses: actions/github-script@v8
+        env:
+          ISSUE_URL: ${{ inputs.issue_url }}
+        with:
+          github-token: ${{ steps.auth.outputs.token }}
+          script: |
+            const headers = { accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
+
+            function parseIssueUrl(value) {
+              const url = new URL(value);
+              const parts = url.pathname.split('/').filter(Boolean);
+              if (url.hostname !== 'github.com' || parts.length < 4 || parts[2] !== 'issues') {
+                throw new Error('issue_url must look like https://github.com/OWNER/REPO/issues/NUMBER.');
+              }
+              const number = Number(parts[3]);
+              if (!Number.isInteger(number) || number <= 0) throw new Error(`Invalid issue number in issue_url: ${parts[3]}.`);
+              return { owner: parts[0], repo: parts[1], number };
+            }
+
+            async function getTextFile(owner, repo, path) {
+              try {
+                const response = await github.request('GET /repos/{owner}/{repo}/contents/{path}', { owner, repo, path, headers });
+                if (Array.isArray(response.data) || response.data.type !== 'file' || !response.data.content) return null;
+                const content = Buffer.from(response.data.content, response.data.encoding || 'base64').toString('utf8');
+                return { path: response.data.path, content: content.slice(0, 6000) };
+              } catch (error) {
+                if (error.status === 404) return null;
+                throw error;
+              }
+            }
+
+            async function getIssueTemplates(owner, repo) {
+              const templates = [];
+              const legacy = await getTextFile(owner, repo, '.github/ISSUE_TEMPLATE.md');
+              if (legacy) templates.push(legacy);
+
+              try {
+                const response = await github.request('GET /repos/{owner}/{repo}/contents/{path}', { owner, repo, path: '.github/ISSUE_TEMPLATE', headers });
+                const entries = Array.isArray(response.data) ? response.data : [];
+                for (const entry of entries.filter((item) => item.type === 'file' && /\.(md|ya?ml)$/i.test(item.name)).slice(0, 10)) {
+                  const template = await getTextFile(owner, repo, entry.path);
+                  if (template) templates.push(template);
+                }
+              } catch (error) {
+                if (error.status !== 404) throw error;
+              }
+
+              return templates;
+            }
+
+            const issueRef = parseIssueUrl(process.env.ISSUE_URL);
+            const issue = (await github.request('GET /repos/{owner}/{repo}/issues/{issue_number}', { owner: issueRef.owner, repo: issueRef.repo, issue_number: issueRef.number, headers })).data;
+            if (issue.pull_request) throw new Error('issue_url points to a pull request. Pass a real issue URL.');
+            const issueTemplates = await getIssueTemplates(issueRef.owner, issueRef.repo);
+
+            core.setOutput('issue_context', JSON.stringify({
+              issue: {
+                owner: issueRef.owner,
+                repo: issueRef.repo,
+                number: issue.number,
+                title: issue.title,
+                body: issue.body ?? '',
+                labels: (issue.labels ?? []).map((label) => label.name),
+              },
+              repository_standards: {
+                issue_templates: issueTemplates,
+              },
+            }, null, 2));
+            core.setOutput('issue_owner', issueRef.owner);
+            core.setOutput('issue_repo', issueRef.repo);
+            core.setOutput('issue_number', String(issue.number));
+
+  decide:
+    name: Ask AI for Scrum readiness
+    needs: collect-context
+    uses: ./.github/workflows/copilot-generate-text.yml
+    with:
+      model: ${{ inputs.model }}
+      prompt_text: |
+        Review whether the issue is formatted well enough for a Scrum backlog.
+        Return ONLY JSON. No markdown.
+
+        If the issue is ready to calmly wait in the backlog:
+        {"ready":true,"summary":"why this is backlog-ready","missing":[],"advice":[]}
+
+        If the issue is not ready as a Scrum backlog item:
+        {"ready":false,"summary":"short Scrum review","missing":["specific missing Scrum item"],"advice":["specific improvement advice"],"comment":"short reviewer comment for the issue author"}
+
+        Rules:
+        - Respect repository issue templates from the context. Do not require a format that contradicts the caller repository templates.
+        - Scrum-ready means the issue has a clear user/business goal, enough scope to understand the work, and actionable acceptance criteria or equivalent verification notes.
+        - Do not reject for missing implementation details if the story can safely wait in the backlog for later development.
+        - Prefer ready=false over guessing Scrum readiness.
+      input_text: ${{ needs.collect-context.outputs.issue_context }}
+    secrets:
+      copilot_token: ${{ secrets.copilot_token || secrets.USER_COPILOT_FGPAT }}
+
+  apply:
+    name: Apply Scrum review
+    needs:
+      - collect-context
+      - decide
+    runs-on: ubuntu-latest
+    outputs:
+      result: ${{ steps.apply.outputs.result }}
+    env:
+      AUTH_MODE: ${{ inputs.auth_mode }}
+      INSTALLATION_OWNER: ${{ inputs.installation_owner }}
+      DIRECT_TOKEN: ${{ secrets.issue_token }}
+      PAT_TOKEN: ${{ secrets.pat_token || secrets.ORG_PROJECT_TOKEN }}
+      APP_ID: ${{ secrets.app_id || secrets.ORG_AUTOMATION_APP_ID }}
+      APP_PRIVATE_KEY: ${{ secrets.app_private_key || secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+    steps:
+      - name: Normalize GitHub App private key
+        if: ${{ env.DIRECT_TOKEN == '' && env.AUTH_MODE == 'app' }}
+        id: normalize-key
+        shell: bash
+        run: |
+          if [[ "$APP_PRIVATE_KEY" == *'\n'* ]]; then
+            printf 'private_key<<EOF\n%b\nEOF\n' "$APP_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          else
+            printf 'private_key<<EOF\n%s\nEOF\n' "$APP_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub App installation token
+        if: ${{ env.DIRECT_TOKEN == '' && env.AUTH_MODE == 'app' }}
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ env.APP_ID }}
+          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          owner: ${{ inputs.installation_owner }}
+          skip-token-revoke: true
+
+      - name: Resolve workflow auth token
+        id: auth
+        shell: bash
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          case "${DIRECT_TOKEN:+direct}:$AUTH_MODE" in
+            direct:*) TOKEN="$DIRECT_TOKEN" ;;
+            :pat) TOKEN="$PAT_TOKEN" ;;
+            :app) TOKEN="$APP_TOKEN" ;;
+            *) echo "Unsupported auth_mode: $AUTH_MODE" >&2; exit 1 ;;
+          esac
+          [ -n "$TOKEN" ] || { echo "Resolved token is empty" >&2; exit 1; }
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Apply review
+        id: apply
+        uses: actions/github-script@v8
+        env:
+          ISSUE_OWNER: ${{ needs.collect-context.outputs.issue_owner }}
+          ISSUE_REPO: ${{ needs.collect-context.outputs.issue_repo }}
+          ISSUE_NUMBER: ${{ needs.collect-context.outputs.issue_number }}
+          AI_RESPONSE: ${{ needs.decide.outputs.text }}
+        with:
+          github-token: ${{ steps.auth.outputs.token }}
+          script: |
+            const headers = { accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
+            const owner = process.env.ISSUE_OWNER;
+            const repo = process.env.ISSUE_REPO;
+            const issueNumber = Number(process.env.ISSUE_NUMBER);
+            const processedLabel = 'ai-scrum-processed';
+            const rejectedLabel = 'ai-scrum-rejected';
+
+            function parseDecision(text) {
+              return JSON.parse((text || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, ''));
+            }
+
+            async function ensureLabel(name, color, description) {
+              try {
+                await github.request('GET /repos/{owner}/{repo}/labels/{name}', { owner, repo, name, headers });
+              } catch (error) {
+                if (error.status !== 404) throw error;
+                await github.request('POST /repos/{owner}/{repo}/labels', { owner, repo, name, color, description, headers });
+              }
+            }
+
+            async function addLabels(labels) {
+              const names = [...new Set((labels ?? []).filter(Boolean))];
+              if (names.length) await github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', { owner, repo, issue_number: issueNumber, labels: names, headers });
+            }
+
+            function buildRejectionComment(decision) {
+              const missing = Array.isArray(decision.missing) ? decision.missing.filter(Boolean) : [];
+              const advice = Array.isArray(decision.advice) ? decision.advice.filter(Boolean) : [];
+              const parts = [
+                '## AI Scrum review',
+                '',
+                decision.comment || decision.summary || 'This issue is not ready to wait calmly in the Scrum backlog.',
+              ];
+
+              if (missing.length) {
+                parts.push('', 'Что не хватает:', ...missing.map((item) => `- ${item}`));
+              }
+              if (advice.length) {
+                parts.push('', 'Как исправить:', ...advice.map((item) => `- ${item}`));
+              }
+
+              parts.push('', '_Метка `ai-scrum-rejected` означает, что историю нужно уточнить перед спокойным ожиданием в backlog._');
+              return parts.join('\n');
+            }
+
+            await ensureLabel(processedLabel, '0e8a16', 'Issue was processed by AI Scrum review automation.');
+            await ensureLabel(rejectedLabel, 'd73a4a', 'AI Scrum review found the issue is not backlog-ready.');
+
+            try {
+              const decision = parseDecision(process.env.AI_RESPONSE);
+              if (decision.ready !== true) {
+                await addLabels([rejectedLabel]);
+                await github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner, repo, issue_number: issueNumber, body: buildRejectionComment(decision), headers });
+                core.setOutput('result', 'rejected');
+                return;
+              }
+              core.setOutput('result', 'ready');
+            } finally {
+              await addLabels([processedLabel]);
+            }
