@@ -111,10 +111,14 @@ jobs:
         shell: bash
         run: |
           if [[ "$APP_PRIVATE_KEY" == *'\n'* ]]; then
-            printf 'private_key<<EOF\n%b\nEOF\n' "$APP_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$(printf '%b' "$APP_PRIVATE_KEY")"
           else
-            printf 'private_key<<EOF\n%s\nEOF\n' "$APP_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$APP_PRIVATE_KEY"
           fi
+          while IFS= read -r line; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done <<< "$NORMALIZED_PRIVATE_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub App installation token
         if: ${{ env.DIRECT_TOKEN == '' && env.AUTH_MODE == 'app' }}
@@ -265,10 +269,14 @@ jobs:
         shell: bash
         run: |
           if [[ "$APP_PRIVATE_KEY" == *'\n'* ]]; then
-            printf 'private_key<<EOF\n%b\nEOF\n' "$APP_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$(printf '%b' "$APP_PRIVATE_KEY")"
           else
-            printf 'private_key<<EOF\n%s\nEOF\n' "$APP_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$APP_PRIVATE_KEY"
           fi
+          while IFS= read -r line; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done <<< "$NORMALIZED_PRIVATE_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub App installation token
         if: ${{ env.DIRECT_TOKEN == '' && env.AUTH_MODE == 'app' }}

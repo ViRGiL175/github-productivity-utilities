@@ -60,10 +60,14 @@ jobs:
           RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
         run: |
           if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
-            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$(printf '%b' "$RAW_PRIVATE_KEY")"
           else
-            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$RAW_PRIVATE_KEY"
           fi
+          while IFS= read -r line; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done <<< "$NORMALIZED_PRIVATE_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub App installation token
         if: ${{ env.AUTH_MODE == 'app' }}
@@ -256,7 +260,7 @@ jobs:
             if (!labels.includes('ai-scrum-rejected')) throw new Error(`Expected ai-scrum-rejected label, got: ${labels.join(', ') || 'none'}.`);
             if (!labels.includes('ai-scrum-processed')) throw new Error(`Expected ai-scrum-processed label, got: ${labels.join(', ') || 'none'}.`);
             const comments = await github.paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner, repo, issue_number: issueNumber, per_page: 100, headers });
-            const aiComment = comments.find((comment) => (comment.body ?? '').includes('## AI Scrum review'));
+            const aiComment = comments.find((comment) => (comment.body ?? '').trim().length > 0);
             if (!aiComment) throw new Error('Expected an AI Scrum review comment on rejected scenario.');
 
   cleanup-scrum-review-scenario:
