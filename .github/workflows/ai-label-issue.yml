@@ -178,7 +178,7 @@ jobs:
           github-token: ${{ steps.auth.outputs.token }}
           script: |
             const headers = { accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
-            const ISSUE_FIELDS = new Set(['labels', 'assignees', 'milestone']);
+            const ISSUE_FIELDS = new Set(['labels', 'assignees', 'milestone', 'type']);
 
             function parseAllowedFields(text) {
               const values = (text || '').split(/\r?\n|,/).map((v) => v.trim()).filter(Boolean);
@@ -211,6 +211,20 @@ jobs:
               return project;
             }
 
+            async function getIssueTypes(owner) {
+              const ownerInfo = (await github.request('GET /users/{username}', { username: owner, headers })).data;
+              if (ownerInfo.type !== 'Organization') return [];
+              const query = `query($owner:String!){organization(login:$owner){issueTypes(first:100){nodes{id name description isEnabled}}}}`;
+              const data = await github.graphql(query, { owner });
+              return (data.organization?.issueTypes?.nodes ?? []).filter((type) => type?.isEnabled);
+            }
+
+            async function getCurrentIssueType(issueId) {
+              const query = `query($issueId:ID!){node(id:$issueId){... on Issue{issueType{name}}}}`;
+              const data = await github.graphql(query, { issueId });
+              return data.node?.issueType?.name ?? null;
+            }
+
             function describeField(field) {
               if (field.__typename === 'ProjectV2SingleSelectField') {
                 return { name: field.name, type: field.__typename, options: (field.options ?? []).map((o) => ({ name: o.name, description: o.description ?? null })) };
@@ -227,10 +241,12 @@ jobs:
             const issue = (await github.request('GET /repos/{owner}/{repo}/issues/{issue_number}', { owner: issueRef.owner, repo: issueRef.repo, issue_number: issueRef.number, headers })).data;
             if (issue.pull_request) throw new Error('issue_url points to a pull request. Pass a real issue URL.');
 
-            const [labels, assignees, milestones, project] = await Promise.all([
+            const [labels, assignees, milestones, issueTypes, currentIssueType, project] = await Promise.all([
               github.paginate('GET /repos/{owner}/{repo}/labels', { owner: issueRef.owner, repo: issueRef.repo, per_page: 100, headers }),
               github.paginate('GET /repos/{owner}/{repo}/assignees', { owner: issueRef.owner, repo: issueRef.repo, per_page: 100, headers }),
               github.paginate('GET /repos/{owner}/{repo}/milestones', { owner: issueRef.owner, repo: issueRef.repo, state: 'all', per_page: 100, headers }),
+              getIssueTypes(issueRef.owner),
+              getCurrentIssueType(issue.node_id),
               getProject(),
             ]);
 
@@ -248,11 +264,13 @@ jobs:
                 labels: (issue.labels ?? []).map((label) => label.name),
                 assignees: (issue.assignees ?? []).map((assignee) => assignee.login),
                 milestone: issue.milestone?.title ?? null,
+                type: currentIssueType,
               },
               available_issue_values: {
                 labels: labels.map((label) => ({ name: label.name, description: label.description ?? null })),
                 assignees: assignees.map((assignee) => ({ login: assignee.login, name: assignee.name ?? null })),
                 milestones: milestones.map((milestone) => ({ title: milestone.title, description: milestone.description ?? null, state: milestone.state })),
+                types: issueTypes.map((type) => ({ name: type.name, description: type.description ?? null })),
               },
               project: { owner: process.env.PROJECT_OWNER, number: Number(process.env.PROJECT_NUMBER), title: project.title, fields: projectFields },
               allowed_fields: allowedFields,
@@ -273,13 +291,14 @@ jobs:
         Return ONLY JSON. No markdown.
 
         If sufficient:
-        {"sufficient":true,"reason":"short reason","issue":{"labels":["existing label"],"assignees":["existing login"],"milestone":"existing milestone"},"project_fields":{"Field name":"existing option/value"}}
+        {"sufficient":true,"reason":"short reason","issue":{"labels":["existing label"],"assignees":["existing login"],"milestone":"existing milestone","type":"existing issue type"},"project_fields":{"Field name":"existing option/value"}}
 
         If insufficient:
         {"sufficient":false,"reason":"what labeling data is missing","issue":{},"project_fields":{}}
 
         Rules:
-        - Allowed issue fields are only: labels, assignees, milestone.
+        - Allowed issue fields are only: labels, assignees, milestone, type.
+        - The issue field `type` means native GitHub Issue Type, not a Project V2 field.
         - Any other allowed field name is a Project V2 field name.
         - Use only values present in the context. Do not invent values.
         - Supported Project V2 field types: single-select and iteration only.
@@ -356,7 +375,7 @@ jobs:
           github-token: ${{ steps.auth.outputs.token }}
           script: |
             const headers = { accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
-            const ISSUE_FIELDS = new Set(['labels', 'assignees', 'milestone']);
+            const ISSUE_FIELDS = new Set(['labels', 'assignees', 'milestone', 'type']);
             const owner = process.env.ISSUE_OWNER;
             const repo = process.env.ISSUE_REPO;
             const issueNumber = Number(process.env.ISSUE_NUMBER);
@@ -389,6 +408,18 @@ jobs:
               const milestone = milestones.find((m) => m.title === title);
               if (!milestone) throw new Error(`Milestone "${title}" was not found in ${owner}/${repo}.`);
               await github.request('PATCH /repos/{owner}/{repo}/issues/{issue_number}', { owner, repo, issue_number: issueNumber, milestone: milestone.number, headers });
+            }
+
+            async function setIssueType(name) {
+              const ownerInfo = (await github.request('GET /users/{username}', { username: owner, headers })).data;
+              if (ownerInfo.type !== 'Organization') throw new Error(`Issue types are only supported for organization-owned repositories. ${owner} is a ${ownerInfo.type}.`);
+              const query = `query($owner:String!){organization(login:$owner){issueTypes(first:100){nodes{id name isEnabled}}}}`;
+              const data = await github.graphql(query, { owner });
+              const issueTypes = (data.organization?.issueTypes?.nodes ?? []).filter((type) => type?.isEnabled);
+              const issueType = issueTypes.find((type) => type.name === name);
+              if (!issueType) throw new Error(`Issue type "${name}" was not found in organization ${owner}.`);
+              const mutation = `mutation($input:UpdateIssueInput!){updateIssue(input:$input){issue{id}}}`;
+              await github.graphql(mutation, { input: { id: process.env.ISSUE_NODE_ID, issueTypeId: issueType.id } });
             }
 
             async function getProject() {
@@ -456,6 +487,7 @@ jobs:
                 await github.request('PATCH /repos/{owner}/{repo}/issues/{issue_number}', { owner, repo, issue_number: issueNumber, assignees: issueDecision.assignees.map(String), headers });
               }
               if (allowedIssueFields.has('milestone') && typeof issueDecision.milestone === 'string') await setMilestone(issueDecision.milestone);
+              if (allowedIssueFields.has('type') && typeof issueDecision.type === 'string') await setIssueType(issueDecision.type);
               await applyProjectFields(decision);
               core.setOutput('result', 'applied');
             } finally {
