@@ -314,6 +314,21 @@ jobs:
               return JSON.parse((text || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, ''));
             }
 
+            function fencedJson(value) {
+              return `~~~json\n${JSON.stringify(value, null, 2)}\n~~~`;
+            }
+
+            async function writeDecisionSummary({ decision, result, reason }) {
+              await core.summary
+                .addHeading('AI Scrum review decision', 2)
+                .addRaw(`Issue: \`${owner}/${repo}#${issueNumber}\`\n\n`)
+                .addRaw(`Result: \`${result}\`\n\n`)
+                .addRaw(`Reason: ${reason || decision?.summary || decision?.comment || 'none'}\n\n`)
+                .addDetails('Parsed AI decision', fencedJson(decision ?? null))
+                .addDetails('Raw AI response', `~~~\n${process.env.AI_RESPONSE || ''}\n~~~`)
+                .write();
+            }
+
             async function ensureLabel(name, color, description) {
               try {
                 await github.request('GET /repos/{owner}/{repo}/labels/{name}', { owner, repo, name, headers });
@@ -351,15 +366,20 @@ jobs:
             await ensureLabel(processedLabel, '0e8a16', 'Issue was processed by AI Scrum review automation.');
             await ensureLabel(rejectedLabel, 'd73a4a', 'AI Scrum review found the issue is not backlog-ready.');
 
+            let summary = { decision: null, result: 'unknown', reason: 'The workflow did not finish applying a decision.' };
             try {
               const decision = parseDecision(process.env.AI_RESPONSE);
+              summary = { decision, result: 'unknown', reason: decision.summary || decision.comment || 'Decision parsed.' };
               if (decision.ready !== true) {
                 await addLabels([rejectedLabel]);
                 await github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner, repo, issue_number: issueNumber, body: buildRejectionComment(decision), headers });
+                summary = { decision, result: 'rejected', reason: decision.summary || decision.comment || 'AI returned ready=false.' };
                 core.setOutput('result', 'rejected');
                 return;
               }
+              summary = { decision, result: 'ready', reason: decision.summary || decision.comment || 'AI returned ready=true.' };
               core.setOutput('result', 'ready');
             } finally {
+              await writeDecisionSummary(summary);
               await addLabels([processedLabel]);
             }
