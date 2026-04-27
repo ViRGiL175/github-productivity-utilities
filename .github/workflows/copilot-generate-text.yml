@@ -112,6 +112,10 @@ jobs:
               ? (inputText ? `${inputText}\n\n${contextFilesContent}` : contextFilesContent)
               : inputText;
 
+            function fenced(value) {
+              return `~~~\n${String(value ?? '')}\n~~~`;
+            }
+
             if (!promptText.trim()) {
               throw new Error('prompt_text must not be empty');
             }
@@ -146,6 +150,12 @@ jobs:
                 }
 
                 core.setOutput('text', content);
+                await core.summary
+                  .addHeading('Copilot generated text', 2)
+                  .addRaw(`Model: \`${model || 'default'}\`\n\n`)
+                  .addRaw(`Characters: \`${content.length}\`\n\n`)
+                  .addDetails('Generated content', fenced(content))
+                  .write();
               } finally {
                 await session.disconnect();
               }

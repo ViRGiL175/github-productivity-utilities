@@ -300,6 +300,10 @@ jobs:
         - Allowed issue fields are only: labels, assignees, milestone, type.
         - The issue field `type` means native GitHub Issue Type, not a Project V2 field.
         - Any other allowed field name is a Project V2 field name.
+        - If sufficient is true, return a concrete value for every allowed field that can be confidently inferred.
+        - If `type` is allowed and no native GitHub Issue Type can be confidently selected from available_issue_values.types, return sufficient=false.
+        - If `labels` is allowed and no existing label can be confidently selected from available_issue_values.labels, return sufficient=false.
+        - Never return sufficient=true with an empty issue object and empty project_fields object.
         - Use only values present in the context. Do not invent values.
         - Supported Project V2 field types: single-select and iteration only.
         - Prefer insufficient over guessing labels or project fields.
@@ -389,6 +393,33 @@ jobs:
               return JSON.parse((text || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, ''));
             }
 
+            function fencedJson(value) {
+              return `~~~json\n${JSON.stringify(value, null, 2)}\n~~~`;
+            }
+
+            async function writeDecisionSummary({ decision, result, reason, missingAllowedFields = [], appliedCount = 0 }) {
+              await core.summary
+                .addHeading('AI label decision', 2)
+                .addRaw(`Issue: \`${owner}/${repo}#${issueNumber}\`\n\n`)
+                .addRaw(`Allowed issue fields: \`${[...allowedIssueFields].join(', ') || 'none'}\`\n\n`)
+                .addRaw(`Allowed project fields: \`${[...allowedProjectFields].join(', ') || 'none'}\`\n\n`)
+                .addRaw(`Result: \`${result}\`\n\n`)
+                .addRaw(`Reason: ${reason || decision?.reason || 'none'}\n\n`)
+                .addRaw(`Applied value count: \`${appliedCount}\`\n\n`)
+                .addRaw(`Missing allowed fields: \`${missingAllowedFields.join(', ') || 'none'}\`\n\n`)
+                .addDetails('Parsed AI decision', fencedJson(decision ?? null))
+                .addDetails('Raw AI response', `~~~\n${process.env.AI_RESPONSE || ''}\n~~~`)
+                .write();
+            }
+
+            function hasNonEmptyArray(value) {
+              return Array.isArray(value) && value.some((item) => String(item ?? '').trim() !== '');
+            }
+
+            function hasNonEmptyString(value) {
+              return typeof value === 'string' && value.trim() !== '';
+            }
+
             async function ensureLabel(name, color, description) {
               try {
                 await github.request('GET /repos/{owner}/{repo}/labels/{name}', { owner, repo, name, headers });
@@ -443,13 +474,14 @@ jobs:
 
             async function applyProjectFields(decision) {
               const entries = Object.entries(decision.project_fields ?? {}).filter(([name]) => allowedProjectFields.has(name));
-              if (!entries.length) return;
+              if (!entries.length) return 0;
 
               const project = await getProject();
               if (!project) throw new Error(`Project ${process.env.PROJECT_OWNER}#${process.env.PROJECT_NUMBER} was not found.`);
               const itemId = await getOrAddProjectItem(project.id);
               const fields = new Map((project.fields?.nodes ?? []).filter(Boolean).map((field) => [field.name, field]));
               const mutation = `mutation($input:UpdateProjectV2ItemFieldValueInput!){updateProjectV2ItemFieldValue(input:$input){projectV2Item{id}}}`;
+              let appliedCount = 0;
 
               for (const [fieldName, rawValue] of entries) {
                 const field = fields.get(fieldName);
@@ -468,28 +500,70 @@ jobs:
                   continue;
                 }
                 await github.graphql(mutation, { input: { projectId: project.id, itemId, fieldId: field.id, value } });
+                appliedCount += 1;
               }
+              return appliedCount;
             }
 
             await ensureLabel(processedLabel, '0e8a16', 'Issue was processed by AI label automation.');
             await ensureLabel(rejectedLabel, 'd73a4a', 'AI label automation could not confidently infer allowed fields.');
 
+            let summary = { decision: null, result: 'unknown', reason: 'The workflow did not finish applying a decision.' };
             try {
               const decision = parseDecision(process.env.AI_RESPONSE);
+              summary = { decision, result: 'unknown', reason: decision.reason || 'Decision parsed.' };
               if (decision.sufficient !== true) {
                 await addLabels([rejectedLabel]);
+                summary = { decision, result: 'rejected', reason: decision.reason || 'AI returned sufficient=false.' };
                 core.setOutput('result', 'rejected');
                 return;
               }
               const issueDecision = decision.issue ?? {};
-              if (allowedIssueFields.has('labels') && Array.isArray(issueDecision.labels)) await addLabels(issueDecision.labels.map(String));
+              const projectDecision = decision.project_fields ?? {};
+              const missingAllowedFields = [];
+              if (allowedIssueFields.has('labels') && !hasNonEmptyArray(issueDecision.labels)) missingAllowedFields.push('labels');
+              if (allowedIssueFields.has('assignees') && !hasNonEmptyArray(issueDecision.assignees)) missingAllowedFields.push('assignees');
+              if (allowedIssueFields.has('milestone') && !hasNonEmptyString(issueDecision.milestone)) missingAllowedFields.push('milestone');
+              if (allowedIssueFields.has('type') && !hasNonEmptyString(issueDecision.type)) missingAllowedFields.push('type');
+              for (const fieldName of allowedProjectFields) {
+                if (!hasNonEmptyString(projectDecision[fieldName])) missingAllowedFields.push(fieldName);
+              }
+              if (missingAllowedFields.length) {
+                core.warning(`AI returned sufficient=true but did not provide value(s) for allowed field(s): ${missingAllowedFields.join(', ')}.`);
+                await addLabels([rejectedLabel]);
+                summary = { decision, result: 'rejected', reason: 'AI returned sufficient=true without values for all allowed fields.', missingAllowedFields };
+                core.setOutput('result', 'rejected');
+                return;
+              }
+
+              let appliedCount = 0;
+              if (allowedIssueFields.has('labels') && Array.isArray(issueDecision.labels)) {
+                await addLabels(issueDecision.labels.map(String));
+                appliedCount += issueDecision.labels.length;
+              }
               if (allowedIssueFields.has('assignees') && Array.isArray(issueDecision.assignees)) {
                 await github.request('PATCH /repos/{owner}/{repo}/issues/{issue_number}', { owner, repo, issue_number: issueNumber, assignees: issueDecision.assignees.map(String), headers });
+                appliedCount += issueDecision.assignees.length;
               }
-              if (allowedIssueFields.has('milestone') && typeof issueDecision.milestone === 'string') await setMilestone(issueDecision.milestone);
-              if (allowedIssueFields.has('type') && typeof issueDecision.type === 'string') await setIssueType(issueDecision.type);
-              await applyProjectFields(decision);
+              if (allowedIssueFields.has('milestone') && typeof issueDecision.milestone === 'string') {
+                await setMilestone(issueDecision.milestone);
+                appliedCount += 1;
+              }
+              if (allowedIssueFields.has('type') && typeof issueDecision.type === 'string') {
+                await setIssueType(issueDecision.type);
+                appliedCount += 1;
+              }
+              appliedCount += await applyProjectFields(decision);
+              if (appliedCount === 0) {
+                core.warning('AI returned sufficient=true but no allowed values were applied. Marking as rejected.');
+                await addLabels([rejectedLabel]);
+                summary = { decision, result: 'rejected', reason: 'AI returned sufficient=true but no allowed values were applied.', appliedCount };
+                core.setOutput('result', 'rejected');
+                return;
+              }
+              summary = { decision, result: 'applied', reason: decision.reason || 'Allowed values were applied.', appliedCount };
               core.setOutput('result', 'applied');
             } finally {
+              await writeDecisionSummary(summary);
               await addLabels([processedLabel]);
             }
