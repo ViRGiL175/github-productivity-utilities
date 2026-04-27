@@ -1,5 +1,5 @@
 # Назначение: анализирует issue через Copilot и выставляет только явно разрешённые issue/project поля.
-# Когда использовать: как reusable workflow или вручную для LLM-assisted triage без права менять неразрешённые поля.
+# Когда использовать: как reusable workflow или вручную для LLM-assisted triage без Scrum-review политики.
 name: AI label issue
 
 on:
@@ -276,14 +276,14 @@ jobs:
         {"sufficient":true,"reason":"short reason","issue":{"labels":["existing label"],"assignees":["existing login"],"milestone":"existing milestone"},"project_fields":{"Field name":"existing option/value"}}
 
         If insufficient:
-        {"sufficient":false,"reason":"what is missing","issue":{},"project_fields":{}}
+        {"sufficient":false,"reason":"what labeling data is missing","issue":{},"project_fields":{}}
 
         Rules:
         - Allowed issue fields are only: labels, assignees, milestone.
         - Any other allowed field name is a Project V2 field name.
         - Use only values present in the context. Do not invent values.
         - Supported Project V2 field types: single-select and iteration only.
-        - Prefer insufficient over guessing.
+        - Prefer insufficient over guessing labels or project fields.
       input_text: ${{ needs.collect-context.outputs.issue_context }}
     secrets:
       copilot_token: ${{ secrets.copilot_token || secrets.USER_COPILOT_FGPAT }}
@@ -360,8 +360,8 @@ jobs:
             const owner = process.env.ISSUE_OWNER;
             const repo = process.env.ISSUE_REPO;
             const issueNumber = Number(process.env.ISSUE_NUMBER);
-            const processedLabel = 'ai-processed';
-            const rejectedLabel = 'ai-rejected';
+            const processedLabel = 'ai-label-processed';
+            const rejectedLabel = 'ai-label-rejected';
             const allowedValues = (process.env.ALLOWED_FIELDS || '').split(/\r?\n|,/).map((v) => v.trim()).filter(Boolean);
             const allowedIssueFields = new Set(allowedValues.filter((v) => ISSUE_FIELDS.has(v)));
             const allowedProjectFields = new Set(allowedValues.filter((v) => !ISSUE_FIELDS.has(v)));
@@ -440,8 +440,8 @@ jobs:
               }
             }
 
-            await ensureLabel(processedLabel, '0e8a16', 'Issue was processed by AI-assisted labeling automation.');
-            await ensureLabel(rejectedLabel, 'd73a4a', 'AI-assisted labeling could not confidently infer allowed fields.');
+            await ensureLabel(processedLabel, '0e8a16', 'Issue was processed by AI label automation.');
+            await ensureLabel(rejectedLabel, 'd73a4a', 'AI label automation could not confidently infer allowed fields.');
 
             try {
               const decision = parseDecision(process.env.AI_RESPONSE);
