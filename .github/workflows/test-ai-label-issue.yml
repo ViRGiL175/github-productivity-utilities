@@ -75,6 +75,29 @@ jobs:
       reject_issue_node_id: ${{ steps.prepare.outputs.reject_issue_node_id }}
       reject_issue_url: ${{ steps.prepare.outputs.reject_issue_url }}
     steps:
+      - name: Normalize GitHub App private key
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: normalize-key
+        shell: bash
+        env:
+          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+        run: |
+          if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
+            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          else
+            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub App installation token
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          owner: ${{ env.INSTALLATION_OWNER }}
+          skip-token-revoke: true
+
       - name: Create test issues and label
         id: prepare
         uses: actions/github-script@v8
@@ -89,7 +112,7 @@ jobs:
           SUCCESS_TITLE: ITEST-${{ github.run_id }} ai label success
           REJECT_TITLE: ITEST-${{ github.run_id }} ai label rejected
         with:
-          github-token: ${{ needs.resolve-auth.outputs.token }}
+          github-token: ${{ env.AUTH_MODE == 'app' && steps.app-token.outputs.token || secrets.ORG_PROJECT_TOKEN }}
           script: |
             const headers = { accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
             const projectOwner = process.env.PROJECT_OWNER;
@@ -189,6 +212,29 @@ jobs:
       - run-label-success-scenario
     runs-on: ubuntu-latest
     steps:
+      - name: Normalize GitHub App private key
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: normalize-key
+        shell: bash
+        env:
+          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+        run: |
+          if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
+            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          else
+            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub App installation token
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          owner: ${{ env.INSTALLATION_OWNER }}
+          skip-token-revoke: true
+
       - name: Assert label and project field were set
         uses: actions/github-script@v8
         env:
@@ -201,7 +247,7 @@ jobs:
           STATUS_DONE_VALUE: ${{ env.STATUS_DONE_VALUE }}
           TEST_LABEL: ${{ env.TEST_LABEL }}
         with:
-          github-token: ${{ needs.resolve-auth.outputs.token }}
+          github-token: ${{ env.AUTH_MODE == 'app' && steps.app-token.outputs.token || secrets.ORG_PROJECT_TOKEN }}
           script: |
             const headers = { accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
             const owner = process.env.REPO_OWNER;
@@ -257,6 +303,29 @@ jobs:
       - run-label-rejected-scenario
     runs-on: ubuntu-latest
     steps:
+      - name: Normalize GitHub App private key
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: normalize-key
+        shell: bash
+        env:
+          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+        run: |
+          if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
+            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          else
+            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub App installation token
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          owner: ${{ env.INSTALLATION_OWNER }}
+          skip-token-revoke: true
+
       - name: Assert rejected labels were set
         uses: actions/github-script@v8
         env:
@@ -264,7 +333,7 @@ jobs:
           REPO_OWNER: ${{ env.REPO_OWNER }}
           REPO_NAME: ${{ env.REPO_NAME }}
         with:
-          github-token: ${{ needs.resolve-auth.outputs.token }}
+          github-token: ${{ env.AUTH_MODE == 'app' && steps.app-token.outputs.token || secrets.ORG_PROJECT_TOKEN }}
           script: |
             const headers = { accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
             const owner = process.env.REPO_OWNER;
@@ -287,6 +356,29 @@ jobs:
       - assert-label-rejected-scenario
     runs-on: ubuntu-latest
     steps:
+      - name: Normalize GitHub App private key
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: normalize-key
+        shell: bash
+        env:
+          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+        run: |
+          if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
+            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          else
+            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub App installation token
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          owner: ${{ env.INSTALLATION_OWNER }}
+          skip-token-revoke: true
+
       - name: Remove project items and close issues
         uses: actions/github-script@v8
         env:
@@ -298,7 +390,7 @@ jobs:
           REPO_OWNER: ${{ env.REPO_OWNER }}
           REPO_NAME: ${{ env.REPO_NAME }}
         with:
-          github-token: ${{ needs.resolve-auth.outputs.token }}
+          github-token: ${{ env.AUTH_MODE == 'app' && steps.app-token.outputs.token || secrets.ORG_PROJECT_TOKEN }}
           script: |
             const headers = { accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
             const projectId = process.env.PROJECT_ID;
