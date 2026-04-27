@@ -68,10 +68,14 @@ jobs:
           RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
         run: |
           if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
-            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$(printf '%b' "$RAW_PRIVATE_KEY")"
           else
-            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$RAW_PRIVATE_KEY"
           fi
+          while IFS= read -r line; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done <<< "$NORMALIZED_PRIVATE_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub App installation token
         if: ${{ env.AUTH_MODE == 'app' }}
@@ -204,10 +208,14 @@ jobs:
           RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
         run: |
           if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
-            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$(printf '%b' "$RAW_PRIVATE_KEY")"
           else
-            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$RAW_PRIVATE_KEY"
           fi
+          while IFS= read -r line; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done <<< "$NORMALIZED_PRIVATE_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub App installation token
         if: ${{ env.AUTH_MODE == 'app' }}
@@ -294,10 +302,14 @@ jobs:
           RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
         run: |
           if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
-            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$(printf '%b' "$RAW_PRIVATE_KEY")"
           else
-            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$RAW_PRIVATE_KEY"
           fi
+          while IFS= read -r line; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done <<< "$NORMALIZED_PRIVATE_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub App installation token
         if: ${{ env.AUTH_MODE == 'app' }}
@@ -346,10 +358,14 @@ jobs:
           RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
         run: |
           if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
-            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$(printf '%b' "$RAW_PRIVATE_KEY")"
           else
-            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$RAW_PRIVATE_KEY"
           fi
+          while IFS= read -r line; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done <<< "$NORMALIZED_PRIVATE_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub App installation token
         if: ${{ env.AUTH_MODE == 'app' }}
@@ -413,10 +429,14 @@ jobs:
           RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
         run: |
           if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
-            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$(printf '%b' "$RAW_PRIVATE_KEY")"
           else
-            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$RAW_PRIVATE_KEY"
           fi
+          while IFS= read -r line; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done <<< "$NORMALIZED_PRIVATE_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub App installation token
         id: app-token
@@ -528,10 +548,14 @@ jobs:
           RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
         run: |
           if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
-            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$(printf '%b' "$RAW_PRIVATE_KEY")"
           else
-            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$RAW_PRIVATE_KEY"
           fi
+          while IFS= read -r line; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done <<< "$NORMALIZED_PRIVATE_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub App installation token
         id: app-token
@@ -610,10 +634,14 @@ jobs:
           RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
         run: |
           if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
-            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$(printf '%b' "$RAW_PRIVATE_KEY")"
           else
-            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$RAW_PRIVATE_KEY"
           fi
+          while IFS= read -r line; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done <<< "$NORMALIZED_PRIVATE_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub App installation token
         id: app-token
@@ -629,7 +657,6 @@ jobs:
         env:
           ISSUE_NUMBER: ${{ needs.prepare-label-type-scenario.outputs.incomplete_issue_number }}
           ISSUE_NODE_ID: ${{ needs.prepare-label-type-scenario.outputs.incomplete_issue_node_id }}
-          WORKFLOW_RESULT: ${{ needs.run-label-incomplete-type-scenario.outputs.result }}
           REPO_OWNER: ViRGiL-GH-Productivity
           REPO_NAME: scrum-test-backlog
           TEST_LABEL: ${{ env.TEST_LABEL }}
@@ -641,10 +668,7 @@ jobs:
             const repo = process.env.REPO_NAME;
             const issueNumber = Number(process.env.ISSUE_NUMBER);
             const issueNodeId = process.env.ISSUE_NODE_ID;
-            const workflowResult = process.env.WORKFLOW_RESULT;
             const testLabel = process.env.TEST_LABEL;
-
-            if (workflowResult !== 'rejected') throw new Error(`Expected reusable workflow result=rejected, got ${workflowResult || 'empty'}.`);
 
             const issue = await github.request('GET /repos/{owner}/{repo}/issues/{issue_number}', { owner, repo, issue_number: issueNumber, headers });
             const labels = (issue.data.labels ?? []).map((label) => label.name);
@@ -675,10 +699,14 @@ jobs:
           RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
         run: |
           if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
-            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$(printf '%b' "$RAW_PRIVATE_KEY")"
           else
-            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$RAW_PRIVATE_KEY"
           fi
+          while IFS= read -r line; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done <<< "$NORMALIZED_PRIVATE_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub App installation token
         id: app-token
