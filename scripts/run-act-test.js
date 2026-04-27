@@ -7,6 +7,16 @@ const { spawnSync } = require('node:child_process');
 const repoRoot = path.resolve(__dirname, '..');
 const workflowEntries = [
   {
+    name: 'test-ai-label-issue.yml',
+    path: '.github/workflows/test-ai-label-issue.yml',
+    secrets: ['ORG_PROJECT_TOKEN', 'ORG_AUTOMATION_APP_ID', 'ORG_AUTOMATION_APP_PRIVATE_KEY', 'USER_COPILOT_FGPAT'],
+  },
+  {
+    name: 'test-ai-scrum-review-issue.yml',
+    path: '.github/workflows/test-ai-scrum-review-issue.yml',
+    secrets: ['ORG_PROJECT_TOKEN', 'ORG_AUTOMATION_APP_ID', 'ORG_AUTOMATION_APP_PRIVATE_KEY', 'USER_COPILOT_FGPAT'],
+  },
+  {
     name: 'test-copilot-generate-text.yml',
     path: '.github/workflows/test-copilot-generate-text.yml',
     secrets: ['USER_COPILOT_FGPAT'],
