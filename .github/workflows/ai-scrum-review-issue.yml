@@ -229,12 +229,15 @@ jobs:
         {"ready":true,"summary":"why this is backlog-ready","missing":[],"advice":[]}
 
         If the issue is not ready as a Scrum backlog item:
-        {"ready":false,"summary":"short Scrum review","missing":["specific missing Scrum item"],"advice":["specific improvement advice"],"comment":"short reviewer comment for the issue author"}
+        {"ready":false,"summary":"short Scrum review","missing":["specific missing Scrum item"],"advice":["specific improvement advice"],"comment":"final Markdown issue comment with sections for the issue author"}
 
         Rules:
         - Respect repository issue templates from the context. Do not require a format that contradicts the caller repository templates.
         - Scrum-ready means the issue has a clear user/business goal, enough scope to understand the work, and actionable acceptance criteria or equivalent verification notes.
         - Do not reject for missing implementation details if the story can safely wait in the backlog for later development.
+        - Write every human-readable output field in the same language as the issue content, including summary, missing, advice, and comment.
+        - For ready=false, make comment a complete Markdown comment ready to post to the issue as-is.
+        - For ready=false, structure comment with short sections that match the issue language, for example what is missing and how to fix it.
         - Prefer ready=false over guessing Scrum readiness.
       input_text: ${{ needs.collect-context.outputs.issue_context }}
     secrets:
@@ -344,23 +347,7 @@ jobs:
             }
 
             function buildRejectionComment(decision) {
-              const missing = Array.isArray(decision.missing) ? decision.missing.filter(Boolean) : [];
-              const advice = Array.isArray(decision.advice) ? decision.advice.filter(Boolean) : [];
-              const parts = [
-                '## AI Scrum review',
-                '',
-                decision.comment || decision.summary || 'This issue is not ready to wait calmly in the Scrum backlog.',
-              ];
-
-              if (missing.length) {
-                parts.push('', 'Что не хватает:', ...missing.map((item) => `- ${item}`));
-              }
-              if (advice.length) {
-                parts.push('', 'Как исправить:', ...advice.map((item) => `- ${item}`));
-              }
-
-              parts.push('', '_Метка `ai-scrum-rejected` означает, что историю нужно уточнить перед спокойным ожиданием в backlog._');
-              return parts.join('\n');
+              return String(decision.comment || decision.summary || 'This issue is not ready to wait calmly in the Scrum backlog.').trim();
             }
 
             await ensureLabel(processedLabel, '0e8a16', 'Issue was processed by AI Scrum review automation.');
