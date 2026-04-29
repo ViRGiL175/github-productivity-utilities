@@ -134,7 +134,7 @@ jobs:
 
       - name: Collect linked context
         id: collect
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           INPUT_TEXT: ${{ inputs.text }}
         with:

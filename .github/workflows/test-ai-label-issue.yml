@@ -85,7 +85,7 @@ jobs:
 
       - name: Create test issues and label
         id: prepare
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_OWNER: ${{ env.PROJECT_OWNER }}
           PROJECT_NUMBER: ${{ env.PROJECT_NUMBER }}
@@ -220,7 +220,7 @@ jobs:
           skip-token-revoke: true
 
       - name: Assert label and project field were set
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_ID: ${{ needs.prepare-label-scenario.outputs.project_id }}
           ISSUE_NUMBER: ${{ needs.prepare-label-scenario.outputs.success_issue_number }}
@@ -310,7 +310,7 @@ jobs:
           skip-token-revoke: true
 
       - name: Assert rejected labels were set
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           ISSUE_NUMBER: ${{ needs.prepare-label-scenario.outputs.reject_issue_number }}
           REPO_OWNER: ${{ env.REPO_OWNER }}
@@ -362,7 +362,7 @@ jobs:
           skip-token-revoke: true
 
       - name: Remove project items and close issues
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_ID: ${{ needs.prepare-label-scenario.outputs.project_id }}
           SUCCESS_ISSUE_NUMBER: ${{ needs.prepare-label-scenario.outputs.success_issue_number }}
@@ -426,7 +426,7 @@ jobs:
 
       - name: Create test issue and label
         id: prepare
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           REPO_OWNER: ViRGiL-GH-Productivity
           REPO_NAME: scrum-test-backlog
@@ -523,7 +523,7 @@ jobs:
           skip-token-revoke: true
 
       - name: Assert label and native issue type were set
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           ISSUE_NUMBER: ${{ needs.prepare-label-type-scenario.outputs.issue_number }}
           ISSUE_NODE_ID: ${{ needs.prepare-label-type-scenario.outputs.issue_node_id }}
@@ -584,7 +584,7 @@ jobs:
           skip-token-revoke: true
 
       - name: Close test issue
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           ISSUE_NUMBER: ${{ needs.prepare-label-type-scenario.outputs.issue_number }}
           REPO_OWNER: ViRGiL-GH-Productivity
