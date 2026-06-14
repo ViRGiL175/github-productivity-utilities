@@ -1,4 +1,4 @@
-# Назначение: анализирует issue через Copilot и выставляет только явно разрешённые issue/project поля.
+# Назначение: анализирует issue через Gemini и выставляет только явно разрешённые issue/project поля.
 # Когда использовать: как reusable workflow или вручную для LLM-assisted triage без Scrum-review политики.
 name: AI label issue
 
@@ -22,9 +22,9 @@ on:
         required: true
         type: string
       model:
-        description: Copilot model ID to use for classification
+        description: Gemini model ID to use for classification
         required: false
-        default: gpt-4.1
+        default: gemini-3.5-flash
         type: string
       auth_mode:
         description: Auth mode used to resolve a token when project_token is not provided
@@ -51,15 +51,13 @@ on:
         required: false
       app_private_key:
         required: false
-      copilot_token:
+      gemini_api_key:
         required: false
       ORG_PROJECT_TOKEN:
         required: false
       ORG_AUTOMATION_APP_ID:
         required: false
       ORG_AUTOMATION_APP_PRIVATE_KEY:
-        required: false
-      USER_COPILOT_FGPAT:
         required: false
   workflow_dispatch:
     inputs:
@@ -80,9 +78,9 @@ on:
         required: true
         type: string
       model:
-        description: Copilot model ID to use for classification
+        description: Gemini model ID to use for classification
         required: false
-        default: gpt-4.1
+        default: gemini-3.5-flash
         type: string
       auth_mode:
         description: Token source to use
@@ -283,7 +281,7 @@ jobs:
   decide:
     name: Ask AI for allowed field values
     needs: collect-context
-    uses: ./.github/workflows/copilot-generate-text.yml
+    uses: ./.github/workflows/gemini-generate-text.yml
     with:
       model: ${{ inputs.model }}
       prompt_text: |
@@ -305,7 +303,7 @@ jobs:
         - Prefer insufficient over guessing labels or project fields.
       input_text: ${{ needs.collect-context.outputs.issue_context }}
     secrets:
-      copilot_token: ${{ secrets.copilot_token || secrets.USER_COPILOT_FGPAT }}
+      gemini_api_key: ${{ secrets.gemini_api_key || secrets.GEMINI_API_KEY }}
 
   apply:
     name: Apply allowed AI decision
