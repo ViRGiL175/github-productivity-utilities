@@ -47,8 +47,6 @@ on:
         required: false
       ORG_AUTOMATION_APP_PRIVATE_KEY:
         required: false
-      GEMINI_API_KEY:
-        required: false
   workflow_dispatch:
     inputs:
       issue_url:
