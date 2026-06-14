@@ -141,7 +141,7 @@ jobs:
 
       - name: Collect Scrum context
         id: collect
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           ISSUE_URL: ${{ inputs.issue_url }}
         with:
@@ -292,7 +292,7 @@ jobs:
 
       - name: Apply review
         id: apply
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           ISSUE_OWNER: ${{ needs.collect-context.outputs.issue_owner }}
           ISSUE_REPO: ${{ needs.collect-context.outputs.issue_repo }}

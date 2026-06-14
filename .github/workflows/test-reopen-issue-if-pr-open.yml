@@ -109,7 +109,7 @@ jobs:
 
       - name: Create issue and linked PR
         id: prepare
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           REPO_OWNER: ${{ env.REPO_OWNER }}
           REPO_NAME: ${{ env.REPO_NAME }}
@@ -322,7 +322,7 @@ jobs:
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Assert issue reopened and comment was added
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           REPO_OWNER: ${{ env.REPO_OWNER }}
           REPO_NAME: ${{ env.REPO_NAME }}
@@ -430,7 +430,7 @@ jobs:
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Close issue and PR, then delete branch
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           REPO_OWNER: ${{ env.REPO_OWNER }}
           REPO_NAME: ${{ env.REPO_NAME }}
