@@ -84,9 +84,7 @@ jobs:
           PROMPT_TEXT: ${{ inputs.prompt_text }}
         run: |
           if [ -n "$INPUT_TEXT" ] && [ -n "$CONTEXT_CONTENT" ]; then
-            effective="${INPUT_TEXT}
-
-${CONTEXT_CONTENT}"
+            effective=$(printf '%s\n\n%s' "$INPUT_TEXT" "$CONTEXT_CONTENT")
           elif [ -n "$CONTEXT_CONTENT" ]; then
             effective="$CONTEXT_CONTENT"
           elif [ -n "$INPUT_TEXT" ]; then
