@@ -11,7 +11,6 @@ on:
   pull_request:
     paths:
       - '.github/workflows/gemini-generate-text.yml'
-      - '.github/workflows/gemini-generate-text.yml'
       - '.github/workflows/test-copilot-generate-text.yml'
       - 'itest/copilot-context-fixture.txt'
       - '.secrets.example'
