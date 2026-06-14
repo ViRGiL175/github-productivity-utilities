@@ -1,4 +1,4 @@
-# Назначение: проверяет issue через Copilot на Scrum-ready оформление с учётом templates вызывающего репозитория.
+# Назначение: проверяет issue через Gemini на Scrum-ready оформление с учётом templates вызывающего репозитория.
 # Когда использовать: как reusable workflow или вручную для backlog-readiness review без автолейблинга/project updates.
 name: AI Scrum review issue
 
@@ -10,9 +10,9 @@ on:
         required: true
         type: string
       model:
-        description: Copilot model ID to use for review
+        description: Gemini model ID to use for review
         required: false
-        default: gpt-4.1
+        default: gemini-3.5-flash
         type: string
       auth_mode:
         description: Auth mode used to resolve a token when issue_token is not provided
@@ -39,15 +39,13 @@ on:
         required: false
       app_private_key:
         required: false
-      copilot_token:
+      gemini_api_key:
         required: false
       ORG_PROJECT_TOKEN:
         required: false
       ORG_AUTOMATION_APP_ID:
         required: false
       ORG_AUTOMATION_APP_PRIVATE_KEY:
-        required: false
-      USER_COPILOT_FGPAT:
         required: false
   workflow_dispatch:
     inputs:
@@ -56,9 +54,9 @@ on:
         required: true
         type: string
       model:
-        description: Copilot model ID to use for review
+        description: Gemini model ID to use for review
         required: false
-        default: gpt-4.1
+        default: gemini-3.5-flash
         type: string
       auth_mode:
         description: Token source to use
@@ -218,7 +216,7 @@ jobs:
   decide:
     name: Ask AI for Scrum readiness
     needs: collect-context
-    uses: ./.github/workflows/copilot-generate-text.yml
+    uses: ./.github/workflows/gemini-generate-text.yml
     with:
       model: ${{ inputs.model }}
       prompt_text: |
@@ -238,7 +236,7 @@ jobs:
         - Prefer ready=false over guessing Scrum readiness.
       input_text: ${{ needs.collect-context.outputs.issue_context }}
     secrets:
-      copilot_token: ${{ secrets.copilot_token || secrets.USER_COPILOT_FGPAT }}
+      gemini_api_key: ${{ secrets.gemini_api_key || secrets.GEMINI_API_KEY }}
 
   apply:
     name: Apply Scrum review

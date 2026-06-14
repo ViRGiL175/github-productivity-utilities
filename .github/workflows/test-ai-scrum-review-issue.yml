@@ -13,15 +13,15 @@ on:
           - pat
           - app
       model:
-        description: Optional Copilot model override for the integration run
+        description: Optional Gemini model override for the integration run
         required: false
-        default: gpt-4.1
+        default: gemini-3.5-flash
         type: string
   pull_request:
     paths:
       - '.github/workflows/ai-scrum-review-issue.yml'
       - '.github/workflows/test-ai-scrum-review-issue.yml'
-      - '.github/workflows/copilot-generate-text.yml'
+      - '.github/workflows/gemini-generate-text.yml'
       - '.secrets.example'
       - 'README.md'
       - 'scripts/run-act-test.js'
@@ -97,12 +97,12 @@ jobs:
                 `ITEST run ${context.runId} for ai-scrum-review ready scenario.`,
                 '',
                 '## User story',
-                'As a maintainer, I want AI Scrum review to accept clear backlog stories, so that ready work can wait for planning without manual cleanup.',
+                'As a developer, I want the AI Scrum review workflow to label well-formed backlog issues as ready, so that the team can proceed to sprint planning without manual triage.',
                 '',
                 '## Acceptance criteria',
-                '- The issue states who benefits and why the change matters.',
-                '- The expected result is clear enough to verify later.',
-                '- The story can safely wait in the backlog until implementation starts.',
+                '- Given a GitHub issue with a clear user story and explicit acceptance criteria, the workflow adds the `ai-scrum-processed` label within one workflow run.',
+                '- Given the issue is properly formatted, the workflow does NOT add the `ai-scrum-rejected` label.',
+                '- Given the workflow completes successfully, it outputs `result: ready`.',
               ].join('\n'),
               headers,
             });
@@ -131,14 +131,14 @@ jobs:
     uses: ./.github/workflows/ai-scrum-review-issue.yml
     with:
       issue_url: ${{ needs.prepare-scrum-review-scenario.outputs.ready_issue_url }}
-      model: ${{ github.event_name == 'workflow_dispatch' && inputs.model || 'gpt-4.1' }}
+      model: ${{ github.event_name == 'workflow_dispatch' && inputs.model || 'gemini-3.5-flash' }}
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
       installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
     secrets:
       pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
       app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
       app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
-      copilot_token: ${{ secrets.USER_COPILOT_FGPAT }}
+      gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
 
   assert-scrum-ready-scenario:
     name: Assert Scrum ready scenario
@@ -198,14 +198,14 @@ jobs:
     uses: ./.github/workflows/ai-scrum-review-issue.yml
     with:
       issue_url: ${{ needs.prepare-scrum-review-scenario.outputs.reject_issue_url }}
-      model: ${{ github.event_name == 'workflow_dispatch' && inputs.model || 'gpt-4.1' }}
+      model: ${{ github.event_name == 'workflow_dispatch' && inputs.model || 'gemini-3.5-flash' }}
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
       installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
     secrets:
       pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
       app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
       app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
-      copilot_token: ${{ secrets.USER_COPILOT_FGPAT }}
+      gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
 
   assert-scrum-rejected-scenario:
     name: Assert Scrum rejected scenario

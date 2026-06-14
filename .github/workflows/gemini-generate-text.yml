@@ -1,0 +1,107 @@
+# Назначение: вызывает Gemini API через gemini-chat-action и возвращает сгенерированный текст по prompt и контексту.
+# Когда использовать: как reusable workflow для текстовой генерации в CI, включая prompt, input_text и содержимое context_files.
+# Замена для: copilot-generate-text.yml (GitHub убрал бесплатные модели из Copilot API).
+name: Gemini Generate Text
+
+on:
+  workflow_call:
+    inputs:
+      prompt_text:
+        description: Main instruction for the model (used as system instruction)
+        required: true
+        type: string
+      input_text:
+        description: Optional additional input appended after the prompt
+        required: false
+        default: ''
+        type: string
+      context_files:
+        description: Newline-separated list of file paths whose contents are appended to input_text as additional context
+        required: false
+        default: ''
+        type: string
+      model:
+        description: Gemini model ID to use (e.g. gemini-3.5-flash, gemini-2.5-flash, gemini-2.5-pro)
+        required: false
+        default: 'gemini-3.5-flash'
+        type: string
+    outputs:
+      text:
+        description: Generated text result
+        value: ${{ jobs.generate.outputs.text }}
+    secrets:
+      gemini_api_key:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    name: Generate text via Gemini API
+    runs-on: ubuntu-latest
+    outputs:
+      text: ${{ steps.gemini.outputs.answer }}
+    steps:
+      - name: Checkout caller repository
+        if: inputs.context_files != ''
+        uses: actions/checkout@v6
+
+      - name: Read context files
+        id: context
+        if: inputs.context_files != ''
+        uses: actions/github-script@v8
+        env:
+          CONTEXT_FILES: ${{ inputs.context_files }}
+        with:
+          script: |
+            const fs = require('fs');
+            const MAX_CONTEXT_BYTES = 50_000;
+            const paths = (process.env.CONTEXT_FILES || '').split('\n').map(p => p.trim()).filter(Boolean);
+            let totalBytes = 0;
+            const parts = [];
+            for (const filepath of paths) {
+              if (!fs.existsSync(filepath)) {
+                core.error(`Context file not found: ${filepath}`);
+                process.exit(1);
+              }
+              const bytes = fs.statSync(filepath).size;
+              if (totalBytes + bytes > MAX_CONTEXT_BYTES) {
+                core.error(`Combined context files exceed ${MAX_CONTEXT_BYTES} bytes. Reduce the number or size of context_files.`);
+                process.exit(1);
+              }
+              parts.push(fs.readFileSync(filepath, 'utf8'));
+              totalBytes += bytes;
+            }
+            core.setOutput('content', parts.join('\n\n'));
+
+      - name: Build effective text input
+        id: build-input
+        shell: bash
+        env:
+          INPUT_TEXT: ${{ inputs.input_text }}
+          CONTEXT_CONTENT: ${{ steps.context.outputs.content }}
+          PROMPT_TEXT: ${{ inputs.prompt_text }}
+        run: |
+          if [ -n "$INPUT_TEXT" ] && [ -n "$CONTEXT_CONTENT" ]; then
+            effective=$(printf '%s\n\n%s' "$INPUT_TEXT" "$CONTEXT_CONTENT")
+          elif [ -n "$CONTEXT_CONTENT" ]; then
+            effective="$CONTEXT_CONTENT"
+          elif [ -n "$INPUT_TEXT" ]; then
+            effective="$INPUT_TEXT"
+          else
+            # No separate input — fall back to prompt_text as the user message
+            effective="$PROMPT_TEXT"
+          fi
+          echo "text<<EOF" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$effective" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Generate text
+        id: gemini
+        uses: ViRGiL175/gemini-chat-action@main
+        with:
+          gemini-api-key: ${{ secrets.gemini_api_key }}
+          text: ${{ steps.build-input.outputs.text }}
+          system-instruction: ${{ inputs.prompt_text }}
+          model: ${{ inputs.model }}
