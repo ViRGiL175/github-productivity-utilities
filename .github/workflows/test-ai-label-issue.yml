@@ -68,10 +68,14 @@ jobs:
           RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
         run: |
           if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
-            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$(printf '%b' "$RAW_PRIVATE_KEY")"
           else
-            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$RAW_PRIVATE_KEY"
           fi
+          while IFS= read -r line; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done <<< "$NORMALIZED_PRIVATE_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub App installation token
         if: ${{ env.AUTH_MODE == 'app' }}
@@ -204,10 +208,14 @@ jobs:
           RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
         run: |
           if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
-            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$(printf '%b' "$RAW_PRIVATE_KEY")"
           else
-            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$RAW_PRIVATE_KEY"
           fi
+          while IFS= read -r line; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done <<< "$NORMALIZED_PRIVATE_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub App installation token
         if: ${{ env.AUTH_MODE == 'app' }}
@@ -294,10 +302,14 @@ jobs:
           RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
         run: |
           if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
-            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$(printf '%b' "$RAW_PRIVATE_KEY")"
           else
-            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$RAW_PRIVATE_KEY"
           fi
+          while IFS= read -r line; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done <<< "$NORMALIZED_PRIVATE_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub App installation token
         if: ${{ env.AUTH_MODE == 'app' }}
@@ -346,10 +358,14 @@ jobs:
           RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
         run: |
           if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
-            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$(printf '%b' "$RAW_PRIVATE_KEY")"
           else
-            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$RAW_PRIVATE_KEY"
           fi
+          while IFS= read -r line; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done <<< "$NORMALIZED_PRIVATE_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub App installation token
         if: ${{ env.AUTH_MODE == 'app' }}
@@ -401,6 +417,9 @@ jobs:
       issue_number: ${{ steps.prepare.outputs.issue_number }}
       issue_node_id: ${{ steps.prepare.outputs.issue_node_id }}
       issue_url: ${{ steps.prepare.outputs.issue_url }}
+      incomplete_issue_number: ${{ steps.prepare.outputs.incomplete_issue_number }}
+      incomplete_issue_node_id: ${{ steps.prepare.outputs.incomplete_issue_node_id }}
+      incomplete_issue_url: ${{ steps.prepare.outputs.incomplete_issue_url }}
       expected_type: ${{ steps.prepare.outputs.expected_type }}
     steps:
       - name: Normalize GitHub App private key
@@ -410,10 +429,14 @@ jobs:
           RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
         run: |
           if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
-            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$(printf '%b' "$RAW_PRIVATE_KEY")"
           else
-            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$RAW_PRIVATE_KEY"
           fi
+          while IFS= read -r line; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done <<< "$NORMALIZED_PRIVATE_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub App installation token
         id: app-token
@@ -433,6 +456,7 @@ jobs:
           TEST_LABEL: ${{ env.TEST_LABEL }}
           EXPECTED_TYPE: Feature
           TYPE_TITLE: ITEST-${{ github.run_id }} ai label native type
+          INCOMPLETE_TITLE: ITEST-${{ github.run_id }} ai label incomplete native type
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
@@ -467,9 +491,25 @@ jobs:
               headers,
             });
 
+            const incomplete = await github.request('POST /repos/{owner}/{repo}/issues', {
+              owner,
+              repo,
+              title: process.env.INCOMPLETE_TITLE,
+              body: [
+                `ITEST run ${context.runId} for ai-label incomplete allowed fields scenario.`,
+                '',
+                `Apply the existing issue label ${testLabel}.`,
+                'There is intentionally not enough information to choose between native GitHub Issue Types.',
+              ].join('\n'),
+              headers,
+            });
+
             core.setOutput('issue_number', String(issue.data.number));
             core.setOutput('issue_node_id', issue.data.node_id);
             core.setOutput('issue_url', issue.data.html_url);
+            core.setOutput('incomplete_issue_number', String(incomplete.data.number));
+            core.setOutput('incomplete_issue_node_id', incomplete.data.node_id);
+            core.setOutput('incomplete_issue_url', incomplete.data.html_url);
             core.setOutput('expected_type', expectedType);
 
   run-label-type-scenario:
@@ -508,10 +548,14 @@ jobs:
           RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
         run: |
           if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
-            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$(printf '%b' "$RAW_PRIVATE_KEY")"
           else
-            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$RAW_PRIVATE_KEY"
           fi
+          while IFS= read -r line; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done <<< "$NORMALIZED_PRIVATE_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub App installation token
         id: app-token
@@ -553,13 +597,34 @@ jobs:
             const actualType = data.node?.issueType?.name ?? null;
             if (actualType !== expectedType) throw new Error(`Expected native issue type ${expectedType}, got ${actualType || 'none'}.`);
 
-  cleanup-label-type-scenario:
-    name: Cleanup native issue type scenario
-    if: ${{ always() && needs.prepare-label-type-scenario.outputs.issue_number != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+  run-label-incomplete-type-scenario:
+    name: Run incomplete native issue type scenario
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     needs:
       - prepare-label-type-scenario
-      - run-label-type-scenario
       - assert-label-type-scenario
+    uses: ./.github/workflows/ai-label-issue.yml
+    with:
+      issue_url: ${{ needs.prepare-label-type-scenario.outputs.incomplete_issue_url }}
+      project_owner: ViRGiL-GH-Productivity
+      project_number: 1
+      allowed_fields: |
+        labels
+        type
+      model: ${{ github.event_name == 'workflow_dispatch' && inputs.model || 'gpt-4.1' }}
+      auth_mode: app
+      installation_owner: ViRGiL-GH-Productivity
+    secrets:
+      app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+      app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+      copilot_token: ${{ secrets.USER_COPILOT_FGPAT }}
+
+  assert-label-incomplete-type-scenario:
+    name: Assert incomplete native issue type scenario
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs:
+      - prepare-label-type-scenario
+      - run-label-incomplete-type-scenario
     runs-on: ubuntu-latest
     steps:
       - name: Normalize GitHub App private key
@@ -569,10 +634,79 @@ jobs:
           RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
         run: |
           if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
-            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$(printf '%b' "$RAW_PRIVATE_KEY")"
           else
-            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$RAW_PRIVATE_KEY"
           fi
+          while IFS= read -r line; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done <<< "$NORMALIZED_PRIVATE_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub App installation token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          owner: ViRGiL-GH-Productivity
+          skip-token-revoke: true
+
+      - name: Assert incomplete native type was rejected
+        uses: actions/github-script@v8
+        env:
+          ISSUE_NUMBER: ${{ needs.prepare-label-type-scenario.outputs.incomplete_issue_number }}
+          ISSUE_NODE_ID: ${{ needs.prepare-label-type-scenario.outputs.incomplete_issue_node_id }}
+          REPO_OWNER: ViRGiL-GH-Productivity
+          REPO_NAME: scrum-test-backlog
+          TEST_LABEL: ${{ env.TEST_LABEL }}
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const headers = { accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
+            const owner = process.env.REPO_OWNER;
+            const repo = process.env.REPO_NAME;
+            const issueNumber = Number(process.env.ISSUE_NUMBER);
+            const issueNodeId = process.env.ISSUE_NODE_ID;
+            const testLabel = process.env.TEST_LABEL;
+
+            const issue = await github.request('GET /repos/{owner}/{repo}/issues/{issue_number}', { owner, repo, issue_number: issueNumber, headers });
+            const labels = (issue.data.labels ?? []).map((label) => label.name);
+            if (!labels.includes('ai-label-rejected')) throw new Error(`Expected ai-label-rejected label, got: ${labels.join(', ') || 'none'}.`);
+            if (!labels.includes('ai-label-processed')) throw new Error(`Expected ai-label-processed label, got: ${labels.join(', ') || 'none'}.`);
+            if (labels.includes(testLabel)) throw new Error(`Did not expect partial application of ${testLabel} label when native type is missing.`);
+
+            const query = `query($issueId:ID!){node(id:$issueId){... on Issue{issueType{name}}}}`;
+            const data = await github.graphql(query, { issueId: issueNodeId });
+            const actualType = data.node?.issueType?.name ?? null;
+            if (actualType !== null) throw new Error(`Expected native issue type to stay unset, got ${actualType}.`);
+
+  cleanup-label-type-scenario:
+    name: Cleanup native issue type scenario
+    if: ${{ always() && needs.prepare-label-type-scenario.outputs.issue_number != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    needs:
+      - prepare-label-type-scenario
+      - run-label-type-scenario
+      - assert-label-type-scenario
+      - run-label-incomplete-type-scenario
+      - assert-label-incomplete-type-scenario
+    runs-on: ubuntu-latest
+    steps:
+      - name: Normalize GitHub App private key
+        id: normalize-key
+        shell: bash
+        env:
+          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+        run: |
+          if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
+            NORMALIZED_PRIVATE_KEY="$(printf '%b' "$RAW_PRIVATE_KEY")"
+          else
+            NORMALIZED_PRIVATE_KEY="$RAW_PRIVATE_KEY"
+          fi
+          while IFS= read -r line; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done <<< "$NORMALIZED_PRIVATE_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub App installation token
         id: app-token
@@ -587,6 +721,7 @@ jobs:
         uses: actions/github-script@v8
         env:
           ISSUE_NUMBER: ${{ needs.prepare-label-type-scenario.outputs.issue_number }}
+          INCOMPLETE_ISSUE_NUMBER: ${{ needs.prepare-label-type-scenario.outputs.incomplete_issue_number }}
           REPO_OWNER: ViRGiL-GH-Productivity
           REPO_NAME: scrum-test-backlog
         with:
@@ -594,11 +729,13 @@ jobs:
           script: |
             const headers = { accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
             const issueNumber = Number(process.env.ISSUE_NUMBER);
-            if (issueNumber > 0) {
+            const incompleteIssueNumber = Number(process.env.INCOMPLETE_ISSUE_NUMBER);
+            for (const number of [issueNumber, incompleteIssueNumber]) {
+              if (!(number > 0)) continue;
               await github.request('PATCH /repos/{owner}/{repo}/issues/{issue_number}', {
                 owner: process.env.REPO_OWNER,
                 repo: process.env.REPO_NAME,
-                issue_number: issueNumber,
+                issue_number: number,
                 state: 'closed',
                 headers,
               });

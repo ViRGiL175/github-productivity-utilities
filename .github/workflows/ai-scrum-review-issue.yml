@@ -109,10 +109,14 @@ jobs:
         shell: bash
         run: |
           if [[ "$APP_PRIVATE_KEY" == *'\n'* ]]; then
-            printf 'private_key<<EOF\n%b\nEOF\n' "$APP_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$(printf '%b' "$APP_PRIVATE_KEY")"
           else
-            printf 'private_key<<EOF\n%s\nEOF\n' "$APP_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$APP_PRIVATE_KEY"
           fi
+          while IFS= read -r line; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done <<< "$NORMALIZED_PRIVATE_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub App installation token
         if: ${{ env.DIRECT_TOKEN == '' && env.AUTH_MODE == 'app' }}
@@ -227,12 +231,15 @@ jobs:
         {"ready":true,"summary":"why this is backlog-ready","missing":[],"advice":[]}
 
         If the issue is not ready as a Scrum backlog item:
-        {"ready":false,"summary":"short Scrum review","missing":["specific missing Scrum item"],"advice":["specific improvement advice"],"comment":"short reviewer comment for the issue author"}
+        {"ready":false,"summary":"short Scrum review","missing":["specific missing Scrum item"],"advice":["specific improvement advice"],"comment":"final Markdown issue comment with sections for the issue author"}
 
         Rules:
         - Respect repository issue templates from the context. Do not require a format that contradicts the caller repository templates.
         - Scrum-ready means the issue has a clear user/business goal, enough scope to understand the work, and actionable acceptance criteria or equivalent verification notes.
         - Do not reject for missing implementation details if the story can safely wait in the backlog for later development.
+        - Write every human-readable output field in the same language as the issue content, including summary, missing, advice, and comment.
+        - For ready=false, make comment a complete Markdown comment ready to post to the issue as-is.
+        - For ready=false, structure comment with short sections that match the issue language, for example what is missing and how to fix it.
         - Prefer ready=false over guessing Scrum readiness.
       input_text: ${{ needs.collect-context.outputs.issue_context }}
     secrets:
@@ -260,10 +267,14 @@ jobs:
         shell: bash
         run: |
           if [[ "$APP_PRIVATE_KEY" == *'\n'* ]]; then
-            printf 'private_key<<EOF\n%b\nEOF\n' "$APP_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$(printf '%b' "$APP_PRIVATE_KEY")"
           else
-            printf 'private_key<<EOF\n%s\nEOF\n' "$APP_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+            NORMALIZED_PRIVATE_KEY="$APP_PRIVATE_KEY"
           fi
+          while IFS= read -r line; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done <<< "$NORMALIZED_PRIVATE_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub App installation token
         if: ${{ env.DIRECT_TOKEN == '' && env.AUTH_MODE == 'app' }}
@@ -312,6 +323,21 @@ jobs:
               return JSON.parse((text || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, ''));
             }
 
+            function fencedJson(value) {
+              return `~~~json\n${JSON.stringify(value, null, 2)}\n~~~`;
+            }
+
+            async function writeDecisionSummary({ decision, result, reason }) {
+              await core.summary
+                .addHeading('AI Scrum review decision', 2)
+                .addRaw(`Issue: \`${owner}/${repo}#${issueNumber}\`\n\n`)
+                .addRaw(`Result: \`${result}\`\n\n`)
+                .addRaw(`Reason: ${reason || decision?.summary || decision?.comment || 'none'}\n\n`)
+                .addDetails('Parsed AI decision', fencedJson(decision ?? null))
+                .addDetails('Raw AI response', `~~~\n${process.env.AI_RESPONSE || ''}\n~~~`)
+                .write();
+            }
+
             async function ensureLabel(name, color, description) {
               try {
                 await github.request('GET /repos/{owner}/{repo}/labels/{name}', { owner, repo, name, headers });
@@ -327,37 +353,26 @@ jobs:
             }
 
             function buildRejectionComment(decision) {
-              const missing = Array.isArray(decision.missing) ? decision.missing.filter(Boolean) : [];
-              const advice = Array.isArray(decision.advice) ? decision.advice.filter(Boolean) : [];
-              const parts = [
-                '## AI Scrum review',
-                '',
-                decision.comment || decision.summary || 'This issue is not ready to wait calmly in the Scrum backlog.',
-              ];
-
-              if (missing.length) {
-                parts.push('', 'Что не хватает:', ...missing.map((item) => `- ${item}`));
-              }
-              if (advice.length) {
-                parts.push('', 'Как исправить:', ...advice.map((item) => `- ${item}`));
-              }
-
-              parts.push('', '_Метка `ai-scrum-rejected` означает, что историю нужно уточнить перед спокойным ожиданием в backlog._');
-              return parts.join('\n');
+              return String(decision.comment || decision.summary || 'This issue is not ready to wait calmly in the Scrum backlog.').trim();
             }
 
             await ensureLabel(processedLabel, '0e8a16', 'Issue was processed by AI Scrum review automation.');
             await ensureLabel(rejectedLabel, 'd73a4a', 'AI Scrum review found the issue is not backlog-ready.');
 
+            let summary = { decision: null, result: 'unknown', reason: 'The workflow did not finish applying a decision.' };
             try {
               const decision = parseDecision(process.env.AI_RESPONSE);
+              summary = { decision, result: 'unknown', reason: decision.summary || decision.comment || 'Decision parsed.' };
               if (decision.ready !== true) {
                 await addLabels([rejectedLabel]);
                 await github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner, repo, issue_number: issueNumber, body: buildRejectionComment(decision), headers });
+                summary = { decision, result: 'rejected', reason: decision.summary || decision.comment || 'AI returned ready=false.' };
                 core.setOutput('result', 'rejected');
                 return;
               }
+              summary = { decision, result: 'ready', reason: decision.summary || decision.comment || 'AI returned ready=true.' };
               core.setOutput('result', 'ready');
             } finally {
+              await writeDecisionSummary(summary);
               await addLabels([processedLabel]);
             }
