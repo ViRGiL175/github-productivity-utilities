@@ -1,4 +1,5 @@
 import { Octokit } from '@octokit/rest';
+import { ReopenIssueIfPrOpen } from '../automations/reopen-issue-if-pr-open/ReopenIssueIfPrOpen.js';
 import { SyncSubIssueSprint } from '../automations/sync-sub-issue-sprint/SyncSubIssueSprint.js';
 import { IssueRepository } from '../github/IssueRepository.js';
 import { ProjectV2Repository } from '../github/ProjectV2Repository.js';
@@ -30,6 +31,21 @@ async function main(): Promise<void> {
                 owner: requireEnvironmentVariable('REPO_OWNER'),
                 repo: requireEnvironmentVariable('REPO_NAME'),
               },
+            });
+          },
+        },
+      ],
+      [
+        'reopen-issue-if-pr-open',
+        {
+          run: async () => {
+            const automation = new ReopenIssueIfPrOpen(issues, logger);
+            await automation.run({
+              repository: {
+                owner: requireEnvironmentVariable('PROJECT_OWNER'),
+                repo: requireEnvironmentVariable('BACKLOG_REPO'),
+              },
+              issueNumber: Number(process.env.ISSUE_NUMBER || ''),
             });
           },
         },

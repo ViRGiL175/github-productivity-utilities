@@ -31,7 +31,70 @@ export interface IssueReader {
   getParentIssue(repository: RepositoryCoordinates, issueNumber: number): Promise<IssueRecord | null>;
 }
 
-export class IssueRepository implements IssueReader {
+export interface LinkedPullRequest {
+  number: number;
+  state: string;
+  title: string;
+  body: string;
+  repositoryNameWithOwner: string;
+}
+
+export interface IssueReopenGateway {
+  listCrossReferencedPullRequests(
+    repository: RepositoryCoordinates,
+    issueNumber: number,
+  ): Promise<LinkedPullRequest[]>;
+  reopenIssue(repository: RepositoryCoordinates, issueNumber: number): Promise<void>;
+  addIssueComment(repository: RepositoryCoordinates, issueNumber: number, body: string): Promise<void>;
+}
+
+const ISSUE_TIMELINE_QUERY = `
+  query($owner: String!, $repo: String!, $number: Int!) {
+    repository(owner: $owner, name: $repo) {
+      issue(number: $number) {
+        timelineItems(itemTypes: [CROSS_REFERENCED_EVENT], first: 100) {
+          nodes {
+            ... on CrossReferencedEvent {
+              source {
+                __typename
+                ... on PullRequest {
+                  number
+                  state
+                  title
+                  body
+                  repository {
+                    nameWithOwner
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+interface IssueTimelineQueryResult {
+  repository?: {
+    issue?: {
+      timelineItems?: {
+        nodes: Array<{
+          source?: {
+            __typename?: string;
+            number?: number;
+            state?: string;
+            title?: string;
+            body?: string | null;
+            repository?: { nameWithOwner?: string } | null;
+          } | null;
+        } | null>;
+      } | null;
+    } | null;
+  } | null;
+}
+
+export class IssueRepository implements IssueReader, IssueReopenGateway {
   constructor(private readonly octokit: Octokit) {}
 
   async getIssue(repository: RepositoryCoordinates, issueNumber: number): Promise<IssueRecord> {
@@ -60,6 +123,55 @@ export class IssueRepository implements IssueReader {
 
       throw error;
     }
+  }
+
+  async listCrossReferencedPullRequests(
+    repository: RepositoryCoordinates,
+    issueNumber: number,
+  ): Promise<LinkedPullRequest[]> {
+    const data = await this.octokit.graphql<IssueTimelineQueryResult>(ISSUE_TIMELINE_QUERY, {
+      ...repository,
+      number: issueNumber,
+    });
+
+    return (data.repository?.issue?.timelineItems?.nodes ?? []).flatMap((node) => {
+      const source = node?.source;
+      if (
+        source?.__typename !== 'PullRequest' ||
+        source.number === undefined ||
+        source.state === undefined ||
+        source.title === undefined ||
+        source.repository?.nameWithOwner === undefined
+      ) {
+        return [];
+      }
+
+      return [{
+        number: source.number,
+        state: source.state,
+        title: source.title,
+        body: source.body ?? '',
+        repositoryNameWithOwner: source.repository.nameWithOwner,
+      }];
+    });
+  }
+
+  async reopenIssue(repository: RepositoryCoordinates, issueNumber: number): Promise<void> {
+    await this.octokit.request('PATCH /repos/{owner}/{repo}/issues/{issue_number}', {
+      ...repository,
+      issue_number: issueNumber,
+      state: 'open',
+      headers: API_HEADERS,
+    });
+  }
+
+  async addIssueComment(repository: RepositoryCoordinates, issueNumber: number, body: string): Promise<void> {
+    await this.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+      ...repository,
+      issue_number: issueNumber,
+      body,
+      headers: API_HEADERS,
+    });
   }
 }
 
