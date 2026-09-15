@@ -19,7 +19,7 @@ function createDependencies(body = 'Closes owner/backlog#42') {
     reopenIssue: vi.fn().mockResolvedValue(undefined),
     addIssueComment: vi.fn().mockResolvedValue(undefined),
   };
-  const logger: Logger = { info: vi.fn() };
+  const logger: Logger = { info: vi.fn(), warning: vi.fn() };
   return { issues, logger };
 }
 

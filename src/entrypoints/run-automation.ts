@@ -1,10 +1,13 @@
 import { Octokit } from '@octokit/rest';
+import { CollectLinkedContext } from '../automations/collect-linked-context/CollectLinkedContext.js';
 import { ReopenIssueIfPrOpen } from '../automations/reopen-issue-if-pr-open/ReopenIssueIfPrOpen.js';
 import { SyncSubIssueSprint } from '../automations/sync-sub-issue-sprint/SyncSubIssueSprint.js';
 import { IssueRepository } from '../github/IssueRepository.js';
+import { LinkedContextRepository } from '../github/LinkedContextRepository.js';
 import { ProjectV2Repository } from '../github/ProjectV2Repository.js';
 import { AutomationRunner } from '../runtime/AutomationRunner.js';
 import { ConsoleLogger } from '../runtime/Logger.js';
+import { writeGitHubOutput } from '../runtime/GitHubOutput.js';
 
 async function main(): Promise<void> {
   const automationName = process.argv[2] ?? '';
@@ -12,6 +15,7 @@ async function main(): Promise<void> {
   const octokit = new Octokit({ auth: token });
   const logger = new ConsoleLogger();
   const issues = new IssueRepository(octokit);
+  const linkedContext = new LinkedContextRepository(octokit);
   const projects = new ProjectV2Repository(octokit);
 
   const runner = new AutomationRunner(
@@ -36,6 +40,19 @@ async function main(): Promise<void> {
         },
       ],
       [
+        'collect-linked-context',
+        {
+          run: async () => {
+            const automation = new CollectLinkedContext(linkedContext, logger);
+            const value = await automation.run({
+              text: process.env.INPUT_TEXT ?? '',
+              defaultRepository: parseRepository(requireEnvironmentVariable('CALLER_REPOSITORY')),
+            });
+            await writeGitHubOutput('value', value);
+          },
+        },
+      ],
+      [
         'reopen-issue-if-pr-open',
         {
           run: async () => {
@@ -54,6 +71,14 @@ async function main(): Promise<void> {
   );
 
   await runner.run(automationName);
+}
+
+function parseRepository(value: string): { owner: string; repo: string } {
+  const [owner, repo, ...rest] = value.split('/');
+  if (!owner || !repo || rest.length > 0) {
+    throw new Error(`Expected owner/repository, received: ${value}`);
+  }
+  return { owner, repo };
 }
 
 function requireEnvironmentVariable(name: string): string {

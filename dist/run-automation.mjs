@@ -4048,6 +4048,113 @@ var Octokit2 = Octokit.plugin(requestLog, legacyRestEndpointMethods, paginateRes
   }
 );
 
+// src/automations/collect-linked-context/CollectLinkedContext.ts
+var MAX_ITEMS = 5;
+var MAX_BODY_CHARS = 800;
+var CollectLinkedContext = class {
+  constructor(github, logger) {
+    this.github = github;
+    this.logger = logger;
+  }
+  github;
+  logger;
+  async run(input) {
+    const references = collectReferences(input.text, input.defaultRepository);
+    this.logger.info(`Total unique references: ${references.length}`);
+    const results = [];
+    for (const reference of references.slice(0, MAX_ITEMS)) {
+      const key = referenceKey(reference);
+      try {
+        this.logger.info(`Fetching: ${key}`);
+        results.push(await this.fetchAndFormat(reference));
+        this.logger.info(`OK: ${key}`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warning(`Skipped ${key}: ${message}`);
+      }
+    }
+    return results.length === 0 ? "" : `\u0421\u0432\u044F\u0437\u0430\u043D\u043D\u044B\u0435 \u043C\u0430\u0442\u0435\u0440\u0438\u0430\u043B\u044B:
+
+${results.join("\n\n---\n\n")}`;
+  }
+  async fetchAndFormat(reference) {
+    if (reference.type === "issue") {
+      const data2 = await this.github.getIssue(reference);
+      const kind = data2.isPullRequest ? "PR" : "Issue";
+      return `${kind} ${reference.owner}/${reference.repo}#${reference.number} (\xAB${data2.title}\xBB):
+${data2.body.slice(0, MAX_BODY_CHARS)}`;
+    }
+    if (reference.type === "release") {
+      const data2 = await this.github.getRelease(reference);
+      return `\u0420\u0435\u043B\u0438\u0437 ${reference.owner}/${reference.repo}@${reference.tag} (\xAB${data2.name ?? reference.tag}\xBB):
+${data2.body.slice(0, MAX_BODY_CHARS)}`;
+    }
+    const data = await this.github.getCommit(reference);
+    return `\u041A\u043E\u043C\u043C\u0438\u0442 ${reference.sha.slice(0, 7)} (${reference.owner}/${reference.repo}):
+${data.message.slice(0, MAX_BODY_CHARS)}`;
+  }
+};
+function collectReferences(text, defaultRepository) {
+  const references = /* @__PURE__ */ new Map();
+  const add = (reference, source) => {
+    const key = referenceKey(reference);
+    if (!references.has(key)) {
+      references.set(key, reference);
+    }
+  };
+  for (const match of text.matchAll(/https:\/\/(?:redirect\.)?github\.com\/([^/\s"'<>]+)\/([^/\s"'<>]+)\/(?:pull|issues)\/(\d+)/g)) {
+    add(issueReference(match[1], match[2], match[3]), "github-pr-issue-url");
+  }
+  for (const match of text.matchAll(/(?:^|[\s,(:])#(\d+)/gm)) {
+    add(issueReference(defaultRepository.owner, defaultRepository.repo, match[1]), "short-ref");
+  }
+  for (const match of text.matchAll(/(?<![/\w])([A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?)\/([A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?)#(\d+)/g)) {
+    add(issueReference(match[1], match[2], match[3]), "cross-repo-ref");
+  }
+  for (const match of text.matchAll(/https:\/\/github\.com\/([^/\s"'<>]+)\/([^/\s"'<>]+)\/releases\/tag\/([^\s"'<>)]+)/g)) {
+    const reference = {
+      type: "release",
+      owner: requiredMatch(match[1]),
+      repo: requiredMatch(match[2]),
+      tag: requiredMatch(match[3])
+    };
+    add(reference, "github-release-url");
+  }
+  for (const match of text.matchAll(/https:\/\/github\.com\/([^/\s"'<>]+)\/([^/\s"'<>]+)\/commit\/([0-9a-f]{7,40})\b/gi)) {
+    const reference = {
+      type: "commit",
+      owner: requiredMatch(match[1]),
+      repo: requiredMatch(match[2]),
+      sha: requiredMatch(match[3])
+    };
+    add(reference, "github-commit-url");
+  }
+  return [...references.values()];
+}
+function issueReference(owner, repo, number) {
+  return {
+    type: "issue",
+    owner: requiredMatch(owner),
+    repo: requiredMatch(repo),
+    number: Number(requiredMatch(number))
+  };
+}
+function requiredMatch(value) {
+  if (value === void 0) {
+    throw new Error("Internal link parser error: expected capture group is missing.");
+  }
+  return value;
+}
+function referenceKey(reference) {
+  if (reference.type === "issue") {
+    return `issue:${reference.owner}/${reference.repo}#${reference.number}`;
+  }
+  if (reference.type === "release") {
+    return `release:${reference.owner}/${reference.repo}@${reference.tag}`;
+  }
+  return `commit:${reference.owner}/${reference.repo}@${reference.sha}`;
+}
+
 // src/automations/reopen-issue-if-pr-open/ReopenIssueIfPrOpen.ts
 var ReopenIssueIfPrOpen = class {
   constructor(issues, logger) {
@@ -4298,8 +4405,51 @@ var SyncSubIssueSprint = class {
   }
 };
 
-// src/github/ProjectV2Repository.ts
+// src/github/LinkedContextRepository.ts
 var API_HEADERS2 = {
+  accept: "application/vnd.github+json",
+  "X-GitHub-Api-Version": "2022-11-28"
+};
+var LinkedContextRepository = class {
+  constructor(octokit) {
+    this.octokit = octokit;
+  }
+  octokit;
+  async getIssue(reference) {
+    const response = await this.octokit.request("GET /repos/{owner}/{repo}/issues/{issue_number}", {
+      owner: reference.owner,
+      repo: reference.repo,
+      issue_number: reference.number,
+      headers: API_HEADERS2
+    });
+    return {
+      title: response.data.title,
+      body: response.data.body ?? "",
+      isPullRequest: response.data.pull_request !== void 0
+    };
+  }
+  async getRelease(reference) {
+    const response = await this.octokit.request("GET /repos/{owner}/{repo}/releases/tags/{tag}", {
+      owner: reference.owner,
+      repo: reference.repo,
+      tag: reference.tag,
+      headers: API_HEADERS2
+    });
+    return { name: response.data.name, body: response.data.body ?? "" };
+  }
+  async getCommit(reference) {
+    const response = await this.octokit.request("GET /repos/{owner}/{repo}/commits/{ref}", {
+      owner: reference.owner,
+      repo: reference.repo,
+      ref: reference.sha,
+      headers: API_HEADERS2
+    });
+    return { message: response.data.commit.message ?? "" };
+  }
+};
+
+// src/github/ProjectV2Repository.ts
+var API_HEADERS3 = {
   accept: "application/vnd.github+json",
   "X-GitHub-Api-Version": "2022-11-28"
 };
@@ -4444,7 +4594,7 @@ var ProjectV2Repository = class {
   async getProjectOwnerType(owner) {
     const response = await this.octokit.request("GET /users/{username}", {
       username: owner,
-      headers: API_HEADERS2
+      headers: API_HEADERS3
     });
     return response.data.type;
   }
@@ -4470,7 +4620,25 @@ var ConsoleLogger = class {
   info(message) {
     console.log(message);
   }
+  warning(message) {
+    console.warn(message);
+  }
 };
+
+// src/runtime/GitHubOutput.ts
+import { appendFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+async function writeGitHubOutput(name, value) {
+  const outputFile = process.env.GITHUB_OUTPUT;
+  if (!outputFile) {
+    throw new Error("Required environment variable GITHUB_OUTPUT is empty.");
+  }
+  const delimiter = `github_productivity_${randomUUID()}`;
+  await appendFile(outputFile, `${name}<<${delimiter}
+${value}
+${delimiter}
+`, "utf8");
+}
 
 // src/entrypoints/run-automation.ts
 async function main() {
@@ -4479,6 +4647,7 @@ async function main() {
   const octokit = new Octokit2({ auth: token });
   const logger = new ConsoleLogger();
   const issues = new IssueRepository(octokit);
+  const linkedContext = new LinkedContextRepository(octokit);
   const projects = new ProjectV2Repository(octokit);
   const runner = new AutomationRunner(
     /* @__PURE__ */ new Map([
@@ -4502,6 +4671,19 @@ async function main() {
         }
       ],
       [
+        "collect-linked-context",
+        {
+          run: async () => {
+            const automation = new CollectLinkedContext(linkedContext, logger);
+            const value = await automation.run({
+              text: process.env.INPUT_TEXT ?? "",
+              defaultRepository: parseRepository(requireEnvironmentVariable("CALLER_REPOSITORY"))
+            });
+            await writeGitHubOutput("value", value);
+          }
+        }
+      ],
+      [
         "reopen-issue-if-pr-open",
         {
           run: async () => {
@@ -4519,6 +4701,13 @@ async function main() {
     ])
   );
   await runner.run(automationName);
+}
+function parseRepository(value) {
+  const [owner, repo, ...rest] = value.split("/");
+  if (!owner || !repo || rest.length > 0) {
+    throw new Error(`Expected owner/repository, received: ${value}`);
+  }
+  return { owner, repo };
 }
 function requireEnvironmentVariable(name) {
   const value = process.env[name];
