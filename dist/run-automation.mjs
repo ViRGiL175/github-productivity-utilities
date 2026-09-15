@@ -1003,8 +1003,8 @@ function isPlainObject2(value) {
 }
 var noop = () => "";
 async function fetchWrapper(requestOptions) {
-  const fetch = requestOptions.request?.fetch || globalThis.fetch;
-  if (!fetch) {
+  const fetch2 = requestOptions.request?.fetch || globalThis.fetch;
+  if (!fetch2) {
     throw new Error(
       "fetch is not set. Please pass a fetch implementation as new Octokit({ request: { fetch }}). Learn more at https://github.com/octokit/octokit.js/#fetch-missing"
     );
@@ -1020,7 +1020,7 @@ async function fetchWrapper(requestOptions) {
   );
   let fetchResponse;
   try {
-    fetchResponse = await fetch(requestOptions.url, {
+    fetchResponse = await fetch2(requestOptions.url, {
       method: requestOptions.method,
       body,
       redirect: requestOptions.request?.redirect,
@@ -4155,6 +4155,110 @@ function referenceKey(reference) {
   return `commit:${reference.owner}/${reference.repo}@${reference.sha}`;
 }
 
+// src/automations/gemini-generate-text/GeminiGenerateText.ts
+import { readFile, stat } from "node:fs/promises";
+var MAX_CONTEXT_BYTES = 5e4;
+var FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
+var GeminiGenerateText = class {
+  constructor(generator, files, logger) {
+    this.generator = generator;
+    this.files = files;
+    this.logger = logger;
+  }
+  generator;
+  files;
+  logger;
+  async run(input) {
+    if (!input.promptText.trim()) {
+      throw new Error("prompt_text must not be empty");
+    }
+    const paths = input.contextFiles.split("\n").map((path) => path.trim()).filter(Boolean);
+    const context = paths.length > 0 ? await this.files.read(paths) : "";
+    const effectiveInput = buildEffectiveInput(input.promptText, input.inputText, context);
+    const models = [...new Set([input.model, ...FALLBACK_MODELS].filter(Boolean))];
+    const errors = [];
+    for (const model of models) {
+      try {
+        const text = (await this.generator.generate({
+          model,
+          systemInstruction: input.promptText,
+          text: effectiveInput
+        })).trim();
+        if (text) {
+          return text;
+        }
+        errors.push(`${model}: empty response`);
+        this.logger.warning(`Gemini model ${model} returned an empty response. Trying the next model.`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        errors.push(`${model}: ${message}`);
+        this.logger.warning(`Gemini model ${model} failed: ${message}. Trying the next model.`);
+      }
+    }
+    throw new Error(`Gemini did not return text after ${models.length} attempts: ${errors.join("; ")}`);
+  }
+};
+var LocalContextFileReader = class {
+  async read(paths) {
+    let totalBytes = 0;
+    const parts = [];
+    for (const path of paths) {
+      let metadata;
+      try {
+        metadata = await stat(path);
+      } catch {
+        throw new Error(`Context file not found: ${path}`);
+      }
+      totalBytes += metadata.size;
+      if (totalBytes > MAX_CONTEXT_BYTES) {
+        throw new Error(`Combined context files exceed ${MAX_CONTEXT_BYTES} bytes. Reduce the number or size of context_files.`);
+      }
+      parts.push(await readFile(path, "utf8"));
+    }
+    return parts.join("\n\n");
+  }
+};
+var GeminiApiClient = class {
+  constructor(apiKey, fetchImplementation = fetch) {
+    this.apiKey = apiKey;
+    this.fetchImplementation = fetchImplementation;
+  }
+  apiKey;
+  fetchImplementation;
+  async generate(request2) {
+    const response = await this.fetchImplementation(
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(request2.model)}:generateContent?key=${encodeURIComponent(this.apiKey)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: request2.text }] }],
+          system_instruction: { parts: [{ text: request2.systemInstruction }] }
+        })
+      }
+    );
+    const rawBody = await response.text();
+    let data;
+    try {
+      data = JSON.parse(rawBody);
+    } catch {
+      throw new Error(`Gemini returned HTTP ${response.status} with invalid JSON.`);
+    }
+    if (!response.ok) {
+      throw new Error(`Gemini returned HTTP ${response.status}: ${data.error?.message ?? "unknown error"}`);
+    }
+    return (data.candidates?.[0]?.content?.parts ?? []).map((part) => part.text ?? "").join("");
+  }
+};
+function buildEffectiveInput(promptText, inputText, context) {
+  if (inputText && context) {
+    return `${inputText}
+
+${context}`;
+  }
+  return context || inputText || promptText;
+}
+
 // src/automations/reopen-issue-if-pr-open/ReopenIssueIfPrOpen.ts
 var ReopenIssueIfPrOpen = class {
   constructor(issues, logger) {
@@ -4680,6 +4784,25 @@ async function main() {
               defaultRepository: parseRepository(requireEnvironmentVariable("CALLER_REPOSITORY"))
             });
             await writeGitHubOutput("value", value);
+          }
+        }
+      ],
+      [
+        "gemini-generate-text",
+        {
+          run: async () => {
+            const automation = new GeminiGenerateText(
+              new GeminiApiClient(requireEnvironmentVariable("GEMINI_API_KEY")),
+              new LocalContextFileReader(),
+              logger
+            );
+            const text = await automation.run({
+              promptText: requireEnvironmentVariable("PROMPT_TEXT"),
+              inputText: process.env.INPUT_TEXT ?? "",
+              contextFiles: process.env.CONTEXT_FILES ?? "",
+              model: requireEnvironmentVariable("MODEL")
+            });
+            await writeGitHubOutput("text", text);
           }
         }
       ],

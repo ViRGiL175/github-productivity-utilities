@@ -1,5 +1,10 @@
 import { Octokit } from '@octokit/rest';
 import { CollectLinkedContext } from '../automations/collect-linked-context/CollectLinkedContext.js';
+import {
+  GeminiApiClient,
+  GeminiGenerateText,
+  LocalContextFileReader,
+} from '../automations/gemini-generate-text/GeminiGenerateText.js';
 import { ReopenIssueIfPrOpen } from '../automations/reopen-issue-if-pr-open/ReopenIssueIfPrOpen.js';
 import { SyncSubIssueSprint } from '../automations/sync-sub-issue-sprint/SyncSubIssueSprint.js';
 import { IssueRepository } from '../github/IssueRepository.js';
@@ -49,6 +54,25 @@ async function main(): Promise<void> {
               defaultRepository: parseRepository(requireEnvironmentVariable('CALLER_REPOSITORY')),
             });
             await writeGitHubOutput('value', value);
+          },
+        },
+      ],
+      [
+        'gemini-generate-text',
+        {
+          run: async () => {
+            const automation = new GeminiGenerateText(
+              new GeminiApiClient(requireEnvironmentVariable('GEMINI_API_KEY')),
+              new LocalContextFileReader(),
+              logger,
+            );
+            const text = await automation.run({
+              promptText: requireEnvironmentVariable('PROMPT_TEXT'),
+              inputText: process.env.INPUT_TEXT ?? '',
+              contextFiles: process.env.CONTEXT_FILES ?? '',
+              model: requireEnvironmentVariable('MODEL'),
+            });
+            await writeGitHubOutput('text', text);
           },
         },
       ],
