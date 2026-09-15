@@ -167,6 +167,103 @@ const SET_SINGLE_SELECT_MUTATION = `
   }
 `;
 
+const ORGANIZATION_ITERATION_PROJECT_QUERY = `
+  query($owner: String!, $number: Int!) {
+    organization(login: $owner) {
+      projectV2(number: $number) {
+        id
+        title
+        fields(first: 100) {
+          nodes {
+            __typename
+            ... on ProjectV2FieldCommon { id name }
+            ... on ProjectV2IterationField {
+              configuration {
+                completedIterations { id title startDate duration }
+                iterations { id title startDate duration }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+const USER_ITERATION_PROJECT_QUERY = `
+  query($owner: String!, $number: Int!) {
+    user(login: $owner) {
+      projectV2(number: $number) {
+        id
+        title
+        fields(first: 100) {
+          nodes {
+            __typename
+            ... on ProjectV2FieldCommon { id name }
+            ... on ProjectV2IterationField {
+              configuration {
+                completedIterations { id title startDate duration }
+                iterations { id title startDate duration }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+const PROJECT_ITEMS_QUERY = `
+  query($projectId: ID!, $after: String) {
+    node(id: $projectId) {
+      ... on ProjectV2 {
+        items(first: 100, after: $after) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            id
+            content {
+              __typename
+              ... on DraftIssue { id title }
+              ... on Issue { id number title }
+              ... on PullRequest { id number title }
+            }
+            fieldValues(first: 20) {
+              nodes {
+                __typename
+                ... on ProjectV2ItemFieldIterationValue {
+                  iterationId
+                  title
+                  startDate
+                  duration
+                  field { ... on ProjectV2FieldCommon { id name } }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+const ADD_DRAFT_MUTATION = `
+  mutation($input: AddProjectV2DraftIssueInput!) {
+    addProjectV2DraftIssue(input: $input) { projectItem { id } }
+  }
+`;
+
+const UPDATE_DRAFT_MUTATION = `
+  mutation($input: UpdateProjectV2DraftIssueInput!) {
+    updateProjectV2DraftIssue(input: $input) { draftIssue { id } }
+  }
+`;
+
+const DELETE_ITEM_MUTATION = `
+  mutation($input: DeleteProjectV2ItemInput!) {
+    deleteProjectV2Item(input: $input) { deletedItemId }
+  }
+`;
+
 interface ProjectQueryResult {
   organization?: { projectV2: ProjectNode | null } | null;
   user?: { projectV2: ProjectNode | null } | null;
@@ -227,6 +324,62 @@ interface ContentProjectItemsQueryResult {
   } | null;
 }
 
+interface IterationDefinitionNode {
+  id: string;
+  title: string;
+  startDate: string;
+  duration: number;
+}
+
+interface IterationProjectNode {
+  id: string;
+  title: string;
+  fields: {
+    nodes: Array<{
+      __typename?: string;
+      id?: string;
+      name?: string;
+      configuration?: {
+        completedIterations?: IterationDefinitionNode[];
+        iterations?: IterationDefinitionNode[];
+      } | null;
+    } | null>;
+  };
+}
+
+interface IterationProjectQueryResult {
+  organization?: { projectV2: IterationProjectNode | null } | null;
+  user?: { projectV2: IterationProjectNode | null } | null;
+}
+
+interface ProjectItemsQueryResult {
+  node?: {
+    items?: {
+      pageInfo: { hasNextPage: boolean; endCursor?: string | null };
+      nodes: Array<{
+        id: string;
+        content?: {
+          __typename?: string;
+          id?: string;
+          number?: number;
+          title?: string | null;
+        } | null;
+        fieldValues?: {
+          nodes: Array<{
+            __typename?: string;
+            iterationId?: string;
+            field?: { id?: string; name?: string } | null;
+          } | null>;
+        } | null;
+      } | null>;
+    } | null;
+  } | null;
+}
+
+interface AddDraftResult {
+  addProjectV2DraftIssue: { projectItem: { id: string } };
+}
+
 export interface ProjectMetadata {
   projectId: string;
   iterationFieldId: string;
@@ -265,7 +418,38 @@ export interface ProjectStatusGateway {
   setSingleSelect(projectId: string, itemId: string, fieldId: string, optionId: string): Promise<void>;
 }
 
-export class ProjectV2Repository implements ProjectV2Gateway, ProjectStatusGateway {
+export interface IterationDefinition {
+  id: string;
+  title: string;
+  startDate: string;
+  duration: number;
+}
+
+export interface IterationProjectMetadata {
+  projectId: string;
+  projectTitle: string;
+  iterationFieldId: string;
+  iterations: IterationDefinition[];
+}
+
+export interface IterationProjectItem {
+  id: string;
+  contentType: string;
+  contentId: string | null;
+  title: string;
+  iterationId: string | null;
+}
+
+export interface ProjectIterationGateway {
+  getIterationMetadata(owner: string, number: number, fieldName: string): Promise<IterationProjectMetadata>;
+  listProjectItems(projectId: string, iterationFieldId: string): Promise<IterationProjectItem[]>;
+  createDraftIssue(projectId: string, title: string): Promise<string>;
+  updateDraftIssue(draftIssueId: string, title: string): Promise<void>;
+  setIteration(projectId: string, itemId: string, fieldId: string, iterationId: string): Promise<void>;
+  deleteProjectItem(projectId: string, itemId: string): Promise<void>;
+}
+
+export class ProjectV2Repository implements ProjectV2Gateway, ProjectStatusGateway, ProjectIterationGateway {
   constructor(private readonly octokit: Octokit) {}
 
   async getProjectMetadata(owner: string, number: number, fieldName: string): Promise<ProjectMetadata> {
@@ -385,6 +569,77 @@ export class ProjectV2Repository implements ProjectV2Gateway, ProjectStatusGatew
 
   async setSingleSelect(projectId: string, itemId: string, fieldId: string, optionId: string): Promise<void> {
     await this.octokit.graphql(SET_SINGLE_SELECT_MUTATION, { projectId, itemId, fieldId, optionId });
+  }
+
+  async getIterationMetadata(owner: string, number: number, fieldName: string): Promise<IterationProjectMetadata> {
+    const ownerType = await this.getProjectOwnerType(owner);
+    const isOrganization = ownerType === 'Organization';
+    if (!isOrganization && ownerType !== 'User') {
+      throw new Error(`Unsupported project owner type "${ownerType}" for ${owner}.`);
+    }
+    const data = await this.octokit.graphql<IterationProjectQueryResult>(
+      isOrganization ? ORGANIZATION_ITERATION_PROJECT_QUERY : USER_ITERATION_PROJECT_QUERY,
+      { owner, number },
+    );
+    const project = isOrganization ? data.organization?.projectV2 : data.user?.projectV2;
+    if (!project) throw new Error(`Project ${owner}#${number} was not found.`);
+    const field = project.fields.nodes.find(
+      (candidate) => candidate?.__typename === 'ProjectV2IterationField' && candidate.name === fieldName,
+    );
+    if (!field?.id) throw new Error(`Iteration field "${fieldName}" was not found in project ${owner}#${number}.`);
+    const iterations = [
+      ...(field.configuration?.completedIterations ?? []),
+      ...(field.configuration?.iterations ?? []),
+    ].sort((left, right) => left.startDate.localeCompare(right.startDate) || left.title.localeCompare(right.title));
+    return {
+      projectId: project.id,
+      projectTitle: project.title,
+      iterationFieldId: field.id,
+      iterations,
+    };
+  }
+
+  async listProjectItems(projectId: string, iterationFieldId: string): Promise<IterationProjectItem[]> {
+    const result: IterationProjectItem[] = [];
+    let cursor: string | null = null;
+    let hasNextPage = true;
+    while (hasNextPage) {
+      const data: ProjectItemsQueryResult = await this.octokit.graphql<ProjectItemsQueryResult>(PROJECT_ITEMS_QUERY, {
+        projectId,
+        after: cursor,
+      });
+      const connection = data.node?.items;
+      if (!connection) throw new Error(`Unable to read items for project ${projectId}.`);
+      for (const item of connection.nodes) {
+        if (!item) continue;
+        const iteration = item.fieldValues?.nodes.find(
+          (value) => value?.__typename === 'ProjectV2ItemFieldIterationValue' && value.field?.id === iterationFieldId,
+        );
+        result.push({
+          id: item.id,
+          contentType: item.content?.__typename ?? '',
+          contentId: item.content?.id ?? null,
+          title: item.content?.title ?? '',
+          iterationId: iteration?.iterationId ?? null,
+        });
+      }
+      hasNextPage = connection.pageInfo.hasNextPage;
+      cursor = connection.pageInfo.endCursor ?? null;
+    }
+    return result;
+  }
+
+  async createDraftIssue(projectId: string, title: string): Promise<string> {
+    const data = await this.octokit.graphql<AddDraftResult>(ADD_DRAFT_MUTATION, { input: { projectId, title } });
+    return data.addProjectV2DraftIssue.projectItem.id;
+  }
+
+  async updateDraftIssue(draftIssueId: string, title: string): Promise<void> {
+    await this.octokit.graphql(UPDATE_DRAFT_MUTATION, { input: { draftIssueId, title } });
+  }
+
+  async deleteProjectItem(projectId: string, itemId: string): Promise<void> {
+    await this.octokit.graphql(DELETE_ITEM_MUTATION, { input: { projectId, itemId } });
   }
 
   private async getProjectOwnerType(owner: string): Promise<string> {

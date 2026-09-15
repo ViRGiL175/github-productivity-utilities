@@ -4155,6 +4155,95 @@ function referenceKey(reference) {
   return `commit:${reference.owner}/${reference.repo}@${reference.sha}`;
 }
 
+// src/automations/ensure-next-iteration-reminder/EnsureNextIterationReminder.ts
+var EnsureNextIterationReminder = class {
+  constructor(projects, logger, now = () => /* @__PURE__ */ new Date()) {
+    this.projects = projects;
+    this.logger = logger;
+    this.now = now;
+  }
+  projects;
+  logger;
+  now;
+  async run(input) {
+    const today = parseCurrentDate(input.currentDateOverride, this.now());
+    const todayIso = today.toISOString().slice(0, 10);
+    const project = await this.projects.getIterationMetadata(
+      input.projectOwner,
+      input.projectNumber,
+      input.iterationFieldName
+    );
+    const items = await this.projects.listProjectItems(project.projectId, project.iterationFieldId);
+    const currentIteration = findCurrentIteration(project.iterations, today);
+    const nextIteration = findNextIteration(project.iterations, currentIteration, today);
+    if (!currentIteration) {
+      this.logger.info(`No active iteration found for ${todayIso}. Will use the first future iteration as next if available.`);
+    } else {
+      this.logger.info(`Current iteration: ${currentIteration.title} (${currentIteration.startDate})`);
+    }
+    if (nextIteration) this.logger.info(`Next iteration: ${nextIteration.title} (${nextIteration.startDate})`);
+    const currentHasIssues = currentIteration ? items.some((item) => item.contentType === "Issue" && item.iterationId === currentIteration.id) : false;
+    const targetIteration = currentIteration && !currentHasIssues ? currentIteration : nextIteration;
+    if (!targetIteration) {
+      this.logger.info(
+        `No target iteration found in field "${input.iterationFieldName}" for project ${input.projectOwner}#${input.projectNumber}. Nothing to do.`
+      );
+      return;
+    }
+    this.logger.info(`Target iteration for reminder: ${targetIteration.title} (${targetIteration.startDate})`);
+    const reminders = items.filter(
+      (item) => item.contentType === "DraftIssue" && item.title === input.reminderTitle
+    );
+    const canonical = reminders.find((item) => item.iterationId === targetIteration.id) ?? reminders[0];
+    if (!canonical) {
+      const itemId = await this.projects.createDraftIssue(project.projectId, input.reminderTitle);
+      await this.projects.setIteration(project.projectId, itemId, project.iterationFieldId, targetIteration.id);
+      this.logger.info(`Created reminder draft item in target iteration "${targetIteration.title}".`);
+      return;
+    }
+    await this.reconcileCanonical(canonical, project.projectId, project.iterationFieldId, targetIteration, input);
+    for (const duplicate of reminders.filter((item) => item.id !== canonical.id)) {
+      await this.projects.deleteProjectItem(project.projectId, duplicate.id);
+      this.logger.info(`Deleted duplicate reminder item ${duplicate.id}.`);
+    }
+    this.logger.info(`Reminder reconciled successfully in project "${project.projectTitle}".`);
+  }
+  async reconcileCanonical(item, projectId, fieldId, target, input) {
+    if (item.contentType !== "DraftIssue" || !item.contentId) {
+      throw new Error("Canonical reminder item is not a draft issue.");
+    }
+    if (item.title !== input.reminderTitle) {
+      await this.projects.updateDraftIssue(item.contentId, input.reminderTitle);
+      this.logger.info(`Updated reminder draft title for item ${item.id}.`);
+    }
+    if (item.iterationId !== target.id) {
+      await this.projects.setIteration(projectId, item.id, fieldId, target.id);
+      this.logger.info(`Moved reminder draft to target iteration "${target.title}".`);
+    }
+  }
+};
+function parseCurrentDate(value, now) {
+  if (!value) return now;
+  const parsed = new Date(value.includes("T") ? value : `${value}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime())) throw new Error(`Invalid current_date_override value: ${value}`);
+  return parsed;
+}
+function findCurrentIteration(iterations, today) {
+  return iterations.find((iteration) => {
+    const start = toUtcDate(iteration.startDate);
+    const end = new Date(start);
+    end.setUTCDate(end.getUTCDate() + iteration.duration);
+    return today >= start && today < end;
+  });
+}
+function findNextIteration(iterations, current, today) {
+  const boundary = current ? toUtcDate(current.startDate) : today;
+  return iterations.find((iteration) => toUtcDate(iteration.startDate) > boundary);
+}
+function toUtcDate(value) {
+  return /* @__PURE__ */ new Date(`${value}T00:00:00Z`);
+}
+
 // src/automations/gemini-generate-text/GeminiGenerateText.ts
 import { readFile, stat } from "node:fs/promises";
 var MAX_CONTEXT_BYTES = 5e4;
@@ -4852,6 +4941,97 @@ var SET_SINGLE_SELECT_MUTATION = `
     }
   }
 `;
+var ORGANIZATION_ITERATION_PROJECT_QUERY = `
+  query($owner: String!, $number: Int!) {
+    organization(login: $owner) {
+      projectV2(number: $number) {
+        id
+        title
+        fields(first: 100) {
+          nodes {
+            __typename
+            ... on ProjectV2FieldCommon { id name }
+            ... on ProjectV2IterationField {
+              configuration {
+                completedIterations { id title startDate duration }
+                iterations { id title startDate duration }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+var USER_ITERATION_PROJECT_QUERY = `
+  query($owner: String!, $number: Int!) {
+    user(login: $owner) {
+      projectV2(number: $number) {
+        id
+        title
+        fields(first: 100) {
+          nodes {
+            __typename
+            ... on ProjectV2FieldCommon { id name }
+            ... on ProjectV2IterationField {
+              configuration {
+                completedIterations { id title startDate duration }
+                iterations { id title startDate duration }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+var PROJECT_ITEMS_QUERY = `
+  query($projectId: ID!, $after: String) {
+    node(id: $projectId) {
+      ... on ProjectV2 {
+        items(first: 100, after: $after) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            id
+            content {
+              __typename
+              ... on DraftIssue { id title }
+              ... on Issue { id number title }
+              ... on PullRequest { id number title }
+            }
+            fieldValues(first: 20) {
+              nodes {
+                __typename
+                ... on ProjectV2ItemFieldIterationValue {
+                  iterationId
+                  title
+                  startDate
+                  duration
+                  field { ... on ProjectV2FieldCommon { id name } }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+var ADD_DRAFT_MUTATION = `
+  mutation($input: AddProjectV2DraftIssueInput!) {
+    addProjectV2DraftIssue(input: $input) { projectItem { id } }
+  }
+`;
+var UPDATE_DRAFT_MUTATION = `
+  mutation($input: UpdateProjectV2DraftIssueInput!) {
+    updateProjectV2DraftIssue(input: $input) { draftIssue { id } }
+  }
+`;
+var DELETE_ITEM_MUTATION = `
+  mutation($input: DeleteProjectV2ItemInput!) {
+    deleteProjectV2Item(input: $input) { deletedItemId }
+  }
+`;
 var ProjectV2Repository = class {
   constructor(octokit) {
     this.octokit = octokit;
@@ -4956,6 +5136,72 @@ var ProjectV2Repository = class {
   async setSingleSelect(projectId, itemId, fieldId, optionId) {
     await this.octokit.graphql(SET_SINGLE_SELECT_MUTATION, { projectId, itemId, fieldId, optionId });
   }
+  async getIterationMetadata(owner, number, fieldName) {
+    const ownerType = await this.getProjectOwnerType(owner);
+    const isOrganization = ownerType === "Organization";
+    if (!isOrganization && ownerType !== "User") {
+      throw new Error(`Unsupported project owner type "${ownerType}" for ${owner}.`);
+    }
+    const data = await this.octokit.graphql(
+      isOrganization ? ORGANIZATION_ITERATION_PROJECT_QUERY : USER_ITERATION_PROJECT_QUERY,
+      { owner, number }
+    );
+    const project = isOrganization ? data.organization?.projectV2 : data.user?.projectV2;
+    if (!project) throw new Error(`Project ${owner}#${number} was not found.`);
+    const field = project.fields.nodes.find(
+      (candidate) => candidate?.__typename === "ProjectV2IterationField" && candidate.name === fieldName
+    );
+    if (!field?.id) throw new Error(`Iteration field "${fieldName}" was not found in project ${owner}#${number}.`);
+    const iterations = [
+      ...field.configuration?.completedIterations ?? [],
+      ...field.configuration?.iterations ?? []
+    ].sort((left, right) => left.startDate.localeCompare(right.startDate) || left.title.localeCompare(right.title));
+    return {
+      projectId: project.id,
+      projectTitle: project.title,
+      iterationFieldId: field.id,
+      iterations
+    };
+  }
+  async listProjectItems(projectId, iterationFieldId) {
+    const result = [];
+    let cursor = null;
+    let hasNextPage = true;
+    while (hasNextPage) {
+      const data = await this.octokit.graphql(PROJECT_ITEMS_QUERY, {
+        projectId,
+        after: cursor
+      });
+      const connection = data.node?.items;
+      if (!connection) throw new Error(`Unable to read items for project ${projectId}.`);
+      for (const item of connection.nodes) {
+        if (!item) continue;
+        const iteration = item.fieldValues?.nodes.find(
+          (value) => value?.__typename === "ProjectV2ItemFieldIterationValue" && value.field?.id === iterationFieldId
+        );
+        result.push({
+          id: item.id,
+          contentType: item.content?.__typename ?? "",
+          contentId: item.content?.id ?? null,
+          title: item.content?.title ?? "",
+          iterationId: iteration?.iterationId ?? null
+        });
+      }
+      hasNextPage = connection.pageInfo.hasNextPage;
+      cursor = connection.pageInfo.endCursor ?? null;
+    }
+    return result;
+  }
+  async createDraftIssue(projectId, title) {
+    const data = await this.octokit.graphql(ADD_DRAFT_MUTATION, { input: { projectId, title } });
+    return data.addProjectV2DraftIssue.projectItem.id;
+  }
+  async updateDraftIssue(draftIssueId, title) {
+    await this.octokit.graphql(UPDATE_DRAFT_MUTATION, { input: { draftIssueId, title } });
+  }
+  async deleteProjectItem(projectId, itemId) {
+    await this.octokit.graphql(DELETE_ITEM_MUTATION, { input: { projectId, itemId } });
+  }
   async getProjectOwnerType(owner) {
     const response = await this.octokit.request("GET /users/{username}", {
       username: owner,
@@ -5046,6 +5292,21 @@ async function main() {
   const pullRequests = new PullRequestRepository(octokit);
   const runner = new AutomationRunner(
     /* @__PURE__ */ new Map([
+      [
+        "ensure-next-iteration-reminder",
+        {
+          run: async () => {
+            const automation = new EnsureNextIterationReminder(projects, logger);
+            await automation.run({
+              projectOwner: requireEnvironmentVariable("PROJECT_OWNER"),
+              projectNumber: Number(requireEnvironmentVariable("PROJECT_NUMBER")),
+              iterationFieldName: requireEnvironmentVariable("ITERATION_FIELD_NAME"),
+              reminderTitle: requireEnvironmentVariable("REMINDER_TITLE"),
+              currentDateOverride: process.env.CURRENT_DATE_OVERRIDE ?? ""
+            });
+          }
+        }
+      ],
       [
         "safe-dependabot-pr-link",
         {

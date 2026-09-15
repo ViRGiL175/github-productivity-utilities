@@ -1,5 +1,6 @@
 import { Octokit } from '@octokit/rest';
 import { CollectLinkedContext } from '../automations/collect-linked-context/CollectLinkedContext.js';
+import { EnsureNextIterationReminder } from '../automations/ensure-next-iteration-reminder/EnsureNextIterationReminder.js';
 import {
   GeminiApiClient,
   GeminiGenerateText,
@@ -28,6 +29,21 @@ async function main(): Promise<void> {
 
   const runner = new AutomationRunner(
     new Map([
+      [
+        'ensure-next-iteration-reminder',
+        {
+          run: async () => {
+            const automation = new EnsureNextIterationReminder(projects, logger);
+            await automation.run({
+              projectOwner: requireEnvironmentVariable('PROJECT_OWNER'),
+              projectNumber: Number(requireEnvironmentVariable('PROJECT_NUMBER')),
+              iterationFieldName: requireEnvironmentVariable('ITERATION_FIELD_NAME'),
+              reminderTitle: requireEnvironmentVariable('REMINDER_TITLE'),
+              currentDateOverride: process.env.CURRENT_DATE_OVERRIDE ?? '',
+            });
+          },
+        },
+      ],
       [
         'safe-dependabot-pr-link',
         {
