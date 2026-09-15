@@ -60,6 +60,20 @@ const ISSUE_PROJECT_ITEMS_QUERY = `
           }
         }
       }
+      ... on PullRequest {
+        projectItems(first: 100) {
+          nodes {
+            id
+            project { id }
+            fieldValueByName(name: $fieldName) {
+              ... on ProjectV2ItemFieldIterationValue {
+                iterationId
+                title
+              }
+            }
+          }
+        }
+      }
     }
   }
 `;

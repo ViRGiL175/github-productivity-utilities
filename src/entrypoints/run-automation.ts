@@ -1,6 +1,7 @@
 import { Octokit } from '@octokit/rest';
 import { CollectLinkedContext } from '../automations/collect-linked-context/CollectLinkedContext.js';
 import { EnsureNextIterationReminder } from '../automations/ensure-next-iteration-reminder/EnsureNextIterationReminder.js';
+import { LinkPrToProject } from '../automations/link-pr-to-project/LinkPrToProject.js';
 import {
   GeminiApiClient,
   GeminiGenerateText,
@@ -29,6 +30,37 @@ async function main(): Promise<void> {
 
   const runner = new AutomationRunner(
     new Map([
+      [
+        'link-pr-to-project',
+        {
+          run: async () => {
+            const automation = new LinkPrToProject(issues, pullRequests, projects, logger);
+            await automation.run({
+              projectOwner: requireEnvironmentVariable('PROJECT_OWNER'),
+              projectNumber: Number(requireEnvironmentVariable('PROJECT_NUMBER')),
+              backlogRepository: {
+                owner: requireEnvironmentVariable('BACKLOG_REPO_OWNER'),
+                repo: requireEnvironmentVariable('BACKLOG_REPO'),
+              },
+              iterationFieldName: requireEnvironmentVariable('ITERATION_FIELD_NAME'),
+              statusFieldName: requireEnvironmentVariable('STATUS_FIELD_NAME'),
+              statusDoneValue: requireEnvironmentVariable('STATUS_DONE_VALUE'),
+              statusInProgressValue: process.env.STATUS_IN_PROGRESS_VALUE ?? '',
+              statusInReviewValue: process.env.STATUS_IN_REVIEW_VALUE ?? '',
+              pullRequestNodeId: requireEnvironmentVariable('PULL_REQUEST_NODE_ID'),
+              pullRequestNumber: Number(requireEnvironmentVariable('PULL_REQUEST_NUMBER')),
+              pullRequestRepository: {
+                owner: requireEnvironmentVariable('PULL_REQUEST_REPO_OWNER'),
+                repo: requireEnvironmentVariable('PULL_REQUEST_REPO_NAME'),
+              },
+              pullRequestBodyHint: process.env.PULL_REQUEST_BODY ?? '',
+              headRef: process.env.HEAD_REF ?? '',
+              action: process.env.ACTION || 'opened',
+              requestedReviewersJson: process.env.REQUESTED_REVIEWERS_JSON || '[]',
+            });
+          },
+        },
+      ],
       [
         'ensure-next-iteration-reminder',
         {
