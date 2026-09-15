@@ -9,19 +9,21 @@
 | Workflow-файл | Описание |
 | --- | --- |
 | [`./.github/workflows/ensure-next-iteration-reminder.yml`](./.github/workflows/ensure-next-iteration-reminder.yml) | Гарантирует, что в целевой итерации есть reminder draft, чтобы lane следующего спринта оставался видимым. |
-| [`./.github/workflows/ai-label-issue.yml`](./.github/workflows/ai-label-issue.yml) | Анализирует issue через Copilot и выставляет разрешённые issue/project параметры при достаточных данных для автолейблинга; использует служебные labels `ai-label-processed` / `ai-label-rejected`. |
-| [`./.github/workflows/ai-scrum-review-issue.yml`](./.github/workflows/ai-scrum-review-issue.yml) | Проверяет issue через Copilot на Scrum-ready оформление с учётом issue templates вызывающего репозитория; использует labels `ai-scrum-processed` / `ai-scrum-rejected` и оставляет комментарий при отклонении. |
+| [`./.github/workflows/ai-label-issue.yml`](./.github/workflows/ai-label-issue.yml) | **Deprecated.** Сохранён только для совместимости с `Dreddbook/scrum-dreddbook-backlog`; новые подключения не поддерживаются. |
+| [`./.github/workflows/ai-scrum-review-issue.yml`](./.github/workflows/ai-scrum-review-issue.yml) | **Deprecated.** Сохранён только для совместимости с `Dreddbook/scrum-dreddbook-backlog`; новые подключения не поддерживаются. |
 | [`./.github/workflows/link-pr-to-project.yml`](./.github/workflows/link-pr-to-project.yml) | Добавляет PR в Project V2, копирует sprint и assignee из связанной issue и ставит статус Done при закрытии. Для синхронизации assignee токену нужны права на запись в issues PR-репозитория. |
 | [`./.github/workflows/reopen-issue-if-pr-open.yml`](./.github/workflows/reopen-issue-if-pr-open.yml) | Переоткрывает issue автоматически, если связанные PR, которые должны её закрыть, всё ещё открыты. |
 | [`./.github/workflows/safe-dependabot-pr-link.yml`](./.github/workflows/safe-dependabot-pr-link.yml) | Безопасно синхронизирует PR от Dependabot по списку репозиториев: принимает многострочный `repositories`, открытым ставит стартовый статус, закрытым — финальный. |
 | [`./.github/workflows/sync-sub-issue-sprint.yml`](./.github/workflows/sync-sub-issue-sprint.yml) | Наследует sprint/iteration-метаданные из родительской issue в её sub-issue. |
-| [`./.github/workflows/copilot-generate-text.yml`](./.github/workflows/copilot-generate-text.yml) | Reusable workflow для генерации текста через Copilot SDK. Требует `copilot_token` с правом `Copilot Requests`. Возвращает output `text`. |
+| [`./.github/workflows/collect-linked-context.yml`](./.github/workflows/collect-linked-context.yml) | Собирает контекст по ссылкам на issue, PR, releases и commits. |
+| [`./.github/workflows/gemini-generate-text.yml`](./.github/workflows/gemini-generate-text.yml) | Генерирует текст через Gemini API с проверкой пустого ответа и переключением на резервную модель. |
+| [`./.github/workflows/copilot-generate-text.yml`](./.github/workflows/copilot-generate-text.yml) | **Deprecated.** GitHub убрал бесплатные модели из Copilot API; используйте `gemini-generate-text.yml`. |
 
 ## TypeScript-реализации
 
-Публичным интерфейсом автоматизаций остаются reusable workflow в `.github/workflows`. Сложная бизнес-логика постепенно переносится в `src`, собирается в автономный `dist/run-automation.mjs` и запускается из YAML без установки npm-зависимостей в вызывающих репозиториях.
+Публичным интерфейсом автоматизаций остаются reusable workflow в `.github/workflows`. Поддерживаемая бизнес-логика находится в `src`, собирается в автономный `dist/run-automation.mjs` и запускается из YAML без установки npm-зависимостей в вызывающих репозиториях. В YAML остаются события, permissions, secrets, авторизация и оркестрация jobs.
 
-`sync-sub-issue-sprint.yml` первым переведён на эту схему. Все прежние inputs, secrets, defaults и правила обработки сохранены. Необязательный `implementation_ref` нужен интеграционным тестам, чтобы запускать bundle из проверяемого commit SHA; обычные потребители его не передают.
+Все прежние inputs, secrets, defaults и правила обработки сохранены. Необязательный `implementation_ref` нужен интеграционным тестам, чтобы запускать bundle из проверяемого commit SHA; обычные потребители его не передают.
 
 Локальные проверки TypeScript:
 
