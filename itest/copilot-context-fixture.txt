@@ -1,1 +1,1 @@
-Magic word: strawberry
+CONTEXT_FILE_SENTINEL_7F3A_STRAWBERRY
