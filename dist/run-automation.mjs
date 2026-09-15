@@ -4244,6 +4244,188 @@ function toUtcDate(value) {
   return /* @__PURE__ */ new Date(`${value}T00:00:00Z`);
 }
 
+// src/automations/link-pr-to-project/LinkPrToProject.ts
+var LinkPrToProject = class {
+  constructor(issues, pullRequests, projects, logger) {
+    this.issues = issues;
+    this.pullRequests = pullRequests;
+    this.projects = projects;
+    this.logger = logger;
+  }
+  issues;
+  pullRequests;
+  projects;
+  logger;
+  async run(input) {
+    validateInput(input);
+    const [iterationMetadata, statusMetadata] = await Promise.all([
+      this.projects.getProjectMetadata(input.projectOwner, input.projectNumber, input.iterationFieldName),
+      this.projects.getStatusMetadata(input.projectOwner, input.projectNumber, input.statusFieldName)
+    ]);
+    if (iterationMetadata.projectId !== statusMetadata.projectId) throw new Error("Resolved project metadata is inconsistent.");
+    const doneOptionId = statusMetadata.optionIdsByName.get(input.statusDoneValue);
+    if (!doneOptionId) {
+      throw new Error(`Status option "${input.statusDoneValue}" was not found in field ${input.statusFieldName} of project ${input.projectOwner}#${input.projectNumber}.`);
+    }
+    const inProgressOptionId = this.optionalStatusOption(input.statusInProgressValue, input, statusMetadata.optionIdsByName);
+    const inReviewOptionId = this.optionalStatusOption(input.statusInReviewValue, input, statusMetadata.optionIdsByName);
+    this.logger.info(`Resolved project "${statusMetadata.projectTitle}" (${input.projectOwner}#${input.projectNumber}).`);
+    if (input.action === "closed") {
+      const item = await this.projects.getContentProjectItem(
+        input.pullRequestNodeId,
+        statusMetadata.projectId,
+        input.statusFieldName
+      );
+      if (!item) {
+        this.logger.info(`Pull request #${input.pullRequestNumber} is not in project ${input.projectOwner}#${input.projectNumber}. Nothing to mark as done.`);
+        return;
+      }
+      await this.projects.setSingleSelect(statusMetadata.projectId, item.id, statusMetadata.statusFieldId, doneOptionId);
+      this.logger.info(`Set status ${input.statusFieldName}=${input.statusDoneValue} for PR #${input.pullRequestNumber}.`);
+      return;
+    }
+    if (input.action === "review_requested") {
+      await this.handleReviewRequested(input, statusMetadata.projectId, statusMetadata.statusFieldId, inReviewOptionId);
+      return;
+    }
+    let projectItem = await this.projects.getIssueProjectItem(
+      input.pullRequestNodeId,
+      iterationMetadata.projectId,
+      input.iterationFieldName
+    );
+    let itemId = projectItem?.id;
+    const wasJustAdded = !itemId;
+    if (!itemId) {
+      itemId = await this.projects.addIssueToProject(iterationMetadata.projectId, input.pullRequestNodeId);
+      projectItem = { id: itemId, iterationId: null, iterationTitle: "" };
+      this.logger.info(`Added PR #${input.pullRequestNumber} to project ${input.projectOwner}#${input.projectNumber}.`);
+    } else {
+      this.logger.info(`PR #${input.pullRequestNumber} is already in project ${input.projectOwner}#${input.projectNumber}.`);
+    }
+    if (wasJustAdded && inProgressOptionId) {
+      await this.projects.setSingleSelect(statusMetadata.projectId, itemId, statusMetadata.statusFieldId, inProgressOptionId);
+      this.logger.info(`Set status ${input.statusFieldName}=${input.statusInProgressValue} for PR #${input.pullRequestNumber}.`);
+    }
+    const issueNumber = extractIssueNumber(input.headRef);
+    if (!issueNumber) {
+      this.logger.info(`Could not extract issue number from branch "${input.headRef}". Skipping sprint sync and closing reference.`);
+      return;
+    }
+    await this.syncAssignees(input, issueNumber);
+    const issue = await this.issues.getIssue(input.backlogRepository, issueNumber);
+    const issueItem = await this.projects.getIssueProjectItem(
+      issue.nodeId,
+      iterationMetadata.projectId,
+      input.iterationFieldName
+    );
+    if (!issueItem) {
+      this.logger.info(`Issue #${issueNumber} is not in project ${input.projectOwner}#${input.projectNumber}.`);
+    } else if (!issueItem.iterationId) {
+      this.logger.info(`Issue #${issueNumber} has no value in field ${input.iterationFieldName}.`);
+    } else if (projectItem?.iterationId === issueItem.iterationId) {
+      this.logger.info(`PR #${input.pullRequestNumber} already has sprint ${issueItem.iterationTitle || issueItem.iterationId}.`);
+    } else {
+      await this.projects.setIteration(iterationMetadata.projectId, itemId, iterationMetadata.iterationFieldId, issueItem.iterationId);
+      this.logger.info(`Copied sprint ${issueItem.iterationTitle || issueItem.iterationId} from issue #${issueNumber} to PR #${input.pullRequestNumber}.`);
+    }
+    await this.appendClosingReference(input, issueNumber);
+  }
+  optionalStatusOption(name, input, options) {
+    if (!name) return null;
+    const option = options.get(name) ?? null;
+    if (!option) this.logger.warning(`Status option "${name}" was not found in field ${input.statusFieldName}; status update will be skipped.`);
+    return option;
+  }
+  async handleReviewRequested(input, projectId, statusFieldId, inReviewOptionId) {
+    if (!inReviewOptionId) {
+      this.logger.info("status_in_review_value is not configured or not found; skipping.");
+      return;
+    }
+    const reviewers = parseRequestedReviewers(input.requestedReviewersJson);
+    const humanReviewers = [];
+    for (const reviewer of reviewers) {
+      if (!reviewer.login) {
+        this.logger.info("Skipping reviewer without a login field.");
+        continue;
+      }
+      const userType = reviewer.type || await this.pullRequests.getUserType(reviewer.login);
+      if (userType === "User") humanReviewers.push(reviewer.login);
+      else this.logger.info(`Skipping reviewer @${reviewer.login} (type: ${userType || "unknown"}).`);
+    }
+    if (humanReviewers.length === 0) {
+      this.logger.info("No human reviewers requested; skipping status update.");
+      return;
+    }
+    const item = await this.projects.getContentProjectItem(input.pullRequestNodeId, projectId, input.statusFieldName);
+    if (!item) {
+      this.logger.info(`Pull request #${input.pullRequestNumber} is not in project ${input.projectOwner}#${input.projectNumber}. Nothing to update.`);
+      return;
+    }
+    await this.projects.setSingleSelect(projectId, item.id, statusFieldId, inReviewOptionId);
+    this.logger.info(`Set status ${input.statusFieldName}=${input.statusInReviewValue} for PR #${input.pullRequestNumber} (reviewers: ${humanReviewers.join(", ")}).`);
+  }
+  async syncAssignees(input, issueNumber) {
+    const current = await this.pullRequests.getAssigneeLogins(input.pullRequestRepository, input.pullRequestNumber);
+    if (current.length > 0) {
+      this.logger.info(`PR #${input.pullRequestNumber} already has assignees (${current.join(", ")}). Skipping assignee sync.`);
+      return;
+    }
+    const issueAssignees = await this.pullRequests.getAssigneeLogins(input.backlogRepository, issueNumber);
+    if (issueAssignees.length === 0) return;
+    const assignable = await this.pullRequests.listAssignableLogins(input.pullRequestRepository);
+    const toCopy = [...new Set(issueAssignees)].filter((login) => assignable.has(login));
+    if (toCopy.length === 0) return;
+    try {
+      await this.pullRequests.setAssignees(input.pullRequestRepository, input.pullRequestNumber, toCopy);
+    } catch (error) {
+      if (getHttpStatus(error) === 403) {
+        throw new Error(`Failed to sync assignees to PR #${input.pullRequestNumber}: token needs issues:write access on ${input.pullRequestRepository.owner}/${input.pullRequestRepository.repo}.`);
+      }
+      throw error;
+    }
+    this.logger.info(`Copied assignees ${toCopy.join(", ")} from issue #${issueNumber} to PR #${input.pullRequestNumber}.`);
+  }
+  async appendClosingReference(input, issueNumber) {
+    const closesRef = `Closes ${input.backlogRepository.owner}/${input.backlogRepository.repo}#${issueNumber}`;
+    const body = await this.pullRequests.getPullRequestBody(input.pullRequestRepository, input.pullRequestNumber) || input.pullRequestBodyHint;
+    if (body.includes(closesRef)) return;
+    await this.pullRequests.updatePullRequestBody(
+      input.pullRequestRepository,
+      input.pullRequestNumber,
+      `${body}
+
+<!-- auto-linked -->
+${closesRef}`
+    );
+  }
+};
+function extractIssueNumber(branchName) {
+  const match = /^(\d+)-/.exec(branchName);
+  return match ? Number(match[1]) : null;
+}
+function parseRequestedReviewers(value) {
+  try {
+    const parsed = JSON.parse(value || "[]");
+    if (!Array.isArray(parsed)) throw new Error("requested_reviewers_json must be a JSON array.");
+    return parsed;
+  } catch (error) {
+    if (error instanceof SyntaxError) throw new Error(`requested_reviewers_json must be valid JSON: ${error.message}`);
+    throw error;
+  }
+}
+function validateInput(input) {
+  if (!input.pullRequestNodeId || !Number.isInteger(input.pullRequestNumber) || input.pullRequestNumber <= 0) {
+    throw new Error("Pull request context is required. Pass pull_request_node_id and pull_request_number, or run from a pull_request event.");
+  }
+  if (!input.pullRequestRepository.owner || !input.pullRequestRepository.repo) {
+    throw new Error("Pull request repository context is required. Pass pull_request_repo_owner and pull_request_repo_name, or run from a pull_request event.");
+  }
+}
+function getHttpStatus(error) {
+  if (typeof error !== "object" || error === null || !("status" in error)) return void 0;
+  return typeof error.status === "number" ? error.status : void 0;
+}
+
 // src/automations/gemini-generate-text/GeminiGenerateText.ts
 import { readFile, stat } from "node:fs/promises";
 var MAX_CONTEXT_BYTES = 5e4;
@@ -4412,7 +4594,7 @@ var SafeDependabotPrLink = class {
   logger;
   now;
   async run(input) {
-    validateInput(input);
+    validateInput2(input);
     const repositories = parseRepositories(
       input.repositories,
       input.repositoriesJson,
@@ -4534,7 +4716,7 @@ function getClosedCutoffDate(days, now) {
   cutoff.setUTCDate(cutoff.getUTCDate() - days);
   return cutoff;
 }
-function validateInput(input) {
+function validateInput2(input) {
   if (!Number.isInteger(input.projectNumber) || input.projectNumber <= 0) throw new Error("project_number must be positive.");
   if (!Number.isInteger(input.maxPullRequestsPerRepo) || input.maxPullRequestsPerRepo <= 0) {
     throw new Error("max_pull_requests_per_repo must be positive.");
@@ -4594,7 +4776,7 @@ var IssueRepository = class {
       });
       return mapIssue(response.data);
     } catch (error) {
-      if (getHttpStatus(error) === 404) {
+      if (getHttpStatus2(error) === 404) {
         return null;
       }
       throw error;
@@ -4656,7 +4838,7 @@ function mapIssue(issue) {
     isPullRequest: issue.pull_request !== void 0
   };
 }
-function getHttpStatus(error) {
+function getHttpStatus2(error) {
   if (typeof error !== "object" || error === null || !("status" in error)) {
     return void 0;
   }
@@ -4832,6 +5014,20 @@ var ISSUE_PROJECT_ITEMS_QUERY = `
             project {
               id
             }
+            fieldValueByName(name: $fieldName) {
+              ... on ProjectV2ItemFieldIterationValue {
+                iterationId
+                title
+              }
+            }
+          }
+        }
+      }
+      ... on PullRequest {
+        projectItems(first: 100) {
+          nodes {
+            id
+            project { id }
             fieldValueByName(name: $fieldName) {
               ... on ProjectV2ItemFieldIterationValue {
                 iterationId
@@ -5238,6 +5434,63 @@ var PullRequestRepository = class {
       authorLogin: pullRequest.user?.login ?? ""
     }));
   }
+  async getPullRequestBody(repository, pullRequestNumber) {
+    const response = await this.octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}", {
+      ...repository,
+      pull_number: pullRequestNumber,
+      headers: API_HEADERS4
+    });
+    return response.data.body ?? "";
+  }
+  async updatePullRequestBody(repository, pullRequestNumber, body) {
+    await this.octokit.request("PATCH /repos/{owner}/{repo}/pulls/{pull_number}", {
+      ...repository,
+      pull_number: pullRequestNumber,
+      body,
+      headers: API_HEADERS4
+    });
+  }
+  async getAssigneeLogins(repository, issueNumber) {
+    const response = await this.octokit.request("GET /repos/{owner}/{repo}/issues/{issue_number}", {
+      ...repository,
+      issue_number: issueNumber,
+      headers: API_HEADERS4
+    });
+    return (response.data.assignees ?? []).flatMap((assignee) => assignee?.login ? [assignee.login] : []);
+  }
+  async listAssignableLogins(repository) {
+    const logins = /* @__PURE__ */ new Set();
+    for (let page = 1; ; page += 1) {
+      const response = await this.octokit.request("GET /repos/{owner}/{repo}/assignees", {
+        ...repository,
+        page,
+        per_page: 100,
+        headers: API_HEADERS4
+      });
+      for (const assignee of response.data) {
+        if (assignee.login) logins.add(assignee.login);
+      }
+      if (response.data.length < 100) break;
+    }
+    return logins;
+  }
+  async setAssignees(repository, issueNumber, assignees) {
+    await this.octokit.request("PATCH /repos/{owner}/{repo}/issues/{issue_number}", {
+      ...repository,
+      issue_number: issueNumber,
+      assignees,
+      headers: API_HEADERS4
+    });
+  }
+  async getUserType(login) {
+    try {
+      const response = await this.octokit.request("GET /users/{username}", { username: login, headers: API_HEADERS4 });
+      return response.data.type;
+    } catch (error) {
+      if (typeof error === "object" && error !== null && "status" in error && error.status === 404) return null;
+      throw error;
+    }
+  }
 };
 
 // src/runtime/AutomationRunner.ts
@@ -5292,6 +5545,37 @@ async function main() {
   const pullRequests = new PullRequestRepository(octokit);
   const runner = new AutomationRunner(
     /* @__PURE__ */ new Map([
+      [
+        "link-pr-to-project",
+        {
+          run: async () => {
+            const automation = new LinkPrToProject(issues, pullRequests, projects, logger);
+            await automation.run({
+              projectOwner: requireEnvironmentVariable("PROJECT_OWNER"),
+              projectNumber: Number(requireEnvironmentVariable("PROJECT_NUMBER")),
+              backlogRepository: {
+                owner: requireEnvironmentVariable("BACKLOG_REPO_OWNER"),
+                repo: requireEnvironmentVariable("BACKLOG_REPO")
+              },
+              iterationFieldName: requireEnvironmentVariable("ITERATION_FIELD_NAME"),
+              statusFieldName: requireEnvironmentVariable("STATUS_FIELD_NAME"),
+              statusDoneValue: requireEnvironmentVariable("STATUS_DONE_VALUE"),
+              statusInProgressValue: process.env.STATUS_IN_PROGRESS_VALUE ?? "",
+              statusInReviewValue: process.env.STATUS_IN_REVIEW_VALUE ?? "",
+              pullRequestNodeId: requireEnvironmentVariable("PULL_REQUEST_NODE_ID"),
+              pullRequestNumber: Number(requireEnvironmentVariable("PULL_REQUEST_NUMBER")),
+              pullRequestRepository: {
+                owner: requireEnvironmentVariable("PULL_REQUEST_REPO_OWNER"),
+                repo: requireEnvironmentVariable("PULL_REQUEST_REPO_NAME")
+              },
+              pullRequestBodyHint: process.env.PULL_REQUEST_BODY ?? "",
+              headRef: process.env.HEAD_REF ?? "",
+              action: process.env.ACTION || "opened",
+              requestedReviewersJson: process.env.REQUESTED_REVIEWERS_JSON || "[]"
+            });
+          }
+        }
+      ],
       [
         "ensure-next-iteration-reminder",
         {
