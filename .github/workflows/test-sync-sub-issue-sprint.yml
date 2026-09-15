@@ -17,6 +17,13 @@ on:
     paths:
       - '.github/workflows/sync-sub-issue-sprint.yml'
       - '.github/workflows/test-sync-sub-issue-sprint.yml'
+      - '.github/workflows/test-typescript.yml'
+      - 'src/**'
+      - 'test/**'
+      - 'dist/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
 
 concurrency:
   group: ${{ github.workflow }}
@@ -369,6 +376,31 @@ jobs:
       action: opened
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
       installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+      implementation_ref: ${{ github.sha }}
+    secrets:
+      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
+      app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+      app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+
+  rerun-sync-scenario:
+    name: Rerun sub-issue sync scenario
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs:
+      - resolve-auth
+      - prepare-sync-scenario
+      - run-sync-scenario
+    uses: ./.github/workflows/sync-sub-issue-sprint.yml
+    with:
+      project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+      project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
+      iteration_field_name: Iteration
+      issue_number: ${{ needs.prepare-sync-scenario.outputs.child_number }}
+      repo_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+      repo_name: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'scrum-test-backlog' || 'github-productivity-utilities' }}
+      action: opened
+      auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
+      installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+      implementation_ref: ${{ github.sha }}
     secrets:
       pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
       app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
@@ -380,7 +412,7 @@ jobs:
     needs:
       - resolve-auth
       - prepare-sync-scenario
-      - run-sync-scenario
+      - rerun-sync-scenario
     runs-on: ubuntu-latest
     steps:
       - name: Normalize GitHub App private key
@@ -495,6 +527,7 @@ jobs:
       - resolve-auth
       - prepare-sync-scenario
       - run-sync-scenario
+      - rerun-sync-scenario
       - assert-sync-scenario
     runs-on: ubuntu-latest
     steps:
