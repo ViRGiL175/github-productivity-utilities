@@ -46,7 +46,7 @@ function createDependencies(options: { childIterationId?: string | null } = {}) 
     addIssueToProject: vi.fn().mockResolvedValue('CHILD_ITEM'),
     setIteration: vi.fn().mockResolvedValue(undefined),
   };
-  const logger: Logger = { info: vi.fn() };
+  const logger: Logger = { info: vi.fn(), warning: vi.fn() };
 
   return { issues, projects, logger };
 }

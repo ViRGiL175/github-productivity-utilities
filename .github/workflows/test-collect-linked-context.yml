@@ -34,6 +34,7 @@ jobs:
     with:
       text: 'No links here, just plain text.'
       auth_mode: pat
+      implementation_ref: ${{ github.sha }}
     secrets:
       pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
 
@@ -62,6 +63,7 @@ jobs:
     with:
       text: 'Фикс для #84 в этом репо.'
       auth_mode: pat
+      implementation_ref: ${{ github.sha }}
     secrets:
       pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
 
@@ -100,6 +102,7 @@ jobs:
         and same via Dependabot redirect:
         https://redirect.github.com/ViRGiL175/github-productivity-utilities/pull/84
       auth_mode: pat
+      implementation_ref: ${{ github.sha }}
     secrets:
       pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
 
@@ -137,6 +140,7 @@ jobs:
         Bumps actions/checkout from 3 to 4.
         Release notes: https://github.com/actions/checkout/releases/tag/v4.0.0
       auth_mode: pat
+      implementation_ref: ${{ github.sha }}
     secrets:
       pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
 
@@ -172,6 +176,7 @@ jobs:
     with:
       text: 'Original tracking issue: https://github.com/microsoft/vscode/issues/1'
       auth_mode: pat
+      implementation_ref: ${{ github.sha }}
     secrets:
       pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
 
@@ -208,6 +213,7 @@ jobs:
     with:
       text: 'Uses https://github.com/actions/checkout/pull/1 as reference.'
       auth_mode: pat
+      implementation_ref: ${{ github.sha }}
     secrets:
       pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
 
@@ -244,6 +250,7 @@ jobs:
     with:
       text: 'Historic: https://github.com/torvalds/linux/commit/1da177e4c3f41524e886b7f1b8a0c1fc7321cac'
       auth_mode: pat
+      implementation_ref: ${{ github.sha }}
     secrets:
       pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
 
@@ -280,6 +287,7 @@ jobs:
     with:
       text: 'Backlog: ViRGiL-GH-Productivity/scrum-test-backlog#1'
       auth_mode: pat
+      implementation_ref: ${{ github.sha }}
     secrets:
       pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
 
@@ -316,6 +324,7 @@ jobs:
     with:
       text: 'Backlog: ViRGiL-GH-Productivity/scrum-test-backlog#1'
       auth_mode: app
+      implementation_ref: ${{ github.sha }}
       installation_owner: ViRGiL-GH-Productivity
     secrets:
       app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
