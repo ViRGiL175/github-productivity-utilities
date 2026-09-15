@@ -17,6 +17,21 @@
 | [`./.github/workflows/sync-sub-issue-sprint.yml`](./.github/workflows/sync-sub-issue-sprint.yml) | Наследует sprint/iteration-метаданные из родительской issue в её sub-issue. |
 | [`./.github/workflows/copilot-generate-text.yml`](./.github/workflows/copilot-generate-text.yml) | Reusable workflow для генерации текста через Copilot SDK. Требует `copilot_token` с правом `Copilot Requests`. Возвращает output `text`. |
 
+## TypeScript-реализации
+
+Публичным интерфейсом автоматизаций остаются reusable workflow в `.github/workflows`. Сложная бизнес-логика постепенно переносится в `src`, собирается в автономный `dist/run-automation.mjs` и запускается из YAML без установки npm-зависимостей в вызывающих репозиториях.
+
+`sync-sub-issue-sprint.yml` первым переведён на эту схему. Все прежние inputs, secrets, defaults и правила обработки сохранены. Необязательный `implementation_ref` нужен интеграционным тестам, чтобы запускать bundle из проверяемого commit SHA; обычные потребители его не передают.
+
+Локальные проверки TypeScript:
+
+```bash
+npm ci
+npm run check
+```
+
+После сборки `dist/run-automation.mjs` должен быть закоммичен. Workflow `test-typescript.yml` пересобирает его и отклоняет PR, если bundle не соответствует исходникам.
+
 ## Локальный прогон test workflow через act
 
 Для локального прогона integration test workflow в этом репозитории настроен `act`.
