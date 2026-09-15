@@ -4310,6 +4310,148 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+// src/automations/safe-dependabot-pr-link/SafeDependabotPrLink.ts
+var SafeDependabotPrLink = class {
+  constructor(pullRequests, projects, logger, now = () => /* @__PURE__ */ new Date()) {
+    this.pullRequests = pullRequests;
+    this.projects = projects;
+    this.logger = logger;
+    this.now = now;
+  }
+  pullRequests;
+  projects;
+  logger;
+  now;
+  async run(input) {
+    validateInput(input);
+    const repositories = parseRepositories(
+      input.repositories,
+      input.repositoriesJson,
+      input.defaultRepositoryOwner,
+      this.logger
+    );
+    const project = await this.projects.getStatusMetadata(
+      input.projectOwner,
+      input.projectNumber,
+      input.statusFieldName
+    );
+    const startOptionId = project.optionIdsByName.get(input.statusStartValue);
+    const finalOptionId = project.optionIdsByName.get(input.statusFinalValue);
+    if (!startOptionId || !finalOptionId) {
+      throw new Error(`Required status options were not found in field ${input.statusFieldName}.`);
+    }
+    this.logger.info(`Resolved project "${project.projectTitle}" (${input.projectOwner}#${input.projectNumber}).`);
+    const counters = { added: 0, updated: 0, unchanged: 0, openSeen: 0, closedSeen: 0 };
+    const cutoff = getClosedCutoffDate(input.closedLookbackDays, this.now());
+    for (const repository of repositories) {
+      const openPullRequests = await this.listDependabotPullRequests(repository, "open", null, input);
+      counters.openSeen += openPullRequests.length;
+      for (const pullRequest of openPullRequests) {
+        await this.reconcile(repository, pullRequest, input.statusStartValue, startOptionId, project, input, counters);
+      }
+      const closedPullRequests = await this.listDependabotPullRequests(repository, "closed", cutoff, input);
+      counters.closedSeen += closedPullRequests.length;
+      for (const pullRequest of closedPullRequests) {
+        await this.reconcile(repository, pullRequest, input.statusFinalValue, finalOptionId, project, input, counters);
+      }
+    }
+    this.logger.info(
+      `Dependabot reconciliation complete. Open seen: ${counters.openSeen}. Closed seen: ${counters.closedSeen}. Added: ${counters.added}. Updated: ${counters.updated}. Unchanged: ${counters.unchanged}.`
+    );
+    return counters;
+  }
+  async listDependabotPullRequests(repository, state, cutoff, input) {
+    const result = [];
+    const perPage = Math.min(100, input.maxPullRequestsPerRepo);
+    for (let page = 1; result.length < input.maxPullRequestsPerRepo; page += 1) {
+      const pageItems = await this.pullRequests.listPullRequests(repository, state, page, perPage);
+      if (pageItems.length === 0) break;
+      let reachedCutoff = false;
+      for (const pullRequest of pageItems) {
+        if (state === "closed" && cutoff && new Date(pullRequest.updatedAt) < cutoff) {
+          reachedCutoff = true;
+          break;
+        }
+        if (pullRequest.authorLogin === input.dependabotLogin) result.push(pullRequest);
+        if (result.length >= input.maxPullRequestsPerRepo) break;
+      }
+      if (pageItems.length < perPage || reachedCutoff) break;
+    }
+    return result;
+  }
+  async reconcile(repository, pullRequest, targetStatusName, targetOptionId, project, input, counters) {
+    let projectItem = await this.projects.getContentProjectItem(
+      pullRequest.nodeId,
+      project.projectId,
+      input.statusFieldName
+    );
+    let itemId = projectItem?.id;
+    let currentStatus = projectItem?.statusName ?? null;
+    if (!itemId) {
+      itemId = await this.projects.addContentToProject(project.projectId, pullRequest.nodeId);
+      currentStatus = null;
+      counters.added += 1;
+      this.logger.info(
+        `Added ${repository.nameWithOwner}#${pullRequest.number} to project ${input.projectOwner}#${input.projectNumber}.`
+      );
+    }
+    if (currentStatus === targetStatusName) {
+      counters.unchanged += 1;
+      return;
+    }
+    await this.projects.setSingleSelect(project.projectId, itemId, project.statusFieldId, targetOptionId);
+    counters.updated += 1;
+    this.logger.info(
+      `Set status ${input.statusFieldName}=${targetStatusName} for ${repository.nameWithOwner}#${pullRequest.number}.`
+    );
+  }
+};
+function parseRepositories(repositories, repositoriesJson, ownerFallback, logger) {
+  const textEntries = repositories.split(/\r?\n/).map((entry) => entry.trim()).filter((entry) => entry && !entry.startsWith("#"));
+  let entries = textEntries;
+  if (entries.length === 0) {
+    if (!repositoriesJson.trim()) throw new Error("Either repositories or repositories_json must be provided.");
+    try {
+      const parsed = JSON.parse(repositoriesJson);
+      if (!Array.isArray(parsed) || parsed.length === 0) {
+        throw new Error("repositories_json must be a non-empty JSON array when repositories is not provided.");
+      }
+      entries = parsed;
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        throw new Error(`repositories_json must be a valid JSON array: ${error.message}`);
+      }
+      throw error;
+    }
+  } else if (repositoriesJson.trim()) {
+    logger.warning("Both repositories and deprecated repositories_json were provided. Using repositories.");
+  }
+  const unique = /* @__PURE__ */ new Map();
+  for (const entry of entries) {
+    if (typeof entry !== "string" || entry.trim() === "") {
+      throw new Error("Each repository entry must be a non-empty string.");
+    }
+    const parts = entry.split("/").filter(Boolean);
+    const owner = parts.length === 1 ? ownerFallback : parts[0];
+    const repo = parts.length === 1 ? parts[0] : parts[1];
+    if (!owner || !repo || parts.length > 2) throw new Error(`Invalid repository entry: ${entry}`);
+    unique.set(`${owner}/${repo}`, { owner, repo, nameWithOwner: `${owner}/${repo}` });
+  }
+  return [...unique.values()];
+}
+function getClosedCutoffDate(days, now) {
+  if (days < 0) return null;
+  const cutoff = new Date(now);
+  cutoff.setUTCDate(cutoff.getUTCDate() - days);
+  return cutoff;
+}
+function validateInput(input) {
+  if (!Number.isInteger(input.projectNumber) || input.projectNumber <= 0) throw new Error("project_number must be positive.");
+  if (!Number.isInteger(input.maxPullRequestsPerRepo) || input.maxPullRequestsPerRepo <= 0) {
+    throw new Error("max_pull_requests_per_repo must be positive.");
+  }
+}
+
 // src/github/IssueRepository.ts
 var API_HEADERS = {
   accept: "application/vnd.github+json",
@@ -4636,6 +4778,80 @@ var SET_ITERATION_MUTATION = `
     }
   }
 `;
+var ORGANIZATION_SINGLE_SELECT_PROJECT_QUERY = `
+  query($owner: String!, $number: Int!) {
+    organization(login: $owner) {
+      projectV2(number: $number) {
+        id
+        title
+        fields(first: 100) {
+          nodes {
+            __typename
+            ... on ProjectV2FieldCommon { id name }
+            ... on ProjectV2SingleSelectField { options { id name } }
+          }
+        }
+      }
+    }
+  }
+`;
+var USER_SINGLE_SELECT_PROJECT_QUERY = `
+  query($owner: String!, $number: Int!) {
+    user(login: $owner) {
+      projectV2(number: $number) {
+        id
+        title
+        fields(first: 100) {
+          nodes {
+            __typename
+            ... on ProjectV2FieldCommon { id name }
+            ... on ProjectV2SingleSelectField { options { id name } }
+          }
+        }
+      }
+    }
+  }
+`;
+var CONTENT_PROJECT_ITEMS_QUERY = `
+  query($nodeId: ID!, $fieldName: String!) {
+    node(id: $nodeId) {
+      ... on PullRequest {
+        projectItems(first: 100) {
+          nodes {
+            id
+            project { id }
+            fieldValueByName(name: $fieldName) {
+              ... on ProjectV2ItemFieldSingleSelectValue { name optionId }
+            }
+          }
+        }
+      }
+      ... on Issue {
+        projectItems(first: 100) {
+          nodes {
+            id
+            project { id }
+            fieldValueByName(name: $fieldName) {
+              ... on ProjectV2ItemFieldSingleSelectValue { name optionId }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+var SET_SINGLE_SELECT_MUTATION = `
+  mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+    updateProjectV2ItemFieldValue(input: {
+      projectId: $projectId
+      itemId: $itemId
+      fieldId: $fieldId
+      value: { singleSelectOptionId: $optionId }
+    }) {
+      projectV2Item { id }
+    }
+  }
+`;
 var ProjectV2Repository = class {
   constructor(octokit) {
     this.octokit = octokit;
@@ -4695,12 +4911,86 @@ var ProjectV2Repository = class {
       iterationId
     });
   }
+  async getStatusMetadata(owner, number, fieldName) {
+    const ownerType = await this.getProjectOwnerType(owner);
+    const isOrganization = ownerType === "Organization";
+    if (!isOrganization && ownerType !== "User") {
+      throw new Error(`Unsupported project owner type "${ownerType}" for ${owner}.`);
+    }
+    const data = await this.octokit.graphql(
+      isOrganization ? ORGANIZATION_SINGLE_SELECT_PROJECT_QUERY : USER_SINGLE_SELECT_PROJECT_QUERY,
+      { owner, number }
+    );
+    const project = isOrganization ? data.organization?.projectV2 : data.user?.projectV2;
+    if (!project) {
+      throw new Error(`Project ${owner}#${number} was not found.`);
+    }
+    const field = project.fields.nodes.find(
+      (candidate) => candidate?.__typename === "ProjectV2SingleSelectField" && candidate.name === fieldName
+    );
+    if (!field?.id) {
+      throw new Error(`Status field "${fieldName}" was not found in project ${owner}#${number}.`);
+    }
+    return {
+      projectId: project.id,
+      projectTitle: project.title,
+      statusFieldId: field.id,
+      optionIdsByName: new Map((field.options ?? []).map((option) => [option.name, option.id]))
+    };
+  }
+  async getContentProjectItem(nodeId, projectId, fieldName) {
+    const data = await this.octokit.graphql(CONTENT_PROJECT_ITEMS_QUERY, {
+      nodeId,
+      fieldName
+    });
+    const item = data.node?.projectItems?.nodes.find((candidate) => candidate?.project?.id === projectId);
+    return item ? {
+      id: item.id,
+      statusName: item.fieldValueByName?.name ?? null,
+      statusOptionId: item.fieldValueByName?.optionId ?? null
+    } : null;
+  }
+  async addContentToProject(projectId, nodeId) {
+    return this.addIssueToProject(projectId, nodeId);
+  }
+  async setSingleSelect(projectId, itemId, fieldId, optionId) {
+    await this.octokit.graphql(SET_SINGLE_SELECT_MUTATION, { projectId, itemId, fieldId, optionId });
+  }
   async getProjectOwnerType(owner) {
     const response = await this.octokit.request("GET /users/{username}", {
       username: owner,
       headers: API_HEADERS3
     });
     return response.data.type;
+  }
+};
+
+// src/github/PullRequestRepository.ts
+var API_HEADERS4 = {
+  accept: "application/vnd.github+json",
+  "X-GitHub-Api-Version": "2022-11-28"
+};
+var PullRequestRepository = class {
+  constructor(octokit) {
+    this.octokit = octokit;
+  }
+  octokit;
+  async listPullRequests(repository, state, page, perPage) {
+    const response = await this.octokit.request("GET /repos/{owner}/{repo}/pulls", {
+      ...repository,
+      state,
+      sort: "updated",
+      direction: "desc",
+      page,
+      per_page: perPage,
+      headers: API_HEADERS4
+    });
+    return response.data.map((pullRequest) => ({
+      nodeId: pullRequest.node_id,
+      number: pullRequest.number,
+      updatedAt: pullRequest.updated_at,
+      authorLogin: pullRequest.user?.login ?? ""
+    }));
   }
 };
 
@@ -4753,8 +5043,30 @@ async function main() {
   const issues = new IssueRepository(octokit);
   const linkedContext = new LinkedContextRepository(octokit);
   const projects = new ProjectV2Repository(octokit);
+  const pullRequests = new PullRequestRepository(octokit);
   const runner = new AutomationRunner(
     /* @__PURE__ */ new Map([
+      [
+        "safe-dependabot-pr-link",
+        {
+          run: async () => {
+            const automation = new SafeDependabotPrLink(pullRequests, projects, logger);
+            await automation.run({
+              projectOwner: requireEnvironmentVariable("PROJECT_OWNER"),
+              projectNumber: Number(requireEnvironmentVariable("PROJECT_NUMBER")),
+              repositories: process.env.REPOSITORIES ?? "",
+              repositoriesJson: process.env.REPOSITORIES_JSON ?? "",
+              defaultRepositoryOwner: requireEnvironmentVariable("REPOSITORY_OWNER"),
+              statusFieldName: requireEnvironmentVariable("STATUS_FIELD_NAME"),
+              statusStartValue: requireEnvironmentVariable("STATUS_START_VALUE"),
+              statusFinalValue: requireEnvironmentVariable("STATUS_FINAL_VALUE"),
+              dependabotLogin: process.env.DEPENDABOT_LOGIN || "dependabot[bot]",
+              maxPullRequestsPerRepo: Number(process.env.MAX_PULL_REQUESTS_PER_REPO || "50"),
+              closedLookbackDays: Number(process.env.CLOSED_LOOKBACK_DAYS || "30")
+            });
+          }
+        }
+      ],
       [
         "sync-sub-issue-sprint",
         {

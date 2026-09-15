@@ -6,10 +6,12 @@ import {
   LocalContextFileReader,
 } from '../automations/gemini-generate-text/GeminiGenerateText.js';
 import { ReopenIssueIfPrOpen } from '../automations/reopen-issue-if-pr-open/ReopenIssueIfPrOpen.js';
+import { SafeDependabotPrLink } from '../automations/safe-dependabot-pr-link/SafeDependabotPrLink.js';
 import { SyncSubIssueSprint } from '../automations/sync-sub-issue-sprint/SyncSubIssueSprint.js';
 import { IssueRepository } from '../github/IssueRepository.js';
 import { LinkedContextRepository } from '../github/LinkedContextRepository.js';
 import { ProjectV2Repository } from '../github/ProjectV2Repository.js';
+import { PullRequestRepository } from '../github/PullRequestRepository.js';
 import { AutomationRunner } from '../runtime/AutomationRunner.js';
 import { ConsoleLogger } from '../runtime/Logger.js';
 import { writeGitHubOutput } from '../runtime/GitHubOutput.js';
@@ -22,9 +24,31 @@ async function main(): Promise<void> {
   const issues = new IssueRepository(octokit);
   const linkedContext = new LinkedContextRepository(octokit);
   const projects = new ProjectV2Repository(octokit);
+  const pullRequests = new PullRequestRepository(octokit);
 
   const runner = new AutomationRunner(
     new Map([
+      [
+        'safe-dependabot-pr-link',
+        {
+          run: async () => {
+            const automation = new SafeDependabotPrLink(pullRequests, projects, logger);
+            await automation.run({
+              projectOwner: requireEnvironmentVariable('PROJECT_OWNER'),
+              projectNumber: Number(requireEnvironmentVariable('PROJECT_NUMBER')),
+              repositories: process.env.REPOSITORIES ?? '',
+              repositoriesJson: process.env.REPOSITORIES_JSON ?? '',
+              defaultRepositoryOwner: requireEnvironmentVariable('REPOSITORY_OWNER'),
+              statusFieldName: requireEnvironmentVariable('STATUS_FIELD_NAME'),
+              statusStartValue: requireEnvironmentVariable('STATUS_START_VALUE'),
+              statusFinalValue: requireEnvironmentVariable('STATUS_FINAL_VALUE'),
+              dependabotLogin: process.env.DEPENDABOT_LOGIN || 'dependabot[bot]',
+              maxPullRequestsPerRepo: Number(process.env.MAX_PULL_REQUESTS_PER_REPO || '50'),
+              closedLookbackDays: Number(process.env.CLOSED_LOOKBACK_DAYS || '30'),
+            });
+          },
+        },
+      ],
       [
         'sync-sub-issue-sprint',
         {
