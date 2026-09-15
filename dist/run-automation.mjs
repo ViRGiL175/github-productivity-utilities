@@ -4048,11 +4048,88 @@ var Octokit2 = Octokit.plugin(requestLog, legacyRestEndpointMethods, paginateRes
   }
 );
 
+// src/automations/reopen-issue-if-pr-open/ReopenIssueIfPrOpen.ts
+var ReopenIssueIfPrOpen = class {
+  constructor(issues, logger) {
+    this.issues = issues;
+    this.logger = logger;
+  }
+  issues;
+  logger;
+  async run(input) {
+    if (!Number.isInteger(input.issueNumber) || input.issueNumber <= 0) {
+      throw new Error("A valid issue_number input or github.event.issue.number is required.");
+    }
+    const targetRef = `${input.repository.owner}/${input.repository.repo}#${input.issueNumber}`;
+    const closingPattern = new RegExp(`\\b(?:closes|fixes|resolves)\\s+${escapeRegExp(targetRef)}\\b`, "i");
+    const pullRequests = await this.issues.listCrossReferencedPullRequests(input.repository, input.issueNumber);
+    const openPullRequests = pullRequests.filter(
+      (pullRequest) => pullRequest.state === "OPEN" && closingPattern.test(pullRequest.body)
+    );
+    if (openPullRequests.length === 0) {
+      this.logger.info("No open linked PRs with closing keywords. Issue stays closed.");
+      return;
+    }
+    const pullRequestLines = openPullRequests.map(
+      (pullRequest) => `- ${pullRequest.repositoryNameWithOwner}#${pullRequest.number} \u2014 ${pullRequest.title}`
+    );
+    this.logger.info(`Open linked PRs found:
+${pullRequestLines.join("\n")}`);
+    await this.issues.reopenIssue(input.repository, input.issueNumber);
+    await this.issues.addIssueComment(
+      input.repository,
+      input.issueNumber,
+      [
+        "\u{1F501} **Issue \u043F\u0435\u0440\u0435\u043E\u0442\u043A\u0440\u044B\u0442\u0430 \u0430\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u0438.**",
+        "",
+        "\u041A \u043D\u0435\u0439 \u043F\u0440\u0438\u0432\u044F\u0437\u0430\u043D\u044B \u043E\u0442\u043A\u0440\u044B\u0442\u044B\u0435 PR:",
+        "",
+        ...pullRequestLines,
+        "",
+        "\u0427\u0442\u043E\u0431\u044B \u0437\u0430\u043A\u0440\u044B\u0442\u044C Issue, \u0432\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u043E\u0434\u0438\u043D \u0438\u0437 \u0432\u0430\u0440\u0438\u0430\u043D\u0442\u043E\u0432 \u0434\u043B\u044F \u043A\u0430\u0436\u0434\u043E\u0433\u043E PR:",
+        "1. **\u041C\u0451\u0440\u0434\u0436 PR** \u2014 Issue \u0437\u0430\u043A\u0440\u043E\u0435\u0442\u0441\u044F \u0441\u0430\u043C\u0430 \u0447\u0435\u0440\u0435\u0437 `Closes`.",
+        "2. **\u0417\u0430\u043A\u0440\u044B\u0442\u044C PR \u0431\u0435\u0437 \u043C\u0451\u0440\u0434\u0436\u0430** \u2014 Issue \u0431\u043E\u043B\u044C\u0448\u0435 \u043D\u0435 \u0431\u0443\u0434\u0435\u0442 \u043F\u0435\u0440\u0435\u043E\u0442\u043A\u0440\u044B\u0432\u0430\u0442\u044C\u0441\u044F \u0438\u0437-\u0437\u0430 \u043D\u0435\u0433\u043E.",
+        `3. **\u041E\u0442\u0432\u044F\u0437\u0430\u0442\u044C PR \u043E\u0442 Issue** \u2014 \u0443\u0431\u0435\u0440\u0438\u0442\u0435 \u0441\u0442\u0440\u043E\u043A\u0443 \`Closes ${targetRef}\` \u0438\u0437 \u0442\u0435\u043B\u0430 PR, \u0437\u0430\u0442\u0435\u043C \u0437\u0430\u043A\u0440\u043E\u0439\u0442\u0435 Issue \u0432\u0440\u0443\u0447\u043D\u0443\u044E.`
+      ].join("\n")
+    );
+    this.logger.info(`Issue #${input.issueNumber} was reopened and commented successfully.`);
+  }
+};
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 // src/github/IssueRepository.ts
 var API_HEADERS = {
   accept: "application/vnd.github+json",
   "X-GitHub-Api-Version": "2022-11-28"
 };
+var ISSUE_TIMELINE_QUERY = `
+  query($owner: String!, $repo: String!, $number: Int!) {
+    repository(owner: $owner, name: $repo) {
+      issue(number: $number) {
+        timelineItems(itemTypes: [CROSS_REFERENCED_EVENT], first: 100) {
+          nodes {
+            ... on CrossReferencedEvent {
+              source {
+                __typename
+                ... on PullRequest {
+                  number
+                  state
+                  title
+                  body
+                  repository {
+                    nameWithOwner
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
 var IssueRepository = class {
   constructor(octokit) {
     this.octokit = octokit;
@@ -4080,6 +4157,41 @@ var IssueRepository = class {
       }
       throw error;
     }
+  }
+  async listCrossReferencedPullRequests(repository, issueNumber) {
+    const data = await this.octokit.graphql(ISSUE_TIMELINE_QUERY, {
+      ...repository,
+      number: issueNumber
+    });
+    return (data.repository?.issue?.timelineItems?.nodes ?? []).flatMap((node) => {
+      const source = node?.source;
+      if (source?.__typename !== "PullRequest" || source.number === void 0 || source.state === void 0 || source.title === void 0 || source.repository?.nameWithOwner === void 0) {
+        return [];
+      }
+      return [{
+        number: source.number,
+        state: source.state,
+        title: source.title,
+        body: source.body ?? "",
+        repositoryNameWithOwner: source.repository.nameWithOwner
+      }];
+    });
+  }
+  async reopenIssue(repository, issueNumber) {
+    await this.octokit.request("PATCH /repos/{owner}/{repo}/issues/{issue_number}", {
+      ...repository,
+      issue_number: issueNumber,
+      state: "open",
+      headers: API_HEADERS
+    });
+  }
+  async addIssueComment(repository, issueNumber, body) {
+    await this.octokit.request("POST /repos/{owner}/{repo}/issues/{issue_number}/comments", {
+      ...repository,
+      issue_number: issueNumber,
+      body,
+      headers: API_HEADERS
+    });
   }
 };
 function parseRepositoryUrl(repositoryUrl) {
@@ -4385,6 +4497,21 @@ async function main() {
                 owner: requireEnvironmentVariable("REPO_OWNER"),
                 repo: requireEnvironmentVariable("REPO_NAME")
               }
+            });
+          }
+        }
+      ],
+      [
+        "reopen-issue-if-pr-open",
+        {
+          run: async () => {
+            const automation = new ReopenIssueIfPrOpen(issues, logger);
+            await automation.run({
+              repository: {
+                owner: requireEnvironmentVariable("PROJECT_OWNER"),
+                repo: requireEnvironmentVariable("BACKLOG_REPO")
+              },
+              issueNumber: Number(process.env.ISSUE_NUMBER || "")
             });
           }
         }
