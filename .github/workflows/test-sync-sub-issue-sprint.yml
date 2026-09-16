@@ -20,7 +20,6 @@ on:
       - '.github/workflows/test-typescript.yml'
       - 'src/**'
       - 'test/**'
-      - 'dist/**'
       - 'package.json'
       - 'package-lock.json'
       - 'tsconfig.json'

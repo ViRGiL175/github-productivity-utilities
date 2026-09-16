@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  GeminiGenerateText,
+  geminiGenerateText,
   buildEffectiveInput,
   type ContextFileReader,
   type TextGenerator,
@@ -27,11 +27,7 @@ describe('GeminiGenerateText', () => {
 
   it('returns the requested model response', async () => {
     const dependencies = createDependencies();
-    const text = await new GeminiGenerateText(
-      dependencies.generator,
-      dependencies.files,
-      dependencies.logger,
-    ).run(input);
+    const text = await geminiGenerateText(input, dependencies.generator, dependencies.files, dependencies.logger);
 
     expect(text).toBe('Generated text');
     expect(dependencies.generator.generate).toHaveBeenCalledWith({
@@ -43,11 +39,7 @@ describe('GeminiGenerateText', () => {
 
   it('rotates to a fallback model after an empty response', async () => {
     const dependencies = createDependencies(['', 'Fallback text']);
-    const text = await new GeminiGenerateText(
-      dependencies.generator,
-      dependencies.files,
-      dependencies.logger,
-    ).run(input);
+    const text = await geminiGenerateText(input, dependencies.generator, dependencies.files, dependencies.logger);
 
     expect(text).toBe('Fallback text');
     expect(dependencies.generator.generate).toHaveBeenNthCalledWith(2, expect.objectContaining({ model: 'gemini-2.5-flash' }));
@@ -56,16 +48,16 @@ describe('GeminiGenerateText', () => {
   it('fails explicitly when every model returns an empty response', async () => {
     const dependencies = createDependencies(['', '', '']);
     await expect(
-      new GeminiGenerateText(dependencies.generator, dependencies.files, dependencies.logger).run(input),
+      geminiGenerateText(input, dependencies.generator, dependencies.files, dependencies.logger),
     ).rejects.toThrow('did not return text');
   });
 
   it('loads configured context files before generating', async () => {
     const dependencies = createDependencies();
-    await new GeminiGenerateText(dependencies.generator, dependencies.files, dependencies.logger).run({
+    await geminiGenerateText({
       ...input,
       contextFiles: 'one.md\n two.md ',
-    });
+    }, dependencies.generator, dependencies.files, dependencies.logger);
 
     expect(dependencies.files.read).toHaveBeenCalledWith(['one.md', 'two.md']);
     expect(dependencies.generator.generate).toHaveBeenCalledWith(expect.objectContaining({ text: 'Input\n\nFile context' }));

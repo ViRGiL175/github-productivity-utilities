@@ -249,9 +249,8 @@ jobs:
           path: .github-productivity-utilities-runtime
 
       - name: Sync PR metadata with project
-        shell: bash
+        uses: actions/github-script@v8
         env:
-          AUTOMATION_TOKEN: ${{ steps.auth.outputs.token }}
           PROJECT_OWNER: ${{ inputs.project_owner }}
           PROJECT_NUMBER: ${{ inputs.project_number }}
           BACKLOG_REPO: ${{ inputs.backlog_repo }}
@@ -269,4 +268,8 @@ jobs:
           HEAD_REF: ${{ inputs.head_ref || github.event.pull_request.head.ref || '' }}
           ACTION: ${{ inputs.action || github.event.action || 'opened' }}
           REQUESTED_REVIEWERS_JSON: ${{ inputs.requested_reviewers_json || toJSON(github.event.pull_request.requested_reviewers) }}
-        run: node .github-productivity-utilities-runtime/dist/run-automation.mjs link-pr-to-project
+        with:
+          github-token: ${{ steps.auth.outputs.token }}
+          script: |
+            const { run } = await import(`${process.env.GITHUB_WORKSPACE}/.github-productivity-utilities-runtime/src/scripts/link-pr-to-project.ts`)
+            await run(github)

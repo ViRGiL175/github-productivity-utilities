@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { EnsureNextIterationReminder } from '../src/automations/ensure-next-iteration-reminder/EnsureNextIterationReminder.js';
+import { ensureNextIterationReminder } from '../src/automations/ensure-next-iteration-reminder/EnsureNextIterationReminder.js';
 import type { ProjectIterationGateway } from '../src/github/ProjectV2Repository.js';
 import type { Logger } from '../src/runtime/Logger.js';
 
@@ -35,7 +35,7 @@ function createProject(items: Awaited<ReturnType<ProjectIterationGateway['listPr
 describe('EnsureNextIterationReminder', () => {
   it('creates the reminder in an empty current iteration', async () => {
     const dependencies = createProject();
-    await new EnsureNextIterationReminder(dependencies.projects, dependencies.logger).run(input);
+    await ensureNextIterationReminder(input, dependencies.projects, dependencies.logger);
     expect(dependencies.projects.createDraftIssue).toHaveBeenCalledWith('PROJECT', 'Plan next sprint');
     expect(dependencies.projects.setIteration).toHaveBeenCalledWith('PROJECT', 'REMINDER', 'FIELD', 'CURRENT');
   });
@@ -45,7 +45,7 @@ describe('EnsureNextIterationReminder', () => {
       { id: 'ISSUE_ITEM', contentType: 'Issue', contentId: 'ISSUE', title: 'Work', iterationId: 'CURRENT' },
       { id: 'REMINDER', contentType: 'DraftIssue', contentId: 'DRAFT', title: 'Plan next sprint', iterationId: 'CURRENT' },
     ]);
-    await new EnsureNextIterationReminder(dependencies.projects, dependencies.logger).run(input);
+    await ensureNextIterationReminder(input, dependencies.projects, dependencies.logger);
     expect(dependencies.projects.setIteration).toHaveBeenCalledWith('PROJECT', 'REMINDER', 'FIELD', 'NEXT');
   });
 
@@ -54,16 +54,16 @@ describe('EnsureNextIterationReminder', () => {
       { id: 'ONE', contentType: 'DraftIssue', contentId: 'D1', title: 'Plan next sprint', iterationId: 'CURRENT' },
       { id: 'TWO', contentType: 'DraftIssue', contentId: 'D2', title: 'Plan next sprint', iterationId: 'NEXT' },
     ]);
-    await new EnsureNextIterationReminder(dependencies.projects, dependencies.logger).run(input);
+    await ensureNextIterationReminder(input, dependencies.projects, dependencies.logger);
     expect(dependencies.projects.deleteProjectItem).toHaveBeenCalledWith('PROJECT', 'TWO');
     expect(dependencies.projects.createDraftIssue).not.toHaveBeenCalled();
   });
 
   it('rejects an invalid date override', async () => {
     const dependencies = createProject();
-    await expect(new EnsureNextIterationReminder(dependencies.projects, dependencies.logger).run({
+    await expect(ensureNextIterationReminder({
       ...input,
       currentDateOverride: 'not-a-date',
-    })).rejects.toThrow('Invalid current_date_override');
+    }, dependencies.projects, dependencies.logger)).rejects.toThrow('Invalid current_date_override');
   });
 });

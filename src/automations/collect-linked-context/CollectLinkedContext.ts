@@ -4,9 +4,9 @@ import type {
   LinkedContextGateway,
   LinkedContextReference,
   ReleaseContextReference,
-} from '../../github/LinkedContextRepository.js';
-import type { RepositoryCoordinates } from '../../github/IssueRepository.js';
-import type { Logger } from '../../runtime/Logger.js';
+} from '../../github/LinkedContextRepository.ts';
+import type { RepositoryCoordinates } from '../../github/IssueRepository.ts';
+import type { Logger } from '../../runtime/Logger.ts';
 
 const MAX_ITEMS = 5;
 const MAX_BODY_CHARS = 800;
@@ -16,47 +16,44 @@ export interface CollectLinkedContextInput {
   defaultRepository: RepositoryCoordinates;
 }
 
-export class CollectLinkedContext {
-  constructor(
-    private readonly github: LinkedContextGateway,
-    private readonly logger: Logger,
-  ) {}
+export async function collectLinkedContext(
+input: CollectLinkedContextInput,
+github: LinkedContextGateway,
+logger: Logger,
+): Promise<string> {
+  const references = collectReferences(input.text, input.defaultRepository);
+  logger.info(`Total unique references: ${references.length}`);
+  const results: string[] = [];
 
-  async run(input: CollectLinkedContextInput): Promise<string> {
-    const references = collectReferences(input.text, input.defaultRepository);
-    this.logger.info(`Total unique references: ${references.length}`);
-    const results: string[] = [];
-
-    for (const reference of references.slice(0, MAX_ITEMS)) {
-      const key = referenceKey(reference);
-      try {
-        this.logger.info(`Fetching: ${key}`);
-        results.push(await this.fetchAndFormat(reference));
-        this.logger.info(`OK: ${key}`);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        this.logger.warning(`Skipped ${key}: ${message}`);
-      }
+  for (const reference of references.slice(0, MAX_ITEMS)) {
+    const key = referenceKey(reference);
+    try {
+      logger.info(`Fetching: ${key}`);
+      results.push(await fetchAndFormat(reference, github));
+      logger.info(`OK: ${key}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warning(`Skipped ${key}: ${message}`);
     }
-
-    return results.length === 0 ? '' : `Связанные материалы:\n\n${results.join('\n\n---\n\n')}`;
   }
 
-  private async fetchAndFormat(reference: LinkedContextReference): Promise<string> {
+  return results.length === 0 ? '' : `Связанные материалы:\n\n${results.join('\n\n---\n\n')}`;
+}
+
+async function fetchAndFormat(reference: LinkedContextReference, github: LinkedContextGateway): Promise<string> {
     if (reference.type === 'issue') {
-      const data = await this.github.getIssue(reference);
+      const data = await github.getIssue(reference);
       const kind = data.isPullRequest ? 'PR' : 'Issue';
       return `${kind} ${reference.owner}/${reference.repo}#${reference.number} («${data.title}»):\n${data.body.slice(0, MAX_BODY_CHARS)}`;
     }
 
     if (reference.type === 'release') {
-      const data = await this.github.getRelease(reference);
+      const data = await github.getRelease(reference);
       return `Релиз ${reference.owner}/${reference.repo}@${reference.tag} («${data.name ?? reference.tag}»):\n${data.body.slice(0, MAX_BODY_CHARS)}`;
     }
 
-    const data = await this.github.getCommit(reference);
+    const data = await github.getCommit(reference);
     return `Коммит ${reference.sha.slice(0, 7)} (${reference.owner}/${reference.repo}):\n${data.message.slice(0, MAX_BODY_CHARS)}`;
-  }
 }
 
 export function collectReferences(

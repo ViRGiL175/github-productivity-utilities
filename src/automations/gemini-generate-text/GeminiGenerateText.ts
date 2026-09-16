@@ -1,5 +1,5 @@
 import { readFile, stat } from 'node:fs/promises';
-import type { Logger } from '../../runtime/Logger.js';
+import type { Logger } from '../../runtime/Logger.ts';
 
 const MAX_CONTEXT_BYTES = 50_000;
 const FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite'] as const;
@@ -19,45 +19,42 @@ export interface ContextFileReader {
   read(paths: string[]): Promise<string>;
 }
 
-export class GeminiGenerateText {
-  constructor(
-    private readonly generator: TextGenerator,
-    private readonly files: ContextFileReader,
-    private readonly logger: Logger,
-  ) {}
-
-  async run(input: GeminiGenerateTextInput): Promise<string> {
-    if (!input.promptText.trim()) {
-      throw new Error('prompt_text must not be empty');
-    }
-
-    const paths = input.contextFiles.split('\n').map((path) => path.trim()).filter(Boolean);
-    const context = paths.length > 0 ? await this.files.read(paths) : '';
-    const effectiveInput = buildEffectiveInput(input.promptText, input.inputText, context);
-    const models = [...new Set([input.model, ...FALLBACK_MODELS].filter(Boolean))];
-    const errors: string[] = [];
-
-    for (const model of models) {
-      try {
-        const text = (await this.generator.generate({
-          model,
-          systemInstruction: input.promptText,
-          text: effectiveInput,
-        })).trim();
-        if (text) {
-          return text;
-        }
-        errors.push(`${model}: empty response`);
-        this.logger.warning(`Gemini model ${model} returned an empty response. Trying the next model.`);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        errors.push(`${model}: ${message}`);
-        this.logger.warning(`Gemini model ${model} failed: ${message}. Trying the next model.`);
-      }
-    }
-
-    throw new Error(`Gemini did not return text after ${models.length} attempts: ${errors.join('; ')}`);
+export async function geminiGenerateText(
+input: GeminiGenerateTextInput,
+generator: TextGenerator,
+files: ContextFileReader,
+logger: Logger,
+): Promise<string> {
+  if (!input.promptText.trim()) {
+    throw new Error('prompt_text must not be empty');
   }
+
+  const paths = input.contextFiles.split('\n').map((path) => path.trim()).filter(Boolean);
+  const context = paths.length > 0 ? await files.read(paths) : '';
+  const effectiveInput = buildEffectiveInput(input.promptText, input.inputText, context);
+  const models = [...new Set([input.model, ...FALLBACK_MODELS].filter(Boolean))];
+  const errors: string[] = [];
+
+  for (const model of models) {
+    try {
+      const text = (await generator.generate({
+        model,
+        systemInstruction: input.promptText,
+        text: effectiveInput,
+      })).trim();
+      if (text) {
+        return text;
+      }
+      errors.push(`${model}: empty response`);
+      logger.warning(`Gemini model ${model} returned an empty response. Trying the next model.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      errors.push(`${model}: ${message}`);
+      logger.warning(`Gemini model ${model} failed: ${message}. Trying the next model.`);
+    }
+  }
+
+  throw new Error(`Gemini did not return text after ${models.length} attempts: ${errors.join('; ')}`);
 }
 
 export class LocalContextFileReader implements ContextFileReader {
@@ -94,10 +91,11 @@ interface GeminiResponse {
 }
 
 export class GeminiApiClient implements TextGenerator {
+  private readonly apiKey: string;
+  private readonly fetchImplementation: typeof fetch;
   constructor(
-    private readonly apiKey: string,
-    private readonly fetchImplementation: typeof fetch = fetch,
-  ) {}
+    apiKey: string, fetchImplementation: typeof fetch = fetch,
+  ) { this.apiKey = apiKey; this.fetchImplementation = fetchImplementation; }
 
   async generate(request: { model: string; systemInstruction: string; text: string }): Promise<string> {
     const response = await this.fetchImplementation(

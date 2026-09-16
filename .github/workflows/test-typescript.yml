@@ -6,7 +6,6 @@ on:
       - '.github/workflows/test-typescript.yml'
       - 'src/**'
       - 'test/**'
-      - 'dist/**'
       - 'package.json'
       - 'package-lock.json'
       - 'tsconfig.json'
@@ -17,7 +16,7 @@ permissions:
 
 jobs:
   test-typescript:
-    name: Typecheck, unit test and verify bundle
+    name: Typecheck and unit test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -38,11 +37,6 @@ jobs:
       - name: Run unit tests
         run: npm test
 
-      - name: Rebuild runtime bundle
-        run: npm run build
-
-      - name: Verify committed bundle is current
+      - name: Load every script directly with Node.js
         run: |
-          git ls-files --error-unmatch dist/run-automation.mjs
-          test -s dist/run-automation.mjs
-          git diff --exit-code -- dist/
+          node --input-type=module -e "for (const name of ['sync-sub-issue-sprint', 'link-pr-to-project', 'ensure-next-iteration-reminder', 'safe-dependabot-pr-link', 'reopen-issue-if-pr-open', 'collect-linked-context', 'gemini-generate-text']) { const script = await import('./src/scripts/' + name + '.ts'); if (typeof script.run !== 'function') throw new Error(name + ' has no run function') }"

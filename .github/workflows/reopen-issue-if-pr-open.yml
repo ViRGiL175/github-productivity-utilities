@@ -135,10 +135,13 @@ jobs:
           path: .github-productivity-utilities-runtime
 
       - name: Check linked open PRs and reopen if needed
-        shell: bash
+        uses: actions/github-script@v8
         env:
-          AUTOMATION_TOKEN: ${{ steps.auth.outputs.token }}
           PROJECT_OWNER: ${{ inputs.project_owner }}
           BACKLOG_REPO: ${{ inputs.backlog_repo }}
           ISSUE_NUMBER: ${{ inputs.issue_number || github.event.issue.number }}
-        run: node .github-productivity-utilities-runtime/dist/run-automation.mjs reopen-issue-if-pr-open
+        with:
+          github-token: ${{ steps.auth.outputs.token }}
+          script: |
+            const { run } = await import(`${process.env.GITHUB_WORKSPACE}/.github-productivity-utilities-runtime/src/scripts/reopen-issue-if-pr-open.ts`)
+            await run(github)

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { LinkPrToProject } from '../src/automations/link-pr-to-project/LinkPrToProject.js';
+import { linkPrToProject } from '../src/automations/link-pr-to-project/LinkPrToProject.js';
 import type { IssueReader } from '../src/github/IssueRepository.js';
 import type { ProjectStatusGateway, ProjectV2Gateway } from '../src/github/ProjectV2Repository.js';
 import type { PullRequestMutationGateway } from '../src/github/PullRequestRepository.js';
@@ -61,12 +61,7 @@ function createDependencies() {
 describe('LinkPrToProject', () => {
   it('adds an opened PR, copies the sprint and appends the closing reference', async () => {
     const dependencies = createDependencies();
-    await new LinkPrToProject(
-      dependencies.issues,
-      dependencies.pullRequests,
-      dependencies.projects,
-      dependencies.logger,
-    ).run(input);
+    await linkPrToProject(input, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
 
     expect(dependencies.projects.addIssueToProject).toHaveBeenCalledWith('PROJECT', 'PR_NODE');
     expect(dependencies.projects.setSingleSelect).toHaveBeenCalledWith('PROJECT', 'PR_ITEM', 'STATUS_FIELD', 'PROGRESS');
@@ -78,25 +73,25 @@ describe('LinkPrToProject', () => {
 
   it('marks an existing project item done when the PR closes', async () => {
     const dependencies = createDependencies();
-    await new LinkPrToProject(dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger).run({
+    await linkPrToProject({
       ...input, action: 'closed',
-    });
+    }, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
     expect(dependencies.projects.setSingleSelect).toHaveBeenCalledWith('PROJECT', 'PR_ITEM', 'STATUS_FIELD', 'DONE');
   });
 
   it('moves an existing item to review only for human reviewers', async () => {
     const dependencies = createDependencies();
-    await new LinkPrToProject(dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger).run({
+    await linkPrToProject({
       ...input, action: 'review_requested', requestedReviewersJson: '[{"login":"reviewer","type":"User"}]',
-    });
+    }, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
     expect(dependencies.projects.setSingleSelect).toHaveBeenCalledWith('PROJECT', 'PR_ITEM', 'STATUS_FIELD', 'REVIEW');
   });
 
   it('stops after project linking when the branch has no issue prefix', async () => {
     const dependencies = createDependencies();
-    await new LinkPrToProject(dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger).run({
+    await linkPrToProject({
       ...input, headRef: 'feature',
-    });
+    }, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
     expect(dependencies.issues.getIssue).not.toHaveBeenCalled();
     expect(dependencies.pullRequests.updatePullRequestBody).not.toHaveBeenCalled();
   });

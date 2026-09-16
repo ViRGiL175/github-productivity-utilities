@@ -141,9 +141,12 @@ jobs:
 
       - name: Collect linked context
         id: collect
-        shell: bash
+        uses: actions/github-script@v8
         env:
-          AUTOMATION_TOKEN: ${{ steps.auth.outputs.token }}
           INPUT_TEXT: ${{ inputs.text }}
           CALLER_REPOSITORY: ${{ github.repository }}
-        run: node .github-productivity-utilities-runtime/dist/run-automation.mjs collect-linked-context
+        with:
+          github-token: ${{ steps.auth.outputs.token }}
+          script: |
+            const { run } = await import(`${process.env.GITHUB_WORKSPACE}/.github-productivity-utilities-runtime/src/scripts/collect-linked-context.ts`)
+            await run(github, core)

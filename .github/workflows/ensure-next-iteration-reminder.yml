@@ -138,12 +138,15 @@ jobs:
           path: .github-productivity-utilities-runtime
 
       - name: Ensure reminder draft exists in target iteration
-        shell: bash
+        uses: actions/github-script@v8
         env:
-          AUTOMATION_TOKEN: ${{ steps.auth.outputs.token }}
           PROJECT_OWNER: ${{ inputs.project_owner }}
           PROJECT_NUMBER: ${{ inputs.project_number }}
           ITERATION_FIELD_NAME: ${{ inputs.iteration_field_name }}
           REMINDER_TITLE: ${{ inputs.reminder_title }}
           CURRENT_DATE_OVERRIDE: ${{ inputs.current_date_override }}
-        run: node .github-productivity-utilities-runtime/dist/run-automation.mjs ensure-next-iteration-reminder
+        with:
+          github-token: ${{ steps.auth.outputs.token }}
+          script: |
+            const { run } = await import(`${process.env.GITHUB_WORKSPACE}/.github-productivity-utilities-runtime/src/scripts/ensure-next-iteration-reminder.ts`)
+            await run(github)

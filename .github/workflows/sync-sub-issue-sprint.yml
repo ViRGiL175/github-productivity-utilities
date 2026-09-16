@@ -162,6 +162,9 @@ jobs:
           persist-credentials: false
 
       - name: Copy sprint from parent issue
-        env:
-          AUTOMATION_TOKEN: ${{ steps.auth.outputs.token }}
-        run: node .github-productivity-utilities-runtime/dist/run-automation.mjs sync-sub-issue-sprint
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ steps.auth.outputs.token }}
+          script: |
+            const { run } = await import(`${process.env.GITHUB_WORKSPACE}/.github-productivity-utilities-runtime/src/scripts/sync-sub-issue-sprint.ts`)
+            await run(github)

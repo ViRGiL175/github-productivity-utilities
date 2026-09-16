@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  CollectLinkedContext,
+  collectLinkedContext,
   collectReferences,
 } from '../src/automations/collect-linked-context/CollectLinkedContext.js';
 import type { LinkedContextGateway } from '../src/github/LinkedContextRepository.js';
@@ -41,10 +41,10 @@ describe('CollectLinkedContext', () => {
 
   it('fetches and formats GitHub content', async () => {
     const dependencies = createDependencies();
-    const value = await new CollectLinkedContext(dependencies.github, dependencies.logger).run({
+    const value = await collectLinkedContext({
       text: 'See owner/repo#12 and https://github.com/owner/repo/releases/tag/v1.2.3',
       defaultRepository,
-    });
+    }, dependencies.github, dependencies.logger);
 
     expect(value).toContain('Issue owner/repo#12 («Issue title»):\nIssue body');
     expect(value).toContain('Релиз owner/repo@v1.2.3 («Release name»):\nRelease body');
@@ -53,10 +53,10 @@ describe('CollectLinkedContext', () => {
   it('skips inaccessible references and keeps successful ones', async () => {
     const dependencies = createDependencies();
     vi.mocked(dependencies.github.getIssue).mockRejectedValue(new Error('Not found'));
-    const value = await new CollectLinkedContext(dependencies.github, dependencies.logger).run({
+    const value = await collectLinkedContext({
       text: 'owner/repo#12 https://github.com/owner/repo/commit/abcdef0',
       defaultRepository,
-    });
+    }, dependencies.github, dependencies.logger);
 
     expect(value).toContain('Коммит abcdef0');
     expect(dependencies.logger.warning).toHaveBeenCalledWith(expect.stringContaining('Not found'));
@@ -64,10 +64,10 @@ describe('CollectLinkedContext', () => {
 
   it('returns an empty output when no links are present', async () => {
     const dependencies = createDependencies();
-    const value = await new CollectLinkedContext(dependencies.github, dependencies.logger).run({
+    const value = await collectLinkedContext({
       text: 'No linked material',
       defaultRepository,
-    });
+    }, dependencies.github, dependencies.logger);
 
     expect(value).toBe('');
   });

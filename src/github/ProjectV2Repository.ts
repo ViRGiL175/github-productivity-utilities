@@ -464,7 +464,8 @@ export interface ProjectIterationGateway {
 }
 
 export class ProjectV2Repository implements ProjectV2Gateway, ProjectStatusGateway, ProjectIterationGateway {
-  constructor(private readonly octokit: Octokit) {}
+  private readonly octokit: Octokit;
+  constructor(octokit: Octokit) { this.octokit = octokit; }
 
   async getProjectMetadata(owner: string, number: number, fieldName: string): Promise<ProjectMetadata> {
     const ownerType = await this.getProjectOwnerType(owner);
