@@ -509,7 +509,6 @@ jobs:
       action: opened
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
       installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-      implementation_ref: ${{ github.sha }}
     secrets:
       pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
       app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
@@ -746,7 +745,6 @@ jobs:
       action: opened
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
       installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-      implementation_ref: ${{ github.sha }}
     secrets:
       pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
       app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
@@ -953,7 +951,6 @@ jobs:
       requested_reviewers_json: '[{"login":"octocat"},{"login":"github-actions[bot]"},{"login":"Copilot"}]'
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
       installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-      implementation_ref: ${{ github.sha }}
     secrets:
       pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
       app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
@@ -1221,7 +1218,6 @@ jobs:
       action: closed
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
       installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-      implementation_ref: ${{ github.sha }}
     secrets:
       pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
       app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
@@ -1635,7 +1631,6 @@ jobs:
       head_ref: 999999-dependabot-smoke-test
       action: opened
       auth_mode: pat
-      implementation_ref: ${{ github.sha }}
 
   assert-link-dependabot-no-token-scenario:
     name: Assert link PR Dependabot no-token scenario

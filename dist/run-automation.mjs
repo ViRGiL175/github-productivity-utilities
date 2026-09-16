@@ -5262,7 +5262,7 @@ var ProjectV2Repository = class {
       issueId: issueNodeId,
       fieldName
     });
-    const item = data.node?.projectItems?.nodes.find((candidate) => candidate?.project?.id === projectId);
+    const item = data.node?.projectItems?.nodes?.find((candidate) => candidate?.project?.id === projectId);
     if (!item) {
       return null;
     }
@@ -5319,7 +5319,7 @@ var ProjectV2Repository = class {
       nodeId,
       fieldName
     });
-    const item = data.node?.projectItems?.nodes.find((candidate) => candidate?.project?.id === projectId);
+    const item = data.node?.projectItems?.nodes?.find((candidate) => candidate?.project?.id === projectId);
     return item ? {
       id: item.id,
       statusName: item.fieldValueByName?.name ?? null,
@@ -5625,7 +5625,7 @@ async function main() {
               issueNumber: Number(process.env.ISSUE_NUMBER || ""),
               repository: {
                 owner: requireEnvironmentVariable("REPO_OWNER"),
-                repo: requireEnvironmentVariable("REPO_NAME")
+                repo: requireEnvironmentVariable("REPO_NAME").split("/").at(-1)
               }
             });
           }

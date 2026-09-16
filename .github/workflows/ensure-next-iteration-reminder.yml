@@ -27,11 +27,6 @@ on:
       installation_owner:
         required: false
         type: string
-      implementation_ref:
-        description: Ref of github-productivity-utilities implementation to execute
-        required: false
-        default: main
-        type: string
     secrets:
       project_token:
         required: false
@@ -138,8 +133,8 @@ jobs:
       - name: Checkout automation implementation
         uses: actions/checkout@v6
         with:
-          repository: ViRGiL175/github-productivity-utilities
-          ref: ${{ inputs.implementation_ref }}
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
           path: .github-productivity-utilities-runtime
 
       - name: Ensure reminder draft exists in target iteration
