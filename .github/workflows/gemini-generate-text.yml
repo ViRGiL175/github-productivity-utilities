@@ -56,12 +56,14 @@ jobs:
 
       - name: Generate text
         id: generate
-        shell: bash
+        uses: actions/github-script@v8
         env:
-          AUTOMATION_TOKEN: ${{ github.token }}
           GEMINI_API_KEY: ${{ secrets.gemini_api_key }}
           PROMPT_TEXT: ${{ inputs.prompt_text }}
           INPUT_TEXT: ${{ inputs.input_text }}
           CONTEXT_FILES: ${{ inputs.context_files }}
           MODEL: ${{ inputs.model }}
-        run: node .github-productivity-utilities-runtime/dist/run-automation.mjs gemini-generate-text
+        with:
+          script: |
+            const { run } = await import(`${process.env.GITHUB_WORKSPACE}/.github-productivity-utilities-runtime/src/scripts/gemini-generate-text.ts`)
+            await run(core)

@@ -2,8 +2,8 @@ import type {
   IterationDefinition,
   IterationProjectItem,
   ProjectIterationGateway,
-} from '../../github/ProjectV2Repository.js';
-import type { Logger } from '../../runtime/Logger.js';
+} from '../../github/ProjectV2Repository.ts';
+import type { Logger } from '../../runtime/Logger.ts';
 
 export interface EnsureNextIterationReminderInput {
   projectOwner: string;
@@ -13,83 +13,82 @@ export interface EnsureNextIterationReminderInput {
   currentDateOverride: string;
 }
 
-export class EnsureNextIterationReminder {
-  constructor(
-    private readonly projects: ProjectIterationGateway,
-    private readonly logger: Logger,
-    private readonly now: () => Date = () => new Date(),
-  ) {}
+export async function ensureNextIterationReminder(
+input: EnsureNextIterationReminderInput,
+projects: ProjectIterationGateway,
+logger: Logger,
+now: () => Date = () => new Date(),
+): Promise<void> {
+  const today = parseCurrentDate(input.currentDateOverride, now());
+  const todayIso = today.toISOString().slice(0, 10);
+  const project = await projects.getIterationMetadata(
+    input.projectOwner,
+    input.projectNumber,
+    input.iterationFieldName,
+  );
+  const items = await projects.listProjectItems(project.projectId, project.iterationFieldId);
+  const currentIteration = findCurrentIteration(project.iterations, today);
+  const nextIteration = findNextIteration(project.iterations, currentIteration, today);
 
-  async run(input: EnsureNextIterationReminderInput): Promise<void> {
-    const today = parseCurrentDate(input.currentDateOverride, this.now());
-    const todayIso = today.toISOString().slice(0, 10);
-    const project = await this.projects.getIterationMetadata(
-      input.projectOwner,
-      input.projectNumber,
-      input.iterationFieldName,
+  if (!currentIteration) {
+    logger.info(`No active iteration found for ${todayIso}. Will use the first future iteration as next if available.`);
+  } else {
+    logger.info(`Current iteration: ${currentIteration.title} (${currentIteration.startDate})`);
+  }
+  if (nextIteration) logger.info(`Next iteration: ${nextIteration.title} (${nextIteration.startDate})`);
+
+  const currentHasIssues = currentIteration
+    ? items.some((item) => item.contentType === 'Issue' && item.iterationId === currentIteration.id)
+    : false;
+  const targetIteration = currentIteration && !currentHasIssues ? currentIteration : nextIteration;
+  if (!targetIteration) {
+    logger.info(
+      `No target iteration found in field "${input.iterationFieldName}" for project ${input.projectOwner}#${input.projectNumber}. Nothing to do.`,
     );
-    const items = await this.projects.listProjectItems(project.projectId, project.iterationFieldId);
-    const currentIteration = findCurrentIteration(project.iterations, today);
-    const nextIteration = findNextIteration(project.iterations, currentIteration, today);
-
-    if (!currentIteration) {
-      this.logger.info(`No active iteration found for ${todayIso}. Will use the first future iteration as next if available.`);
-    } else {
-      this.logger.info(`Current iteration: ${currentIteration.title} (${currentIteration.startDate})`);
-    }
-    if (nextIteration) this.logger.info(`Next iteration: ${nextIteration.title} (${nextIteration.startDate})`);
-
-    const currentHasIssues = currentIteration
-      ? items.some((item) => item.contentType === 'Issue' && item.iterationId === currentIteration.id)
-      : false;
-    const targetIteration = currentIteration && !currentHasIssues ? currentIteration : nextIteration;
-    if (!targetIteration) {
-      this.logger.info(
-        `No target iteration found in field "${input.iterationFieldName}" for project ${input.projectOwner}#${input.projectNumber}. Nothing to do.`,
-      );
-      return;
-    }
-
-    this.logger.info(`Target iteration for reminder: ${targetIteration.title} (${targetIteration.startDate})`);
-    const reminders = items.filter(
-      (item) => item.contentType === 'DraftIssue' && item.title === input.reminderTitle,
-    );
-    const canonical = reminders.find((item) => item.iterationId === targetIteration.id) ?? reminders[0];
-
-    if (!canonical) {
-      const itemId = await this.projects.createDraftIssue(project.projectId, input.reminderTitle);
-      await this.projects.setIteration(project.projectId, itemId, project.iterationFieldId, targetIteration.id);
-      this.logger.info(`Created reminder draft item in target iteration "${targetIteration.title}".`);
-      return;
-    }
-
-    await this.reconcileCanonical(canonical, project.projectId, project.iterationFieldId, targetIteration, input);
-    for (const duplicate of reminders.filter((item) => item.id !== canonical.id)) {
-      await this.projects.deleteProjectItem(project.projectId, duplicate.id);
-      this.logger.info(`Deleted duplicate reminder item ${duplicate.id}.`);
-    }
-    this.logger.info(`Reminder reconciled successfully in project "${project.projectTitle}".`);
+    return;
   }
 
-  private async reconcileCanonical(
+  logger.info(`Target iteration for reminder: ${targetIteration.title} (${targetIteration.startDate})`);
+  const reminders = items.filter(
+    (item) => item.contentType === 'DraftIssue' && item.title === input.reminderTitle,
+  );
+  const canonical = reminders.find((item) => item.iterationId === targetIteration.id) ?? reminders[0];
+
+  if (!canonical) {
+    const itemId = await projects.createDraftIssue(project.projectId, input.reminderTitle);
+    await projects.setIteration(project.projectId, itemId, project.iterationFieldId, targetIteration.id);
+    logger.info(`Created reminder draft item in target iteration "${targetIteration.title}".`);
+    return;
+  }
+
+  await reconcileCanonical(canonical, project.projectId, project.iterationFieldId, targetIteration, input, projects, logger);
+  for (const duplicate of reminders.filter((item) => item.id !== canonical.id)) {
+    await projects.deleteProjectItem(project.projectId, duplicate.id);
+    logger.info(`Deleted duplicate reminder item ${duplicate.id}.`);
+  }
+  logger.info(`Reminder reconciled successfully in project "${project.projectTitle}".`);
+}
+
+async function reconcileCanonical(
     item: IterationProjectItem,
     projectId: string,
     fieldId: string,
     target: IterationDefinition,
     input: EnsureNextIterationReminderInput,
+    projects: ProjectIterationGateway,
+    logger: Logger,
   ): Promise<void> {
     if (item.contentType !== 'DraftIssue' || !item.contentId) {
       throw new Error('Canonical reminder item is not a draft issue.');
     }
     if (item.title !== input.reminderTitle) {
-      await this.projects.updateDraftIssue(item.contentId, input.reminderTitle);
-      this.logger.info(`Updated reminder draft title for item ${item.id}.`);
+      await projects.updateDraftIssue(item.contentId, input.reminderTitle);
+      logger.info(`Updated reminder draft title for item ${item.id}.`);
     }
     if (item.iterationId !== target.id) {
-      await this.projects.setIteration(projectId, item.id, fieldId, target.id);
-      this.logger.info(`Moved reminder draft to target iteration "${target.title}".`);
+      await projects.setIteration(projectId, item.id, fieldId, target.id);
+      logger.info(`Moved reminder draft to target iteration "${target.title}".`);
     }
-  }
 }
 
 export function parseCurrentDate(value: string, now: Date): Date {

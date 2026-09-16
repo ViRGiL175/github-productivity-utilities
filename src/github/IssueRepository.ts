@@ -95,7 +95,8 @@ interface IssueTimelineQueryResult {
 }
 
 export class IssueRepository implements IssueReader, IssueReopenGateway {
-  constructor(private readonly octokit: Octokit) {}
+  private readonly octokit: Octokit;
+  constructor(octokit: Octokit) { this.octokit = octokit; }
 
   async getIssue(repository: RepositoryCoordinates, issueNumber: number): Promise<IssueRecord> {
     const response = await this.octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {

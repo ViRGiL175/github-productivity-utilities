@@ -1,5 +1,5 @@
 import type { Octokit } from '@octokit/rest';
-import type { RepositoryCoordinates } from './IssueRepository.js';
+import type { RepositoryCoordinates } from './IssueRepository.ts';
 
 const API_HEADERS = {
   accept: 'application/vnd.github+json',
@@ -32,7 +32,8 @@ export interface PullRequestMutationGateway {
 }
 
 export class PullRequestRepository implements PullRequestListGateway, PullRequestMutationGateway {
-  constructor(private readonly octokit: Octokit) {}
+  private readonly octokit: Octokit;
+  constructor(octokit: Octokit) { this.octokit = octokit; }
 
   async listPullRequests(
     repository: RepositoryCoordinates,

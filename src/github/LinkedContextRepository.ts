@@ -50,7 +50,8 @@ export interface LinkedContextGateway {
 }
 
 export class LinkedContextRepository implements LinkedContextGateway {
-  constructor(private readonly octokit: Octokit) {}
+  private readonly octokit: Octokit;
+  constructor(octokit: Octokit) { this.octokit = octokit; }
 
   async getIssue(reference: IssueContextReference): Promise<IssueContext> {
     const response = await this.octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {

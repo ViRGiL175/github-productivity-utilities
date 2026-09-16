@@ -176,9 +176,8 @@ jobs:
           path: .github-productivity-utilities-runtime
 
       - name: Reconcile Dependabot PR project links
-        shell: bash
+        uses: actions/github-script@v8
         env:
-          AUTOMATION_TOKEN: ${{ steps.auth.outputs.token }}
           PROJECT_OWNER: ${{ inputs.project_owner }}
           PROJECT_NUMBER: ${{ inputs.project_number }}
           REPOSITORIES: ${{ inputs.repositories }}
@@ -190,4 +189,8 @@ jobs:
           DEPENDABOT_LOGIN: ${{ inputs.dependabot_login }}
           MAX_PULL_REQUESTS_PER_REPO: ${{ inputs.max_pull_requests_per_repo }}
           CLOSED_LOOKBACK_DAYS: ${{ inputs.closed_lookback_days }}
-        run: node .github-productivity-utilities-runtime/dist/run-automation.mjs safe-dependabot-pr-link
+        with:
+          github-token: ${{ steps.auth.outputs.token }}
+          script: |
+            const { run } = await import(`${process.env.GITHUB_WORKSPACE}/.github-productivity-utilities-runtime/src/scripts/safe-dependabot-pr-link.ts`)
+            await run(github)

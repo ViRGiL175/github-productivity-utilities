@@ -1,7 +1,7 @@
-import type { IssueReader, RepositoryCoordinates } from '../../github/IssueRepository.js';
-import type { ProjectStatusGateway, ProjectV2Gateway } from '../../github/ProjectV2Repository.js';
-import type { PullRequestMutationGateway } from '../../github/PullRequestRepository.js';
-import type { Logger } from '../../runtime/Logger.js';
+import type { IssueReader, RepositoryCoordinates } from '../../github/IssueRepository.ts';
+import type { ProjectStatusGateway, ProjectV2Gateway } from '../../github/ProjectV2Repository.ts';
+import type { PullRequestMutationGateway } from '../../github/PullRequestRepository.ts';
+import type { Logger } from '../../runtime/Logger.ts';
 
 export interface RequestedReviewer {
   login?: string;
@@ -28,172 +28,173 @@ export interface LinkPrToProjectInput {
 
 type ProjectGateway = ProjectV2Gateway & ProjectStatusGateway;
 
-export class LinkPrToProject {
-  constructor(
-    private readonly issues: IssueReader,
-    private readonly pullRequests: PullRequestMutationGateway,
-    private readonly projects: ProjectGateway,
-    private readonly logger: Logger,
-  ) {}
+export async function linkPrToProject(
+input: LinkPrToProjectInput,
+issues: IssueReader,
+pullRequests: PullRequestMutationGateway,
+projects: ProjectGateway,
+logger: Logger,
+): Promise<void> {
+  validateInput(input);
+  const [iterationMetadata, statusMetadata] = await Promise.all([
+    projects.getProjectMetadata(input.projectOwner, input.projectNumber, input.iterationFieldName),
+    projects.getStatusMetadata(input.projectOwner, input.projectNumber, input.statusFieldName),
+  ]);
+  if (iterationMetadata.projectId !== statusMetadata.projectId) throw new Error('Resolved project metadata is inconsistent.');
+  const doneOptionId = statusMetadata.optionIdsByName.get(input.statusDoneValue);
+  if (!doneOptionId) {
+    throw new Error(`Status option "${input.statusDoneValue}" was not found in field ${input.statusFieldName} of project ${input.projectOwner}#${input.projectNumber}.`);
+  }
+  const inProgressOptionId = optionalStatusOption(input.statusInProgressValue, input, statusMetadata.optionIdsByName, logger);
+  const inReviewOptionId = optionalStatusOption(input.statusInReviewValue, input, statusMetadata.optionIdsByName, logger);
+  logger.info(`Resolved project "${statusMetadata.projectTitle}" (${input.projectOwner}#${input.projectNumber}).`);
 
-  async run(input: LinkPrToProjectInput): Promise<void> {
-    validateInput(input);
-    const [iterationMetadata, statusMetadata] = await Promise.all([
-      this.projects.getProjectMetadata(input.projectOwner, input.projectNumber, input.iterationFieldName),
-      this.projects.getStatusMetadata(input.projectOwner, input.projectNumber, input.statusFieldName),
-    ]);
-    if (iterationMetadata.projectId !== statusMetadata.projectId) throw new Error('Resolved project metadata is inconsistent.');
-    const doneOptionId = statusMetadata.optionIdsByName.get(input.statusDoneValue);
-    if (!doneOptionId) {
-      throw new Error(`Status option "${input.statusDoneValue}" was not found in field ${input.statusFieldName} of project ${input.projectOwner}#${input.projectNumber}.`);
-    }
-    const inProgressOptionId = this.optionalStatusOption(input.statusInProgressValue, input, statusMetadata.optionIdsByName);
-    const inReviewOptionId = this.optionalStatusOption(input.statusInReviewValue, input, statusMetadata.optionIdsByName);
-    this.logger.info(`Resolved project "${statusMetadata.projectTitle}" (${input.projectOwner}#${input.projectNumber}).`);
-
-    if (input.action === 'closed') {
-      const item = await this.projects.getContentProjectItem(
-        input.pullRequestNodeId,
-        statusMetadata.projectId,
-        input.statusFieldName,
-      );
-      if (!item) {
-        this.logger.info(`Pull request #${input.pullRequestNumber} is not in project ${input.projectOwner}#${input.projectNumber}. Nothing to mark as done.`);
-        return;
-      }
-      await this.projects.setSingleSelect(statusMetadata.projectId, item.id, statusMetadata.statusFieldId, doneOptionId);
-      this.logger.info(`Set status ${input.statusFieldName}=${input.statusDoneValue} for PR #${input.pullRequestNumber}.`);
-      return;
-    }
-
-    if (input.action === 'review_requested') {
-      await this.handleReviewRequested(input, statusMetadata.projectId, statusMetadata.statusFieldId, inReviewOptionId);
-      return;
-    }
-
-    let projectItem = await this.projects.getIssueProjectItem(
+  if (input.action === 'closed') {
+    const item = await projects.getContentProjectItem(
       input.pullRequestNodeId,
-      iterationMetadata.projectId,
-      input.iterationFieldName,
+      statusMetadata.projectId,
+      input.statusFieldName,
     );
-    let itemId = projectItem?.id;
-    const wasJustAdded = !itemId;
-    if (!itemId) {
-      itemId = await this.projects.addIssueToProject(iterationMetadata.projectId, input.pullRequestNodeId);
-      projectItem = { id: itemId, iterationId: null, iterationTitle: '' };
-      this.logger.info(`Added PR #${input.pullRequestNumber} to project ${input.projectOwner}#${input.projectNumber}.`);
-    } else {
-      this.logger.info(`PR #${input.pullRequestNumber} is already in project ${input.projectOwner}#${input.projectNumber}.`);
-    }
-
-    if (wasJustAdded && inProgressOptionId) {
-      await this.projects.setSingleSelect(statusMetadata.projectId, itemId, statusMetadata.statusFieldId, inProgressOptionId);
-      this.logger.info(`Set status ${input.statusFieldName}=${input.statusInProgressValue} for PR #${input.pullRequestNumber}.`);
-    }
-
-    const issueNumber = extractIssueNumber(input.headRef);
-    if (!issueNumber) {
-      this.logger.info(`Could not extract issue number from branch "${input.headRef}". Skipping sprint sync and closing reference.`);
+    if (!item) {
+      logger.info(`Pull request #${input.pullRequestNumber} is not in project ${input.projectOwner}#${input.projectNumber}. Nothing to mark as done.`);
       return;
     }
-
-    await this.syncAssignees(input, issueNumber);
-    const issue = await this.issues.getIssue(input.backlogRepository, issueNumber);
-    const issueItem = await this.projects.getIssueProjectItem(
-      issue.nodeId,
-      iterationMetadata.projectId,
-      input.iterationFieldName,
-    );
-    if (!issueItem) {
-      this.logger.info(`Issue #${issueNumber} is not in project ${input.projectOwner}#${input.projectNumber}.`);
-    } else if (!issueItem.iterationId) {
-      this.logger.info(`Issue #${issueNumber} has no value in field ${input.iterationFieldName}.`);
-    } else if (projectItem?.iterationId === issueItem.iterationId) {
-      this.logger.info(`PR #${input.pullRequestNumber} already has sprint ${issueItem.iterationTitle || issueItem.iterationId}.`);
-    } else {
-      await this.projects.setIteration(iterationMetadata.projectId, itemId, iterationMetadata.iterationFieldId, issueItem.iterationId);
-      this.logger.info(`Copied sprint ${issueItem.iterationTitle || issueItem.iterationId} from issue #${issueNumber} to PR #${input.pullRequestNumber}.`);
-    }
-    await this.appendClosingReference(input, issueNumber);
+    await projects.setSingleSelect(statusMetadata.projectId, item.id, statusMetadata.statusFieldId, doneOptionId);
+    logger.info(`Set status ${input.statusFieldName}=${input.statusDoneValue} for PR #${input.pullRequestNumber}.`);
+    return;
   }
 
-  private optionalStatusOption(
+  if (input.action === 'review_requested') {
+    await handleReviewRequested(input, statusMetadata.projectId, statusMetadata.statusFieldId, inReviewOptionId, pullRequests, projects, logger);
+    return;
+  }
+
+  let projectItem = await projects.getIssueProjectItem(
+    input.pullRequestNodeId,
+    iterationMetadata.projectId,
+    input.iterationFieldName,
+  );
+  let itemId = projectItem?.id;
+  const wasJustAdded = !itemId;
+  if (!itemId) {
+    itemId = await projects.addIssueToProject(iterationMetadata.projectId, input.pullRequestNodeId);
+    projectItem = { id: itemId, iterationId: null, iterationTitle: '' };
+    logger.info(`Added PR #${input.pullRequestNumber} to project ${input.projectOwner}#${input.projectNumber}.`);
+  } else {
+    logger.info(`PR #${input.pullRequestNumber} is already in project ${input.projectOwner}#${input.projectNumber}.`);
+  }
+
+  if (wasJustAdded && inProgressOptionId) {
+    await projects.setSingleSelect(statusMetadata.projectId, itemId, statusMetadata.statusFieldId, inProgressOptionId);
+    logger.info(`Set status ${input.statusFieldName}=${input.statusInProgressValue} for PR #${input.pullRequestNumber}.`);
+  }
+
+  const issueNumber = extractIssueNumber(input.headRef);
+  if (!issueNumber) {
+    logger.info(`Could not extract issue number from branch "${input.headRef}". Skipping sprint sync and closing reference.`);
+    return;
+  }
+
+  await syncAssignees(input, issueNumber, pullRequests, logger);
+  const issue = await issues.getIssue(input.backlogRepository, issueNumber);
+  const issueItem = await projects.getIssueProjectItem(
+    issue.nodeId,
+    iterationMetadata.projectId,
+    input.iterationFieldName,
+  );
+  if (!issueItem) {
+    logger.info(`Issue #${issueNumber} is not in project ${input.projectOwner}#${input.projectNumber}.`);
+  } else if (!issueItem.iterationId) {
+    logger.info(`Issue #${issueNumber} has no value in field ${input.iterationFieldName}.`);
+  } else if (projectItem?.iterationId === issueItem.iterationId) {
+    logger.info(`PR #${input.pullRequestNumber} already has sprint ${issueItem.iterationTitle || issueItem.iterationId}.`);
+  } else {
+    await projects.setIteration(iterationMetadata.projectId, itemId, iterationMetadata.iterationFieldId, issueItem.iterationId);
+    logger.info(`Copied sprint ${issueItem.iterationTitle || issueItem.iterationId} from issue #${issueNumber} to PR #${input.pullRequestNumber}.`);
+  }
+  await appendClosingReference(input, issueNumber, pullRequests);
+}
+
+function optionalStatusOption(
     name: string,
     input: LinkPrToProjectInput,
     options: ReadonlyMap<string, string>,
+    logger: Logger,
   ): string | null {
     if (!name) return null;
     const option = options.get(name) ?? null;
-    if (!option) this.logger.warning(`Status option "${name}" was not found in field ${input.statusFieldName}; status update will be skipped.`);
+    if (!option) logger.warning(`Status option "${name}" was not found in field ${input.statusFieldName}; status update will be skipped.`);
     return option;
-  }
+}
 
-  private async handleReviewRequested(
+async function handleReviewRequested(
     input: LinkPrToProjectInput,
     projectId: string,
     statusFieldId: string,
     inReviewOptionId: string | null,
+    pullRequests: PullRequestMutationGateway,
+    projects: ProjectGateway,
+    logger: Logger,
   ): Promise<void> {
     if (!inReviewOptionId) {
-      this.logger.info('status_in_review_value is not configured or not found; skipping.');
+      logger.info('status_in_review_value is not configured or not found; skipping.');
       return;
     }
     const reviewers = parseRequestedReviewers(input.requestedReviewersJson);
     const humanReviewers: string[] = [];
     for (const reviewer of reviewers) {
       if (!reviewer.login) {
-        this.logger.info('Skipping reviewer without a login field.');
+        logger.info('Skipping reviewer without a login field.');
         continue;
       }
-      const userType = reviewer.type || await this.pullRequests.getUserType(reviewer.login);
+      const userType = reviewer.type || await pullRequests.getUserType(reviewer.login);
       if (userType === 'User') humanReviewers.push(reviewer.login);
-      else this.logger.info(`Skipping reviewer @${reviewer.login} (type: ${userType || 'unknown'}).`);
+      else logger.info(`Skipping reviewer @${reviewer.login} (type: ${userType || 'unknown'}).`);
     }
     if (humanReviewers.length === 0) {
-      this.logger.info('No human reviewers requested; skipping status update.');
+      logger.info('No human reviewers requested; skipping status update.');
       return;
     }
-    const item = await this.projects.getContentProjectItem(input.pullRequestNodeId, projectId, input.statusFieldName);
+    const item = await projects.getContentProjectItem(input.pullRequestNodeId, projectId, input.statusFieldName);
     if (!item) {
-      this.logger.info(`Pull request #${input.pullRequestNumber} is not in project ${input.projectOwner}#${input.projectNumber}. Nothing to update.`);
+      logger.info(`Pull request #${input.pullRequestNumber} is not in project ${input.projectOwner}#${input.projectNumber}. Nothing to update.`);
       return;
     }
-    await this.projects.setSingleSelect(projectId, item.id, statusFieldId, inReviewOptionId);
-    this.logger.info(`Set status ${input.statusFieldName}=${input.statusInReviewValue} for PR #${input.pullRequestNumber} (reviewers: ${humanReviewers.join(', ')}).`);
-  }
+    await projects.setSingleSelect(projectId, item.id, statusFieldId, inReviewOptionId);
+    logger.info(`Set status ${input.statusFieldName}=${input.statusInReviewValue} for PR #${input.pullRequestNumber} (reviewers: ${humanReviewers.join(', ')}).`);
+}
 
-  private async syncAssignees(input: LinkPrToProjectInput, issueNumber: number): Promise<void> {
-    const current = await this.pullRequests.getAssigneeLogins(input.pullRequestRepository, input.pullRequestNumber);
+async function syncAssignees(input: LinkPrToProjectInput, issueNumber: number, pullRequests: PullRequestMutationGateway, logger: Logger): Promise<void> {
+    const current = await pullRequests.getAssigneeLogins(input.pullRequestRepository, input.pullRequestNumber);
     if (current.length > 0) {
-      this.logger.info(`PR #${input.pullRequestNumber} already has assignees (${current.join(', ')}). Skipping assignee sync.`);
+      logger.info(`PR #${input.pullRequestNumber} already has assignees (${current.join(', ')}). Skipping assignee sync.`);
       return;
     }
-    const issueAssignees = await this.pullRequests.getAssigneeLogins(input.backlogRepository, issueNumber);
+    const issueAssignees = await pullRequests.getAssigneeLogins(input.backlogRepository, issueNumber);
     if (issueAssignees.length === 0) return;
-    const assignable = await this.pullRequests.listAssignableLogins(input.pullRequestRepository);
+    const assignable = await pullRequests.listAssignableLogins(input.pullRequestRepository);
     const toCopy = [...new Set(issueAssignees)].filter((login) => assignable.has(login));
     if (toCopy.length === 0) return;
     try {
-      await this.pullRequests.setAssignees(input.pullRequestRepository, input.pullRequestNumber, toCopy);
+      await pullRequests.setAssignees(input.pullRequestRepository, input.pullRequestNumber, toCopy);
     } catch (error) {
       if (getHttpStatus(error) === 403) {
         throw new Error(`Failed to sync assignees to PR #${input.pullRequestNumber}: token needs issues:write access on ${input.pullRequestRepository.owner}/${input.pullRequestRepository.repo}.`);
       }
       throw error;
     }
-    this.logger.info(`Copied assignees ${toCopy.join(', ')} from issue #${issueNumber} to PR #${input.pullRequestNumber}.`);
-  }
+    logger.info(`Copied assignees ${toCopy.join(', ')} from issue #${issueNumber} to PR #${input.pullRequestNumber}.`);
+}
 
-  private async appendClosingReference(input: LinkPrToProjectInput, issueNumber: number): Promise<void> {
+async function appendClosingReference(input: LinkPrToProjectInput, issueNumber: number, pullRequests: PullRequestMutationGateway): Promise<void> {
     const closesRef = `Closes ${input.backlogRepository.owner}/${input.backlogRepository.repo}#${issueNumber}`;
-    const body = (await this.pullRequests.getPullRequestBody(input.pullRequestRepository, input.pullRequestNumber)) || input.pullRequestBodyHint;
+    const body = (await pullRequests.getPullRequestBody(input.pullRequestRepository, input.pullRequestNumber)) || input.pullRequestBodyHint;
     if (body.includes(closesRef)) return;
-    await this.pullRequests.updatePullRequestBody(
+    await pullRequests.updatePullRequestBody(
       input.pullRequestRepository,
       input.pullRequestNumber,
       `${body}\n\n<!-- auto-linked -->\n${closesRef}`,
     );
-  }
 }
 
 export function extractIssueNumber(branchName: string): number | null {

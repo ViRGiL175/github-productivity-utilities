@@ -1,7 +1,7 @@
-import type { RepositoryCoordinates } from '../../github/IssueRepository.js';
-import type { ProjectStatusGateway, ProjectStatusMetadata } from '../../github/ProjectV2Repository.js';
-import type { PullRequestListGateway, PullRequestRecord } from '../../github/PullRequestRepository.js';
-import type { Logger } from '../../runtime/Logger.js';
+import type { RepositoryCoordinates } from '../../github/IssueRepository.ts';
+import type { ProjectStatusGateway, ProjectStatusMetadata } from '../../github/ProjectV2Repository.ts';
+import type { PullRequestListGateway, PullRequestRecord } from '../../github/PullRequestRepository.ts';
+import type { Logger } from '../../runtime/Logger.ts';
 
 export interface SafeDependabotPrLinkInput {
   projectOwner: string;
@@ -29,68 +29,67 @@ interface Counters {
   closedSeen: number;
 }
 
-export class SafeDependabotPrLink {
-  constructor(
-    private readonly pullRequests: PullRequestListGateway,
-    private readonly projects: ProjectStatusGateway,
-    private readonly logger: Logger,
-    private readonly now: () => Date = () => new Date(),
-  ) {}
-
-  async run(input: SafeDependabotPrLinkInput): Promise<Counters> {
-    validateInput(input);
-    const repositories = parseRepositories(
-      input.repositories,
-      input.repositoriesJson,
-      input.defaultRepositoryOwner,
-      this.logger,
-    );
-    const project = await this.projects.getStatusMetadata(
-      input.projectOwner,
-      input.projectNumber,
-      input.statusFieldName,
-    );
-    const startOptionId = project.optionIdsByName.get(input.statusStartValue);
-    const finalOptionId = project.optionIdsByName.get(input.statusFinalValue);
-    if (!startOptionId || !finalOptionId) {
-      throw new Error(`Required status options were not found in field ${input.statusFieldName}.`);
-    }
-
-    this.logger.info(`Resolved project "${project.projectTitle}" (${input.projectOwner}#${input.projectNumber}).`);
-    const counters: Counters = { added: 0, updated: 0, unchanged: 0, openSeen: 0, closedSeen: 0 };
-    const cutoff = getClosedCutoffDate(input.closedLookbackDays, this.now());
-
-    for (const repository of repositories) {
-      const openPullRequests = await this.listDependabotPullRequests(repository, 'open', null, input);
-      counters.openSeen += openPullRequests.length;
-      for (const pullRequest of openPullRequests) {
-        await this.reconcile(repository, pullRequest, input.statusStartValue, startOptionId, project, input, counters);
-      }
-
-      const closedPullRequests = await this.listDependabotPullRequests(repository, 'closed', cutoff, input);
-      counters.closedSeen += closedPullRequests.length;
-      for (const pullRequest of closedPullRequests) {
-        await this.reconcile(repository, pullRequest, input.statusFinalValue, finalOptionId, project, input, counters);
-      }
-    }
-
-    this.logger.info(
-      `Dependabot reconciliation complete. Open seen: ${counters.openSeen}. Closed seen: ${counters.closedSeen}. Added: ${counters.added}. Updated: ${counters.updated}. Unchanged: ${counters.unchanged}.`,
-    );
-    return counters;
+export async function safeDependabotPrLink(
+input: SafeDependabotPrLinkInput,
+pullRequests: PullRequestListGateway,
+projects: ProjectStatusGateway,
+logger: Logger,
+now: () => Date = () => new Date(),
+): Promise<Counters> {
+  validateInput(input);
+  const repositories = parseRepositories(
+    input.repositories,
+    input.repositoriesJson,
+    input.defaultRepositoryOwner,
+    logger,
+  );
+  const project = await projects.getStatusMetadata(
+    input.projectOwner,
+    input.projectNumber,
+    input.statusFieldName,
+  );
+  const startOptionId = project.optionIdsByName.get(input.statusStartValue);
+  const finalOptionId = project.optionIdsByName.get(input.statusFinalValue);
+  if (!startOptionId || !finalOptionId) {
+    throw new Error(`Required status options were not found in field ${input.statusFieldName}.`);
   }
 
-  private async listDependabotPullRequests(
+  logger.info(`Resolved project "${project.projectTitle}" (${input.projectOwner}#${input.projectNumber}).`);
+  const counters: Counters = { added: 0, updated: 0, unchanged: 0, openSeen: 0, closedSeen: 0 };
+  const cutoff = getClosedCutoffDate(input.closedLookbackDays, now());
+
+  for (const repository of repositories) {
+    const openPullRequests = await listDependabotPullRequests(repository, 'open', null, input, pullRequests);
+    counters.openSeen += openPullRequests.length;
+    for (const pullRequest of openPullRequests) {
+      await reconcile(repository, pullRequest, input.statusStartValue, startOptionId, project, input, counters, projects, logger);
+    }
+
+    const closedPullRequests = await listDependabotPullRequests(repository, 'closed', cutoff, input, pullRequests);
+    counters.closedSeen += closedPullRequests.length;
+    for (const pullRequest of closedPullRequests) {
+      await reconcile(repository, pullRequest, input.statusFinalValue, finalOptionId, project, input, counters, projects, logger);
+    }
+  }
+
+  logger.info(
+    `Dependabot reconciliation complete. Open seen: ${counters.openSeen}. Closed seen: ${counters.closedSeen}. Added: ${counters.added}. Updated: ${counters.updated}. Unchanged: ${counters.unchanged}.`,
+  );
+  return counters;
+}
+
+async function listDependabotPullRequests(
     repository: NamedRepository,
     state: 'open' | 'closed',
     cutoff: Date | null,
     input: SafeDependabotPrLinkInput,
+    pullRequests: PullRequestListGateway,
   ): Promise<PullRequestRecord[]> {
     const result: PullRequestRecord[] = [];
     const perPage = Math.min(100, input.maxPullRequestsPerRepo);
 
     for (let page = 1; result.length < input.maxPullRequestsPerRepo; page += 1) {
-      const pageItems = await this.pullRequests.listPullRequests(repository, state, page, perPage);
+      const pageItems = await pullRequests.listPullRequests(repository, state, page, perPage);
       if (pageItems.length === 0) break;
       let reachedCutoff = false;
 
@@ -105,9 +104,9 @@ export class SafeDependabotPrLink {
       if (pageItems.length < perPage || reachedCutoff) break;
     }
     return result;
-  }
+}
 
-  private async reconcile(
+async function reconcile(
     repository: NamedRepository,
     pullRequest: PullRequestRecord,
     targetStatusName: string,
@@ -115,8 +114,10 @@ export class SafeDependabotPrLink {
     project: ProjectStatusMetadata,
     input: SafeDependabotPrLinkInput,
     counters: Counters,
+    projects: ProjectStatusGateway,
+    logger: Logger,
   ): Promise<void> {
-    let projectItem = await this.projects.getContentProjectItem(
+    let projectItem = await projects.getContentProjectItem(
       pullRequest.nodeId,
       project.projectId,
       input.statusFieldName,
@@ -124,10 +125,10 @@ export class SafeDependabotPrLink {
     let itemId = projectItem?.id;
     let currentStatus = projectItem?.statusName ?? null;
     if (!itemId) {
-      itemId = await this.projects.addContentToProject(project.projectId, pullRequest.nodeId);
+      itemId = await projects.addContentToProject(project.projectId, pullRequest.nodeId);
       currentStatus = null;
       counters.added += 1;
-      this.logger.info(
+      logger.info(
         `Added ${repository.nameWithOwner}#${pullRequest.number} to project ${input.projectOwner}#${input.projectNumber}.`,
       );
     }
@@ -136,12 +137,11 @@ export class SafeDependabotPrLink {
       counters.unchanged += 1;
       return;
     }
-    await this.projects.setSingleSelect(project.projectId, itemId, project.statusFieldId, targetOptionId);
+    await projects.setSingleSelect(project.projectId, itemId, project.statusFieldId, targetOptionId);
     counters.updated += 1;
-    this.logger.info(
+    logger.info(
       `Set status ${input.statusFieldName}=${targetStatusName} for ${repository.nameWithOwner}#${pullRequest.number}.`,
     );
-  }
 }
 
 export function parseRepositories(

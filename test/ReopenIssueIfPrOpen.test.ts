@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ReopenIssueIfPrOpen } from '../src/automations/reopen-issue-if-pr-open/ReopenIssueIfPrOpen.js';
+import { reopenIssueIfPrOpen } from '../src/automations/reopen-issue-if-pr-open/ReopenIssueIfPrOpen.js';
 import type { IssueReopenGateway } from '../src/github/IssueRepository.js';
 import type { Logger } from '../src/runtime/Logger.js';
 
@@ -26,7 +26,7 @@ function createDependencies(body = 'Closes owner/backlog#42') {
 describe('ReopenIssueIfPrOpen', () => {
   it('reopens and comments when an open PR closes the issue', async () => {
     const dependencies = createDependencies();
-    await new ReopenIssueIfPrOpen(dependencies.issues, dependencies.logger).run(input);
+    await reopenIssueIfPrOpen(input, dependencies.issues, dependencies.logger);
 
     expect(dependencies.issues.reopenIssue).toHaveBeenCalledWith(input.repository, 42);
     expect(dependencies.issues.addIssueComment).toHaveBeenCalledWith(
@@ -38,7 +38,7 @@ describe('ReopenIssueIfPrOpen', () => {
 
   it('ignores cross-references without a closing keyword for the target issue', async () => {
     const dependencies = createDependencies('Related to owner/backlog#42');
-    await new ReopenIssueIfPrOpen(dependencies.issues, dependencies.logger).run(input);
+    await reopenIssueIfPrOpen(input, dependencies.issues, dependencies.logger);
 
     expect(dependencies.issues.reopenIssue).not.toHaveBeenCalled();
     expect(dependencies.issues.addIssueComment).not.toHaveBeenCalled();
@@ -47,7 +47,7 @@ describe('ReopenIssueIfPrOpen', () => {
   it('rejects an invalid issue number before accessing GitHub', async () => {
     const dependencies = createDependencies();
     await expect(
-      new ReopenIssueIfPrOpen(dependencies.issues, dependencies.logger).run({ ...input, issueNumber: 0 }),
+      reopenIssueIfPrOpen({ ...input, issueNumber: 0 }, dependencies.issues, dependencies.logger),
     ).rejects.toThrow('valid issue_number');
     expect(dependencies.issues.listCrossReferencedPullRequests).not.toHaveBeenCalled();
   });

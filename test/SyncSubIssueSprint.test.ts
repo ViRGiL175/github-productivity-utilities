@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { SyncSubIssueSprint } from '../src/automations/sync-sub-issue-sprint/SyncSubIssueSprint.js';
+import { syncSubIssueSprint } from '../src/automations/sync-sub-issue-sprint/SyncSubIssueSprint.js';
 import type { IssueReader } from '../src/github/IssueRepository.js';
 import type { ProjectV2Gateway } from '../src/github/ProjectV2Repository.js';
 import type { Logger } from '../src/runtime/Logger.js';
@@ -54,9 +54,7 @@ function createDependencies(options: { childIterationId?: string | null } = {}) 
 describe('SyncSubIssueSprint', () => {
   it('adds the child to the project and copies the parent iteration', async () => {
     const dependencies = createDependencies();
-    const automation = new SyncSubIssueSprint(dependencies.issues, dependencies.projects, dependencies.logger);
-
-    await automation.run(input);
+    await syncSubIssueSprint(input, dependencies.issues, dependencies.projects, dependencies.logger);
 
     expect(dependencies.projects.addIssueToProject).toHaveBeenCalledWith('PROJECT', 'ISSUE_child');
     expect(dependencies.projects.setIteration).toHaveBeenCalledWith('PROJECT', 'CHILD_ITEM', 'FIELD', 'ITERATION');
@@ -64,9 +62,7 @@ describe('SyncSubIssueSprint', () => {
 
   it('does not write when the child already has the parent iteration', async () => {
     const dependencies = createDependencies({ childIterationId: 'ITERATION' });
-    const automation = new SyncSubIssueSprint(dependencies.issues, dependencies.projects, dependencies.logger);
-
-    await automation.run(input);
+    await syncSubIssueSprint(input, dependencies.issues, dependencies.projects, dependencies.logger);
 
     expect(dependencies.projects.addIssueToProject).not.toHaveBeenCalled();
     expect(dependencies.projects.setIteration).not.toHaveBeenCalled();
@@ -74,9 +70,7 @@ describe('SyncSubIssueSprint', () => {
 
   it('skips unsupported events before accessing GitHub', async () => {
     const dependencies = createDependencies();
-    const automation = new SyncSubIssueSprint(dependencies.issues, dependencies.projects, dependencies.logger);
-
-    await automation.run({ ...input, action: 'edited' });
+    await syncSubIssueSprint({ ...input, action: 'edited' }, dependencies.issues, dependencies.projects, dependencies.logger);
 
     expect(dependencies.issues.getIssue).not.toHaveBeenCalled();
     expect(dependencies.projects.getProjectMetadata).not.toHaveBeenCalled();

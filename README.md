@@ -21,9 +21,9 @@
 
 ## TypeScript-реализации
 
-Публичным интерфейсом автоматизаций остаются reusable workflow в `.github/workflows`. Поддерживаемая бизнес-логика находится в `src`, собирается в автономный `dist/run-automation.mjs` и запускается из YAML без установки npm-зависимостей в вызывающих репозиториях. В YAML остаются события, permissions, secrets, авторизация и оркестрация jobs.
+Публичным интерфейсом автоматизаций остаются reusable workflow в `.github/workflows`. Каждый workflow загружает исходный TypeScript из `src/scripts` и запускает его через `actions/github-script@v8` с авторизованным GitHub-клиентом. Сборки `dist` и установки npm-зависимостей при запуске нет. В YAML остаются события, permissions, secrets, авторизация и оркестрация jobs.
 
-Все прежние inputs, secrets, defaults и правила обработки сохранены. В каждом reusable workflow checkout реализации использует `job.workflow_sha`: тесты выполняют bundle из проверяемого коммита, а вызов workflow через `@tag` — bundle из коммита этого тега. Внешним репозиториям не нужно отдельно выбирать ref реализации.
+Все прежние inputs, secrets, defaults и правила обработки сохранены. В каждом reusable workflow checkout реализации использует `job.workflow_sha`: тесты выполняют исходный код из проверяемого коммита, а вызов workflow через `@tag` — код из коммита этого тега. Внешним репозиториям не нужно отдельно выбирать ref реализации.
 
 Локальные проверки TypeScript:
 
@@ -32,7 +32,7 @@ npm ci
 npm run check
 ```
 
-После сборки `dist/run-automation.mjs` должен быть закоммичен. Workflow `test-typescript.yml` пересобирает его и отклоняет PR, если bundle не соответствует исходникам.
+TypeScript используется в форме, которую Node.js 24 запускает напрямую. `npm` нужен только для проверки типов и локальных unit-тестов, не для запуска автоматизаций.
 
 ## Локальный прогон test workflow через act
 

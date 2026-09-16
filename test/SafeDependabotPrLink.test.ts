@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  SafeDependabotPrLink,
+  safeDependabotPrLink,
   parseRepositories,
 } from '../src/automations/safe-dependabot-pr-link/SafeDependabotPrLink.js';
 import type { ProjectStatusGateway } from '../src/github/ProjectV2Repository.js';
@@ -54,12 +54,9 @@ describe('SafeDependabotPrLink', () => {
 
   it('adds a missing Dependabot PR and sets the open status', async () => {
     const dependencies = createDependencies();
-    const counters = await new SafeDependabotPrLink(
-      dependencies.pullRequests,
-      dependencies.projects,
-      logger,
-      () => new Date('2026-09-15T00:00:00Z'),
-    ).run(input);
+    const counters = await safeDependabotPrLink(
+      input, dependencies.pullRequests, dependencies.projects, logger, () => new Date('2026-09-15T00:00:00Z'),
+    );
 
     expect(dependencies.projects.addContentToProject).toHaveBeenCalledWith('PROJECT', 'PR');
     expect(dependencies.projects.setSingleSelect).toHaveBeenCalledWith('PROJECT', 'ITEM', 'FIELD', 'TODO');
@@ -68,11 +65,7 @@ describe('SafeDependabotPrLink', () => {
 
   it('does not write when the project status is already correct', async () => {
     const dependencies = createDependencies('To do');
-    const counters = await new SafeDependabotPrLink(
-      dependencies.pullRequests,
-      dependencies.projects,
-      logger,
-    ).run(input);
+    const counters = await safeDependabotPrLink(input, dependencies.pullRequests, dependencies.projects, logger);
 
     expect(dependencies.projects.addContentToProject).not.toHaveBeenCalled();
     expect(dependencies.projects.setSingleSelect).not.toHaveBeenCalled();
@@ -84,7 +77,7 @@ describe('SafeDependabotPrLink', () => {
     vi.mocked(dependencies.pullRequests.listPullRequests).mockResolvedValueOnce([
       { nodeId: 'PR', number: 12, updatedAt: '2026-09-14T00:00:00Z', authorLogin: 'someone' },
     ]).mockResolvedValue([]);
-    await new SafeDependabotPrLink(dependencies.pullRequests, dependencies.projects, logger).run(input);
+    await safeDependabotPrLink(input, dependencies.pullRequests, dependencies.projects, logger);
 
     expect(dependencies.projects.getContentProjectItem).not.toHaveBeenCalled();
   });
