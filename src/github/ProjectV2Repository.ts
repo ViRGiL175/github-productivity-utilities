@@ -10,7 +10,7 @@ const ORGANIZATION_PROJECT_QUERY = `
     organization(login: $owner) {
       projectV2(number: $number) {
         id
-        fields(first: 50) {
+        fields(first: 100) {
           nodes {
             ... on ProjectV2IterationField {
               id
@@ -28,7 +28,7 @@ const USER_PROJECT_QUERY = `
     user(login: $owner) {
       projectV2(number: $number) {
         id
-        fields(first: 50) {
+        fields(first: 100) {
           nodes {
             ... on ProjectV2IterationField {
               id
