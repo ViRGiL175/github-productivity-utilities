@@ -5,78 +5,49 @@ const API_HEADERS = {
   'X-GitHub-Api-Version': '2022-11-28',
 } as const;
 
-const ORGANIZATION_PROJECT_QUERY = `
-  query($owner: String!, $number: Int!) {
-    organization(login: $owner) {
-      projectV2(number: $number) {
-        id
-        fields(first: 100) {
-          nodes {
-            ... on ProjectV2IterationField {
-              id
-              name
-            }
-          }
+const PROJECT_ITERATION_FIELDS = `
+  id
+  fields(first: 100) {
+    nodes { ... on ProjectV2IterationField { id name } }
+  }
+`;
+
+const PROJECT_STATUS_FIELDS = `
+  id
+  title
+  fields(first: 100) {
+    nodes {
+      __typename
+      ... on ProjectV2FieldCommon { id name }
+      ... on ProjectV2SingleSelectField { options { id name } }
+    }
+  }
+`;
+
+const PROJECT_ITERATION_CONFIGURATION_FIELDS = `
+  id
+  title
+  fields(first: 100) {
+    nodes {
+      __typename
+      ... on ProjectV2FieldCommon { id name }
+      ... on ProjectV2IterationField {
+        configuration {
+          completedIterations { id title startDate duration }
+          iterations { id title startDate duration }
         }
       }
     }
   }
 `;
 
-const USER_PROJECT_QUERY = `
-  query($owner: String!, $number: Int!) {
-    user(login: $owner) {
-      projectV2(number: $number) {
-        id
-        fields(first: 100) {
-          nodes {
-            ... on ProjectV2IterationField {
-              id
-              name
-            }
-          }
-        }
-      }
-    }
-  }
-`;
-
-const ISSUE_PROJECT_ITEMS_QUERY = `
-  query($issueId: ID!, $fieldName: String!) {
-    node(id: $issueId) {
-      ... on Issue {
-        projectItems(first: 100) {
-          nodes {
-            id
-            project {
-              id
-            }
-            fieldValueByName(name: $fieldName) {
-              ... on ProjectV2ItemFieldIterationValue {
-                iterationId
-                title
-              }
-            }
-          }
-        }
-      }
-      ... on PullRequest {
-        projectItems(first: 100) {
-          nodes {
-            id
-            project { id }
-            fieldValueByName(name: $fieldName) {
-              ... on ProjectV2ItemFieldIterationValue {
-                iterationId
-                title
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-`;
+// Only fixed selections above are interpolated; owner and number remain GraphQL variables.
+function projectQuery(ownerType: 'Organization' | 'User', fields: string): string {
+  const root = ownerType === 'Organization' ? 'organization' : 'user';
+  return `query($owner: String!, $number: Int!) {
+    ${root}(login: $owner) { projectV2(number: $number) { ${fields} } }
+  }`;
+}
 
 const ADD_ISSUE_TO_PROJECT_MUTATION = `
   mutation($projectId: ID!, $contentId: ID!) {
@@ -103,66 +74,28 @@ const SET_ITERATION_MUTATION = `
   }
 `;
 
-const ORGANIZATION_SINGLE_SELECT_PROJECT_QUERY = `
-  query($owner: String!, $number: Int!) {
-    organization(login: $owner) {
-      projectV2(number: $number) {
-        id
-        title
-        fields(first: 100) {
-          nodes {
-            __typename
-            ... on ProjectV2FieldCommon { id name }
-            ... on ProjectV2SingleSelectField { options { id name } }
-          }
-        }
-      }
-    }
-  }
-`;
-
-const USER_SINGLE_SELECT_PROJECT_QUERY = `
-  query($owner: String!, $number: Int!) {
-    user(login: $owner) {
-      projectV2(number: $number) {
-        id
-        title
-        fields(first: 100) {
-          nodes {
-            __typename
-            ... on ProjectV2FieldCommon { id name }
-            ... on ProjectV2SingleSelectField { options { id name } }
-          }
-        }
-      }
-    }
-  }
-`;
-
 const CONTENT_PROJECT_ITEMS_QUERY = `
   query($nodeId: ID!, $fieldName: String!) {
     node(id: $nodeId) {
       ... on PullRequest {
         projectItems(first: 100) {
-          nodes {
-            id
-            project { id }
-            fieldValueByName(name: $fieldName) {
-              ... on ProjectV2ItemFieldSingleSelectValue { name optionId }
-            }
-          }
+          ...ProjectItems
         }
       }
       ... on Issue {
         projectItems(first: 100) {
-          nodes {
-            id
-            project { id }
-            fieldValueByName(name: $fieldName) {
-              ... on ProjectV2ItemFieldSingleSelectValue { name optionId }
-            }
-          }
+          ...ProjectItems
         }
+      }
+    }
+  }
+  fragment ProjectItems on ProjectV2ItemConnection {
+    nodes {
+      id
+      project { id }
+      fieldValueByName(name: $fieldName) {
+        ... on ProjectV2ItemFieldIterationValue { iterationId title }
+        ... on ProjectV2ItemFieldSingleSelectValue { name optionId }
       }
     }
   }
@@ -181,51 +114,6 @@ const SET_SINGLE_SELECT_MUTATION = `
   }
 `;
 
-const ORGANIZATION_ITERATION_PROJECT_QUERY = `
-  query($owner: String!, $number: Int!) {
-    organization(login: $owner) {
-      projectV2(number: $number) {
-        id
-        title
-        fields(first: 100) {
-          nodes {
-            __typename
-            ... on ProjectV2FieldCommon { id name }
-            ... on ProjectV2IterationField {
-              configuration {
-                completedIterations { id title startDate duration }
-                iterations { id title startDate duration }
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-`;
-
-const USER_ITERATION_PROJECT_QUERY = `
-  query($owner: String!, $number: Int!) {
-    user(login: $owner) {
-      projectV2(number: $number) {
-        id
-        title
-        fields(first: 100) {
-          nodes {
-            __typename
-            ... on ProjectV2FieldCommon { id name }
-            ... on ProjectV2IterationField {
-              configuration {
-                completedIterations { id title startDate duration }
-                iterations { id title startDate duration }
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-`;
 
 const PROJECT_ITEMS_QUERY = `
   query($projectId: ID!, $after: String) {
@@ -278,9 +166,9 @@ const DELETE_ITEM_MUTATION = `
   }
 `;
 
-interface ProjectQueryResult {
-  organization?: { projectV2: ProjectNode | null } | null;
-  user?: { projectV2: ProjectNode | null } | null;
+interface ProjectQueryResult<T> {
+  organization?: { projectV2: T | null } | null;
+  user?: { projectV2: T | null } | null;
 }
 
 interface ProjectNode {
@@ -290,27 +178,25 @@ interface ProjectNode {
   };
 }
 
-interface IssueProjectItemsQueryResult {
-  node?: {
-    projectItems?: {
-      nodes?: Array<{
-        id: string;
-        project?: { id: string } | null;
-        fieldValueByName?: { iterationId: string; title?: string | null } | null;
-      } | null> | null;
-    } | null;
+interface ContentProjectItem {
+  id: string;
+  project?: { id: string } | null;
+  fieldValueByName?: {
+    iterationId?: string | null;
+    title?: string | null;
+    name?: string | null;
+    optionId?: string | null;
   } | null;
+}
+
+interface ContentProjectItemsQueryResult {
+  node?: { projectItems?: { nodes?: Array<ContentProjectItem | null> | null } | null } | null;
 }
 
 interface AddIssueToProjectResult {
   addProjectV2ItemById: {
     item: { id: string };
   };
-}
-
-interface SingleSelectProjectQueryResult {
-  organization?: { projectV2: SingleSelectProjectNode | null } | null;
-  user?: { projectV2: SingleSelectProjectNode | null } | null;
 }
 
 interface SingleSelectProjectNode {
@@ -324,18 +210,6 @@ interface SingleSelectProjectNode {
       options?: Array<{ id: string; name: string }>;
     } | null>;
   };
-}
-
-interface ContentProjectItemsQueryResult {
-  node?: {
-    projectItems?: {
-      nodes?: Array<{
-        id: string;
-        project?: { id: string } | null;
-        fieldValueByName?: { name?: string | null; optionId?: string | null } | null;
-      } | null> | null;
-    } | null;
-  } | null;
 }
 
 interface IterationDefinitionNode {
@@ -359,11 +233,6 @@ interface IterationProjectNode {
       } | null;
     } | null>;
   };
-}
-
-interface IterationProjectQueryResult {
-  organization?: { projectV2: IterationProjectNode | null } | null;
-  user?: { projectV2: IterationProjectNode | null } | null;
 }
 
 interface ProjectItemsQueryResult {
@@ -468,19 +337,7 @@ export class ProjectV2Repository implements ProjectV2Gateway, ProjectStatusGatew
   constructor(octokit: Octokit) { this.octokit = octokit; }
 
   async getProjectMetadata(owner: string, number: number, fieldName: string): Promise<ProjectMetadata> {
-    const ownerType = await this.getProjectOwnerType(owner);
-    const isOrganization = ownerType === 'Organization';
-    const isUser = ownerType === 'User';
-
-    if (!isOrganization && !isUser) {
-      throw new Error(`Unsupported project owner type "${ownerType}" for ${owner}.`);
-    }
-
-    const data = await this.octokit.graphql<ProjectQueryResult>(
-      isOrganization ? ORGANIZATION_PROJECT_QUERY : USER_PROJECT_QUERY,
-      { owner, number },
-    );
-    const project = isOrganization ? data.organization?.projectV2 : data.user?.projectV2;
+    const project = await this.getProject<ProjectNode>(owner, number, PROJECT_ITERATION_FIELDS);
 
     if (!project) {
       throw new Error(`Project V2 #${number} was not found for owner ${owner}.`);
@@ -498,11 +355,7 @@ export class ProjectV2Repository implements ProjectV2Gateway, ProjectStatusGatew
   }
 
   async getIssueProjectItem(issueNodeId: string, projectId: string, fieldName: string): Promise<ProjectItem | null> {
-    const data = await this.octokit.graphql<IssueProjectItemsQueryResult>(ISSUE_PROJECT_ITEMS_QUERY, {
-      issueId: issueNodeId,
-      fieldName,
-    });
-    const item = data.node?.projectItems?.nodes?.find((candidate) => candidate?.project?.id === projectId);
+    const item = await this.getContentProjectItemById(issueNodeId, projectId, fieldName);
 
     if (!item) {
       return null;
@@ -534,17 +387,7 @@ export class ProjectV2Repository implements ProjectV2Gateway, ProjectStatusGatew
   }
 
   async getStatusMetadata(owner: string, number: number, fieldName: string): Promise<ProjectStatusMetadata> {
-    const ownerType = await this.getProjectOwnerType(owner);
-    const isOrganization = ownerType === 'Organization';
-    if (!isOrganization && ownerType !== 'User') {
-      throw new Error(`Unsupported project owner type "${ownerType}" for ${owner}.`);
-    }
-
-    const data = await this.octokit.graphql<SingleSelectProjectQueryResult>(
-      isOrganization ? ORGANIZATION_SINGLE_SELECT_PROJECT_QUERY : USER_SINGLE_SELECT_PROJECT_QUERY,
-      { owner, number },
-    );
-    const project = isOrganization ? data.organization?.projectV2 : data.user?.projectV2;
+    const project = await this.getProject<SingleSelectProjectNode>(owner, number, PROJECT_STATUS_FIELDS);
     if (!project) {
       throw new Error(`Project ${owner}#${number} was not found.`);
     }
@@ -564,11 +407,7 @@ export class ProjectV2Repository implements ProjectV2Gateway, ProjectStatusGatew
   }
 
   async getContentProjectItem(nodeId: string, projectId: string, fieldName: string): Promise<ProjectStatusItem | null> {
-    const data = await this.octokit.graphql<ContentProjectItemsQueryResult>(CONTENT_PROJECT_ITEMS_QUERY, {
-      nodeId,
-      fieldName,
-    });
-    const item = data.node?.projectItems?.nodes?.find((candidate) => candidate?.project?.id === projectId);
+    const item = await this.getContentProjectItemById(nodeId, projectId, fieldName);
     return item
       ? {
           id: item.id,
@@ -587,16 +426,7 @@ export class ProjectV2Repository implements ProjectV2Gateway, ProjectStatusGatew
   }
 
   async getIterationMetadata(owner: string, number: number, fieldName: string): Promise<IterationProjectMetadata> {
-    const ownerType = await this.getProjectOwnerType(owner);
-    const isOrganization = ownerType === 'Organization';
-    if (!isOrganization && ownerType !== 'User') {
-      throw new Error(`Unsupported project owner type "${ownerType}" for ${owner}.`);
-    }
-    const data = await this.octokit.graphql<IterationProjectQueryResult>(
-      isOrganization ? ORGANIZATION_ITERATION_PROJECT_QUERY : USER_ITERATION_PROJECT_QUERY,
-      { owner, number },
-    );
-    const project = isOrganization ? data.organization?.projectV2 : data.user?.projectV2;
+    const project = await this.getProject<IterationProjectNode>(owner, number, PROJECT_ITERATION_CONFIGURATION_FIELDS);
     if (!project) throw new Error(`Project ${owner}#${number} was not found.`);
     const field = project.fields.nodes.find(
       (candidate) => candidate?.__typename === 'ProjectV2IterationField' && candidate.name === fieldName,
@@ -655,6 +485,21 @@ export class ProjectV2Repository implements ProjectV2Gateway, ProjectStatusGatew
 
   async deleteProjectItem(projectId: string, itemId: string): Promise<void> {
     await this.octokit.graphql(DELETE_ITEM_MUTATION, { input: { projectId, itemId } });
+  }
+
+  private async getProject<T>(owner: string, number: number, fields: string): Promise<T | null> {
+    const ownerType = await this.getProjectOwnerType(owner);
+    if (ownerType !== 'Organization' && ownerType !== 'User') {
+      throw new Error(`Unsupported project owner type "${ownerType}" for ${owner}.`);
+    }
+
+    const data = await this.octokit.graphql<ProjectQueryResult<T>>(projectQuery(ownerType, fields), { owner, number });
+    return (ownerType === 'Organization' ? data.organization?.projectV2 : data.user?.projectV2) ?? null;
+  }
+
+  private async getContentProjectItemById(nodeId: string, projectId: string, fieldName: string): Promise<ContentProjectItem | null> {
+    const data = await this.octokit.graphql<ContentProjectItemsQueryResult>(CONTENT_PROJECT_ITEMS_QUERY, { nodeId, fieldName });
+    return data.node?.projectItems?.nodes?.find((item) => item?.project?.id === projectId) ?? null;
   }
 
   private async getProjectOwnerType(owner: string): Promise<string> {
