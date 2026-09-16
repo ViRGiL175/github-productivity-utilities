@@ -4975,7 +4975,7 @@ var ORGANIZATION_PROJECT_QUERY = `
     organization(login: $owner) {
       projectV2(number: $number) {
         id
-        fields(first: 50) {
+        fields(first: 100) {
           nodes {
             ... on ProjectV2IterationField {
               id
@@ -4992,7 +4992,7 @@ var USER_PROJECT_QUERY = `
     user(login: $owner) {
       projectV2(number: $number) {
         id
-        fields(first: 50) {
+        fields(first: 100) {
           nodes {
             ... on ProjectV2IterationField {
               id
@@ -5566,7 +5566,7 @@ async function main() {
               pullRequestNumber: Number(requireEnvironmentVariable("PULL_REQUEST_NUMBER")),
               pullRequestRepository: {
                 owner: requireEnvironmentVariable("PULL_REQUEST_REPO_OWNER"),
-                repo: requireEnvironmentVariable("PULL_REQUEST_REPO_NAME")
+                repo: requireRepositoryName("PULL_REQUEST_REPO_NAME")
               },
               pullRequestBodyHint: process.env.PULL_REQUEST_BODY ?? "",
               headRef: process.env.HEAD_REF ?? "",
@@ -5625,7 +5625,7 @@ async function main() {
               issueNumber: Number(process.env.ISSUE_NUMBER || ""),
               repository: {
                 owner: requireEnvironmentVariable("REPO_OWNER"),
-                repo: requireEnvironmentVariable("REPO_NAME").split("/").at(-1)
+                repo: requireRepositoryName("REPO_NAME")
               }
             });
           }
@@ -5688,6 +5688,10 @@ function parseRepository(value) {
     throw new Error(`Expected owner/repository, received: ${value}`);
   }
   return { owner, repo };
+}
+function requireRepositoryName(name) {
+  const value = requireEnvironmentVariable(name);
+  return value.includes("/") ? parseRepository(value).repo : value;
 }
 function requireEnvironmentVariable(name) {
   const value = process.env[name];

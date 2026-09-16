@@ -57,7 +57,7 @@ on:
         required: false
         type: string
       pull_request_repo_name:
-        description: Pull request repository name override; falls back to github.event.pull_request.base.repo.name when omitted
+        description: Pull request repository name override; falls back to the event or caller repository when omitted
         required: false
         type: string
       pull_request_body:
@@ -264,7 +264,7 @@ jobs:
           PULL_REQUEST_NODE_ID: ${{ inputs.pull_request_node_id || github.event.pull_request.node_id }}
           PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number || github.event.pull_request.number }}
           PULL_REQUEST_REPO_OWNER: ${{ inputs.pull_request_repo_owner || github.event.pull_request.base.repo.owner.login || github.repository_owner }}
-          PULL_REQUEST_REPO_NAME: ${{ inputs.pull_request_repo_name || github.event.pull_request.base.repo.name }}
+          PULL_REQUEST_REPO_NAME: ${{ inputs.pull_request_repo_name || github.event.pull_request.base.repo.name || github.repository }}
           PULL_REQUEST_BODY: ${{ inputs.pull_request_body || github.event.pull_request.body || '' }}
           HEAD_REF: ${{ inputs.head_ref || github.event.pull_request.head.ref || '' }}
           ACTION: ${{ inputs.action || github.event.action || 'opened' }}
