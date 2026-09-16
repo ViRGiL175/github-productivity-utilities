@@ -42,4 +42,7 @@ jobs:
         run: npm run build
 
       - name: Verify committed bundle is current
-        run: git diff --exit-code -- dist/
+        run: |
+          git ls-files --error-unmatch dist/run-automation.mjs
+          test -s dist/run-automation.mjs
+          git diff --exit-code -- dist/

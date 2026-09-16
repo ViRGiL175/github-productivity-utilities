@@ -376,11 +376,124 @@ jobs:
       action: opened
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
       installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-      implementation_ref: ${{ github.sha }}
     secrets:
       pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
       app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
       app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+
+  assert-initial-sync-scenario:
+    name: Assert initial sub-issue sync scenario
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs:
+      - resolve-auth
+      - prepare-sync-scenario
+      - run-sync-scenario
+    runs-on: ubuntu-latest
+    steps:
+      - name: Normalize GitHub App private key
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: normalize-key
+        shell: bash
+        env:
+          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+        run: |
+          if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
+            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          else
+            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub App installation token
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          owner: ${{ env.INSTALLATION_OWNER }}
+          skip-token-revoke: true
+
+      - name: Resolve job auth token
+        id: auth
+        shell: bash
+        env:
+          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          case "$AUTH_MODE" in
+            pat)
+              TOKEN="$DIRECT_TOKEN"
+              ;;
+            app)
+              TOKEN="$APP_TOKEN"
+              ;;
+            *)
+              echo "Unsupported auth mode: $AUTH_MODE" >&2
+              exit 1
+              ;;
+          esac
+
+          if [ -z "$TOKEN" ]; then
+            echo "Resolved token is empty for auth_mode=$AUTH_MODE" >&2
+            exit 1
+          fi
+
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Assert child issue inherited sprint
+        uses: actions/github-script@v8
+        env:
+          PROJECT_ID: ${{ needs.prepare-sync-scenario.outputs.project_id }}
+          ITERATION_FIELD_NAME: ${{ env.ITERATION_FIELD_NAME }}
+          TARGET_ITERATION_ID: ${{ needs.prepare-sync-scenario.outputs.target_iteration_id }}
+          CHILD_NODE_ID: ${{ needs.prepare-sync-scenario.outputs.child_node_id }}
+        with:
+          github-token: ${{ steps.auth.outputs.token }}
+          script: |
+            const projectId = process.env.PROJECT_ID;
+            const iterationFieldName = process.env.ITERATION_FIELD_NAME;
+            const targetIterationId = process.env.TARGET_ITERATION_ID;
+            const childNodeId = process.env.CHILD_NODE_ID;
+
+            const ISSUE_PROJECT_ITEMS_QUERY = `
+              query($issueId: ID!, $fieldName: String!) {
+                node(id: $issueId) {
+                  ... on Issue {
+                    projectItems(first: 100) {
+                      nodes {
+                        id
+                        project {
+                          id
+                        }
+                        fieldValueByName(name: $fieldName) {
+                          ... on ProjectV2ItemFieldIterationValue {
+                            iterationId
+                            title
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const data = await github.graphql(ISSUE_PROJECT_ITEMS_QUERY, {
+              issueId: childNodeId,
+              fieldName: iterationFieldName,
+            });
+
+            const projectItem = data.node?.projectItems?.nodes?.find((item) => item.project?.id === projectId) ?? null;
+            if (!projectItem) {
+              throw new Error('Child issue was not added to the project.');
+            }
+
+            const iterationId = projectItem.fieldValueByName?.iterationId ?? null;
+            if (iterationId !== targetIterationId) {
+              throw new Error(`Expected child issue iteration ${targetIterationId}, got ${iterationId || 'none'}.`);
+            }
+
+            core.info(`Child issue project item ${projectItem.id} inherited iteration ${targetIterationId}.`);
 
   rerun-sync-scenario:
     name: Rerun sub-issue sync scenario
@@ -389,6 +502,7 @@ jobs:
       - resolve-auth
       - prepare-sync-scenario
       - run-sync-scenario
+      - assert-initial-sync-scenario
     uses: ./.github/workflows/sync-sub-issue-sprint.yml
     with:
       project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
@@ -400,7 +514,6 @@ jobs:
       action: opened
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
       installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-      implementation_ref: ${{ github.sha }}
     secrets:
       pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
       app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
@@ -528,6 +641,7 @@ jobs:
       - prepare-sync-scenario
       - run-sync-scenario
       - rerun-sync-scenario
+      - assert-initial-sync-scenario
       - assert-sync-scenario
     runs-on: ubuntu-latest
     steps:

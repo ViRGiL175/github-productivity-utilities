@@ -293,11 +293,11 @@ interface ProjectNode {
 interface IssueProjectItemsQueryResult {
   node?: {
     projectItems?: {
-      nodes: Array<{
+      nodes?: Array<{
         id: string;
         project?: { id: string } | null;
         fieldValueByName?: { iterationId: string; title?: string | null } | null;
-      } | null>;
+      } | null> | null;
     } | null;
   } | null;
 }
@@ -329,11 +329,11 @@ interface SingleSelectProjectNode {
 interface ContentProjectItemsQueryResult {
   node?: {
     projectItems?: {
-      nodes: Array<{
+      nodes?: Array<{
         id: string;
         project?: { id: string } | null;
         fieldValueByName?: { name?: string | null; optionId?: string | null } | null;
-      } | null>;
+      } | null> | null;
     } | null;
   } | null;
 }
@@ -501,7 +501,7 @@ export class ProjectV2Repository implements ProjectV2Gateway, ProjectStatusGatew
       issueId: issueNodeId,
       fieldName,
     });
-    const item = data.node?.projectItems?.nodes.find((candidate) => candidate?.project?.id === projectId);
+    const item = data.node?.projectItems?.nodes?.find((candidate) => candidate?.project?.id === projectId);
 
     if (!item) {
       return null;
@@ -567,7 +567,7 @@ export class ProjectV2Repository implements ProjectV2Gateway, ProjectStatusGatew
       nodeId,
       fieldName,
     });
-    const item = data.node?.projectItems?.nodes.find((candidate) => candidate?.project?.id === projectId);
+    const item = data.node?.projectItems?.nodes?.find((candidate) => candidate?.project?.id === projectId);
     return item
       ? {
           id: item.id,

@@ -25,11 +25,6 @@ on:
         required: false
         default: 'gemini-3.5-flash'
         type: string
-      implementation_ref:
-        description: Ref of github-productivity-utilities implementation to execute
-        required: false
-        default: main
-        type: string
     outputs:
       text:
         description: Generated text result
@@ -55,8 +50,8 @@ jobs:
       - name: Checkout automation implementation
         uses: actions/checkout@v6
         with:
-          repository: ViRGiL175/github-productivity-utilities
-          ref: ${{ inputs.implementation_ref }}
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
           path: .github-productivity-utilities-runtime
 
       - name: Generate text

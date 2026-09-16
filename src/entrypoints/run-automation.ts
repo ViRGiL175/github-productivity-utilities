@@ -110,7 +110,7 @@ async function main(): Promise<void> {
               issueNumber: Number(process.env.ISSUE_NUMBER || ''),
               repository: {
                 owner: requireEnvironmentVariable('REPO_OWNER'),
-                repo: requireEnvironmentVariable('REPO_NAME'),
+                repo: requireEnvironmentVariable('REPO_NAME').split('/').at(-1)!,
               },
             });
           },

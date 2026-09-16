@@ -257,7 +257,6 @@ jobs:
       issue_number: ${{ needs.prepare-reopen-scenario.outputs.issue_number }}
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
       installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-      implementation_ref: ${{ github.sha }}
     secrets:
       pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
       app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}

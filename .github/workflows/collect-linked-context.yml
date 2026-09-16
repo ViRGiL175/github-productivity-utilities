@@ -18,11 +18,6 @@ on:
         description: Installation owner used to mint a GitHub App token when auth_mode=app
         required: false
         type: string
-      implementation_ref:
-        description: Ref of github-productivity-utilities implementation to execute
-        required: false
-        default: main
-        type: string
     secrets:
       token:
         description: Direct token override; takes precedence over auth_mode resolution
@@ -140,8 +135,8 @@ jobs:
       - name: Checkout automation implementation
         uses: actions/checkout@v6
         with:
-          repository: ViRGiL175/github-productivity-utilities
-          ref: ${{ inputs.implementation_ref }}
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
           path: .github-productivity-utilities-runtime
 
       - name: Collect linked context
