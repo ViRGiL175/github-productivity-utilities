@@ -1,15 +1,9 @@
-# Handle one verified Horizon transition into Inbox; never scan and flatten the board.
+# Handle one native issue-field transition into Inbox; never scan and flatten the board.
 name: Detach Inbox sub-issues
 
 on:
   workflow_call:
     inputs:
-      project_owner:
-        required: true
-        type: string
-      project_number:
-        required: true
-        type: number
       horizon_field_name:
         required: false
         default: Horizon
@@ -48,7 +42,7 @@ on:
         required: false
         type: string
     secrets:
-      project_token:
+      issue_token:
         required: false
       pat_token:
         required: false
@@ -64,17 +58,15 @@ jobs:
   detach-inbox-sub-issues:
     runs-on: ubuntu-latest
     concurrency:
-      group: detach-inbox-${{ inputs.project_owner }}-${{ inputs.project_number }}
+      group: detach-inbox-${{ inputs.issue_repo_owner }}-${{ inputs.issue_repo_name }}-${{ inputs.issue_number }}
       cancel-in-progress: false
     env:
       AUTH_MODE: ${{ inputs.auth_mode }}
       INSTALLATION_OWNER: ${{ inputs.installation_owner }}
-      DIRECT_TOKEN: ${{ secrets.project_token }}
+      DIRECT_TOKEN: ${{ secrets.issue_token }}
       PAT_TOKEN: ${{ secrets.pat_token }}
       APP_ID: ${{ secrets.app_id }}
       APP_PRIVATE_KEY: ${{ secrets.app_private_key }}
-      PROJECT_OWNER: ${{ inputs.project_owner }}
-      PROJECT_NUMBER: ${{ inputs.project_number }}
       HORIZON_FIELD_NAME: ${{ inputs.horizon_field_name }}
       INBOX_VALUE: ${{ inputs.inbox_value }}
       ISSUE_NODE_ID: ${{ inputs.issue_node_id }}

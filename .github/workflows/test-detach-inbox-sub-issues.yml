@@ -1,5 +1,6 @@
-# Real Project V2 and sub-issue integration test. Fixtures live only in the test sandbox.
-name: Test detach-inbox-sub-issues
+# Manual test: real native issue field and real sub-issues in the isolated organization.
+# The App needs Issue Fields (write) for this test; a classic PAT needs admin:org.
+name: Test native Inbox transition
 
 on:
   pull_request:
@@ -12,8 +13,8 @@ on:
     inputs:
       auth_mode:
         type: choice
-        options: [pat, app]
-        default: pat
+        options: [app, pat]
+        default: app
 
 permissions:
   contents: read
@@ -23,16 +24,12 @@ jobs:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     concurrency:
-      group: test-detach-inbox-sub-issues
+      group: test-native-inbox-transition
       cancel-in-progress: false
     env:
-      AUTH_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
-      PROJECT_OWNER: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-      PROJECT_NUMBER: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10' }}
-      REPO_OWNER: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-      REPO_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'scrum-test-backlog' || 'github-productivity-utilities' }}
-      PAT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
-      APP_ID: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+      AUTH_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'app' }}
+      ORG: ViRGiL-GH-Productivity
+      REPO: scrum-test-backlog
       APP_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
     steps:
       - uses: actions/checkout@v6
@@ -53,100 +50,71 @@ jobs:
         with:
           app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
-          owner: ${{ env.PROJECT_OWNER }}
+          owner: ${{ env.ORG }}
           skip-token-revoke: true
-      - name: Resolve token
-        id: auth
-        shell: bash
-        env:
-          APP_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          if [ "$AUTH_MODE" = app ]; then TOKEN="$APP_TOKEN"; else TOKEN="$PAT_TOKEN"; fi
-          if [ -z "$TOKEN" ]; then echo "Integration token is empty" >&2; exit 1; fi
-          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
-      - name: Create fixture, run dry-run and live reconciliation, assert and clean up
+      - name: Exercise native Inbox transitions
         uses: actions/github-script@v8
         with:
-          github-token: ${{ steps.auth.outputs.token }}
+          github-token: ${{ env.AUTH_MODE == 'app' && steps.app-token.outputs.token || secrets.ORG_PROJECT_TOKEN }}
           script: |
-            const owner = process.env.REPO_OWNER;
-            const repo = process.env.REPO_NAME;
-            const projectOwner = process.env.PROJECT_OWNER;
-            const projectNumber = Number(process.env.PROJECT_NUMBER);
-            const fieldName = `ITEST Inbox ${context.runId}`;
-            const headers = { accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
-            let fieldId, childItemId, parent, child, projectId;
+            const owner = process.env.ORG, repo = process.env.REPO;
+            const fieldName = `ITEST Horizon ${context.runId}`;
+            const nativeHeaders = { accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2026-03-10' };
+            const issueHeaders = { accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
+            let field, parent, child, inboxParent, inboxChild;
+            const setHorizon = (issue, value) => github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/issue-field-values', {
+              owner, repo, issue_number: issue.number, issue_field_values: [{ field_id: field.id, value }], headers: nativeHeaders,
+            });
+            const parentOf = async (issue) => {
+              try { return (await github.request('GET /repos/{owner}/{repo}/issues/{issue_number}/parent', { owner, repo, issue_number: issue.number, headers: issueHeaders })).data; }
+              catch (error) { if (error.status === 404) return null; throw error; }
+            };
+            const { run } = await import(`${process.env.GITHUB_WORKSPACE}/src/scripts/detach-inbox-sub-issues.ts`);
+            const runFor = async (issue, previous, dryRun = false) => {
+              Object.assign(process.env, {
+                HORIZON_FIELD_NAME: fieldName, INBOX_VALUE: '📥 Inbox', ISSUE_NODE_ID: issue.node_id,
+                ISSUE_REPO_OWNER: owner, ISSUE_REPO_NAME: repo, ISSUE_NUMBER: String(issue.number),
+                PREVIOUS_HORIZON: previous, CURRENT_HORIZON: '📥 Inbox', DRY_RUN: String(dryRun),
+              });
+              await run(github);
+            };
             try {
-              const type = (await github.request('GET /users/{username}', { username: projectOwner, headers })).data.type;
-              const root = type === 'Organization' ? 'organization' : 'user';
-              const data = await github.graphql(`query($owner: String!, $number: Int!) { ${root}(login: $owner) { projectV2(number: $number) { id } } }`, { owner: projectOwner, number: projectNumber });
-              projectId = data[root]?.projectV2?.id;
-              if (!projectId) throw new Error('Sandbox project was not found.');
-              const field = await github.graphql(`mutation($input: CreateProjectV2FieldInput!) {
-                createProjectV2Field(input: $input) { projectV2Field {
-                  ... on ProjectV2SingleSelectField { id options { id name } }
-                } }
-              }`, { input: { projectId, name: fieldName, dataType: 'SINGLE_SELECT', singleSelectOptions: [
-                { name: 'Ideas', color: 'BLUE', description: '' }, { name: '📥 Inbox', color: 'GRAY', description: '' },
-              ] } });
-              fieldId = field.createProjectV2Field.projectV2Field.id;
-              const ideasOptionId = field.createProjectV2Field.projectV2Field.options.find((option) => option.name === 'Ideas').id;
-              const inboxOptionId = field.createProjectV2Field.projectV2Field.options.find((option) => option.name === '📥 Inbox').id;
-              parent = (await github.request('POST /repos/{owner}/{repo}/issues', { owner, repo, title: `ITEST ${context.runId} Inbox parent`, headers })).data;
-              child = (await github.request('POST /repos/{owner}/{repo}/issues', { owner, repo, title: `ITEST ${context.runId} Inbox child`, body: 'Manual text', headers })).data;
-              childItemId = (await github.graphql(`mutation($projectId: ID!, $contentId: ID!) {
-                addProjectV2ItemById(input: { projectId: $projectId, contentId: $contentId }) { item { id } }
-              }`, { projectId, contentId: child.node_id })).addProjectV2ItemById.item.id;
-              await github.graphql(`mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
-                updateProjectV2ItemFieldValue(input: { projectId: $projectId, itemId: $itemId, fieldId: $fieldId, value: { singleSelectOptionId: $optionId } }) { projectV2Item { id } }
-              }`, { projectId, itemId: childItemId, fieldId, optionId: ideasOptionId });
-              await github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues', { owner, repo, issue_number: parent.number, sub_issue_id: child.id, headers });
-              await github.graphql(`mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
-                updateProjectV2ItemFieldValue(input: { projectId: $projectId, itemId: $itemId, fieldId: $fieldId, value: { singleSelectOptionId: $optionId } }) { projectV2Item { id } }
-              }`, { projectId, itemId: childItemId, fieldId, optionId: inboxOptionId });
-
-              process.env.PROJECT_OWNER = projectOwner;
-              process.env.PROJECT_NUMBER = String(projectNumber);
-              process.env.HORIZON_FIELD_NAME = fieldName;
-              process.env.INBOX_VALUE = '📥 Inbox';
-              process.env.ISSUE_NODE_ID = child.node_id;
-              process.env.ISSUE_REPO_OWNER = owner;
-              process.env.ISSUE_REPO_NAME = repo;
-              process.env.ISSUE_NUMBER = String(child.number);
-              process.env.PREVIOUS_HORIZON = 'Ideas';
-              process.env.CURRENT_HORIZON = '📥 Inbox';
-              const { ProjectV2Repository } = await import(`${process.env.GITHUB_WORKSPACE}/src/github/ProjectV2Repository.ts`);
-              const projects = new ProjectV2Repository(github);
-              let fixtureVisible = false;
-              for (let attempt = 0; attempt < 12; attempt += 1) {
-                const items = await projects.listOpenIssuesWithField(projectId, fieldName);
-                fixtureVisible = items.some((item) => item.nodeId === child.node_id && item.parentNodeId === parent.node_id && item.fieldValue === '📥 Inbox');
-                if (fixtureVisible) break;
-                await new Promise((resolve) => setTimeout(resolve, 3000));
-              }
-              if (!fixtureVisible) throw new Error('Inbox fixture did not become visible in the project scan.');
-              const { run } = await import(`${process.env.GITHUB_WORKSPACE}/src/scripts/detach-inbox-sub-issues.ts`);
-              process.env.DRY_RUN = 'true';
-              await run(github);
-              const dryParent = await github.request('GET /repos/{owner}/{repo}/issues/{issue_number}/parent', { owner, repo, issue_number: child.number, headers });
-              if (dryParent.data.id !== parent.id) throw new Error('Dry-run changed the parent.');
-              process.env.DRY_RUN = 'false';
-              await run(github);
-              await run(github);
-              const updated = (await github.request('GET /repos/{owner}/{repo}/issues/{issue_number}', { owner, repo, issue_number: child.number, headers })).data;
-              if (!updated.body?.includes('Manual text') || !updated.body?.includes(parent.html_url)) throw new Error('Former-parent block or manual text is missing.');
-              if ((updated.body.match(/former-parent:start/g) ?? []).length !== 1) throw new Error('Managed block was duplicated.');
-              try {
-                await github.request('GET /repos/{owner}/{repo}/issues/{issue_number}/parent', { owner, repo, issue_number: child.number, headers });
-                throw new Error('Inbox child still has a parent.');
-              } catch (error) {
-                if (error.status !== 404) throw error;
-              }
+              field = (await github.request('POST /orgs/{org}/issue-fields', {
+                org: owner, name: fieldName, data_type: 'single_select',
+                options: [{ name: 'Ideas', color: 'blue', priority: 0 }, { name: '📥 Inbox', color: 'gray', priority: 1 }],
+                headers: nativeHeaders,
+              })).data;
+              parent = (await github.request('POST /repos/{owner}/{repo}/issues', { owner, repo, title: `${fieldName} parent`, headers: issueHeaders })).data;
+              child = (await github.request('POST /repos/{owner}/{repo}/issues', { owner, repo, title: `${fieldName} child`, body: 'Manual text', headers: issueHeaders })).data;
+              await github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues', { owner, repo, issue_number: parent.number, sub_issue_id: child.id, headers: issueHeaders });
+              await setHorizon(parent, 'Ideas');
+              await setHorizon(child, 'Ideas');
+              await setHorizon(child, '📥 Inbox');
+              await runFor(child, 'Ideas', true);
+              if ((await parentOf(child))?.id !== parent.id) throw new Error('Dry-run changed the parent.');
+              await runFor(child, 'Ideas');
+              if (await parentOf(child)) throw new Error('Child was not detached.');
+              const body = (await github.request('GET /repos/{owner}/{repo}/issues/{issue_number}', { owner, repo, issue_number: child.number, headers: issueHeaders })).data.body;
+              if (!body.includes('Manual text') || !body.includes(parent.html_url)) throw new Error('Former-parent block is missing.');
+              inboxParent = (await github.request('POST /repos/{owner}/{repo}/issues', { owner, repo, title: `${fieldName} Inbox parent`, headers: issueHeaders })).data;
+              inboxChild = (await github.request('POST /repos/{owner}/{repo}/issues', { owner, repo, title: `${fieldName} Inbox child`, headers: issueHeaders })).data;
+              await github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues', { owner, repo, issue_number: inboxParent.number, sub_issue_id: inboxChild.id, headers: issueHeaders });
+              await setHorizon(inboxParent, '📥 Inbox');
+              await setHorizon(inboxChild, 'Ideas');
+              await setHorizon(inboxChild, '📥 Inbox');
+              await runFor(inboxChild, 'Ideas');
+              if ((await parentOf(inboxChild))?.id !== inboxParent.id) throw new Error('Inbox subtree was broken.');
+              await runFor(inboxChild, '');
+              if ((await parentOf(inboxChild))?.id !== inboxParent.id) throw new Error('Initial Inbox placement changed the parent.');
             } finally {
-              if (parent && child) {
-                try { await github.request('DELETE /repos/{owner}/{repo}/issues/{issue_number}/sub_issue', { owner, repo, issue_number: parent.number, sub_issue_id: child.id, headers }); } catch (error) { if (error.status !== 404) core.warning(error.message); }
+              for (const [p, c] of [[parent, child], [inboxParent, inboxChild]]) {
+                if (p && c) {
+                  try { await github.request('DELETE /repos/{owner}/{repo}/issues/{issue_number}/sub_issue', { owner, repo, issue_number: p.number, sub_issue_id: c.id, headers: issueHeaders }); }
+                  catch (error) { if (error.status !== 404) core.warning(error.message); }
+                }
               }
-              if (childItemId && projectId) await github.graphql(`mutation($input: DeleteProjectV2ItemInput!) { deleteProjectV2Item(input: $input) { deletedItemId } }`, { input: { projectId, itemId: childItemId } });
-              if (fieldId) await github.graphql(`mutation($input: DeleteProjectV2FieldInput!) { deleteProjectV2Field(input: $input) { projectV2Field { __typename } } }`, { input: { fieldId } });
-              for (const issue of [child, parent].filter(Boolean)) await github.request('PATCH /repos/{owner}/{repo}/issues/{issue_number}', { owner, repo, issue_number: issue.number, state: 'closed', headers });
+              for (const issue of [child, parent, inboxChild, inboxParent].filter(Boolean)) {
+                await github.request('PATCH /repos/{owner}/{repo}/issues/{issue_number}', { owner, repo, issue_number: issue.number, state: 'closed', headers: issueHeaders });
+              }
+              if (field) await github.request('DELETE /orgs/{org}/issue-fields/{issue_field_id}', { org: owner, issue_field_id: field.id, headers: nativeHeaders });
             }
