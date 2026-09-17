@@ -6,13 +6,20 @@ import { logger, repositoryName, required } from './environment.ts';
 
 export async function run(github: Octokit): Promise<void> {
   if (process.env.ACTION === 'reconcile') {
+    const rawIssueNumber = process.env.ISSUE_NUMBER?.trim();
+    const parentIssueNumber = rawIssueNumber ? Number(rawIssueNumber) : undefined;
+    if (parentIssueNumber !== undefined && (!Number.isSafeInteger(parentIssueNumber) || parentIssueNumber <= 0)) {
+      throw new Error('ISSUE_NUMBER must be a positive integer when supplied.');
+    }
     await reconcileSubIssueSprints({
       projectOwner: required('PROJECT_OWNER'),
       projectNumber: Number(required('PROJECT_NUMBER')),
       iterationFieldName: required('ITERATION_FIELD_NAME'),
       dryRun: process.env.DRY_RUN === 'true',
-      parentIssueNumber: Number(process.env.ISSUE_NUMBER || ''),
-      parentRepository: { owner: required('REPO_OWNER'), repo: repositoryName('REPO_NAME') },
+      ...(parentIssueNumber === undefined ? {} : {
+        parentIssueNumber,
+        parentRepository: { owner: required('REPO_OWNER'), repo: repositoryName('REPO_NAME') },
+      }),
     }, new IssueRepository(github), new ProjectV2Repository(github), logger);
     return;
   }

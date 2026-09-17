@@ -181,6 +181,20 @@ describe('LinkPrToProject', () => {
     expect(dependencies.pullRequests.setAssignees).not.toHaveBeenCalled();
   });
 
+  it('does not assign a bot PR author after the last human review ends', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.pullRequests.getReviewState).mockResolvedValue({
+      author: 'dependabot[bot]', requestedReviewers: [], requestedTeams: 0,
+    });
+    vi.mocked(dependencies.pullRequests.getAssigneeLogins).mockResolvedValue(['reviewer', 'contributor']);
+    vi.mocked(dependencies.pullRequests.listAssignableLogins).mockResolvedValue(new Set(['dependabot[bot]', 'reviewer', 'contributor']));
+    vi.mocked(dependencies.pullRequests.getUserType).mockResolvedValue('Bot');
+    await linkPrToProject({
+      ...input, action: 'submitted', reviewActorLogin: 'reviewer', reviewActorType: 'User', reviewState: 'approved',
+    }, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+    expect(dependencies.pullRequests.setAssignees).toHaveBeenCalledWith(input.pullRequestRepository, 7, ['contributor']);
+  });
+
   it('uses the review-request event actor if GitHub has not listed the new reviewer yet', async () => {
     const dependencies = createDependencies();
     vi.mocked(dependencies.pullRequests.listAssignableLogins).mockResolvedValue(new Set(['author', 'reviewer']));

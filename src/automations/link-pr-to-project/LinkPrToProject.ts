@@ -229,7 +229,8 @@ async function syncReviewAssignees(input: LinkPrToProjectInput, pullRequests: Pu
     }
     desired = current.filter((login) => login !== actor);
     const remainingReviewers = reviewers.filter((login) => login !== actor);
-    if (remainingReviewers.length === 0 && state.requestedTeams === 0 && state.author && assignable.has(state.author)) {
+    if (remainingReviewers.length === 0 && state.requestedTeams === 0 && state.author &&
+      assignable.has(state.author) && await pullRequests.getUserType(state.author) === 'User') {
       desired = [...new Set([...desired, state.author])];
     }
   }

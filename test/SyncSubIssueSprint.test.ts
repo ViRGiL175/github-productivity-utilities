@@ -81,7 +81,11 @@ describe('SyncSubIssueSprint', () => {
 
 describe('ReconcileSubIssueSprints', () => {
   function reconciliationDependencies(childIterationId: string | null = null) {
-    const issues: SubIssueReader = {
+    const issues: SubIssueReader & Pick<IssueReader, 'getIssue'> = {
+      getIssue: vi.fn().mockResolvedValue({
+        id: 41, nodeId: 'ISSUE_parent', number: 41,
+        repositoryUrl: 'https://api.github.com/repos/owner/backlog', isPullRequest: false, isOpen: true,
+      }),
       listSubIssues: vi.fn().mockResolvedValue([{
         id: 42, nodeId: 'ISSUE_child', number: 42,
         repositoryUrl: 'https://api.github.com/repos/owner/backlog', isPullRequest: false, isOpen: true,
@@ -119,6 +123,16 @@ describe('ReconcileSubIssueSprints', () => {
     const { issues, projects, logger } = reconciliationDependencies('OLD_SPRINT');
     await reconcileSubIssueSprints(reconcileInput, issues, projects, logger);
     expect(projects.addIssueToProject).not.toHaveBeenCalled();
+    expect(projects.setIteration).toHaveBeenCalledWith('PROJECT', 'CHILD_ITEM', 'FIELD', 'SPRINT');
+  });
+
+  it('reconciles a specified parent directly even when the project scan has not indexed it', async () => {
+    const { issues, projects, logger } = reconciliationDependencies('OLD_SPRINT');
+    vi.mocked(projects.listOpenIssuesWithField).mockResolvedValue([]);
+    await reconcileSubIssueSprints({
+      ...reconcileInput, parentIssueNumber: 41, parentRepository: { owner: 'owner', repo: 'backlog' },
+    }, issues, projects, logger);
+    expect(projects.listOpenIssuesWithField).not.toHaveBeenCalled();
     expect(projects.setIteration).toHaveBeenCalledWith('PROJECT', 'CHILD_ITEM', 'FIELD', 'SPRINT');
   });
 

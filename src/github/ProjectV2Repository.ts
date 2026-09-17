@@ -523,7 +523,7 @@ export class ProjectV2Repository implements ProjectV2Gateway, ProjectStatusGatew
       const data: {
         node?: { items?: {
           pageInfo: { hasNextPage: boolean; endCursor?: string | null };
-          nodes: Array<{
+          nodes?: Array<{
             fieldValueByName?: { name?: string | null; iterationId?: string | null } | null;
             content?: {
               id?: string; number?: number; state?: string;
@@ -531,12 +531,12 @@ export class ProjectV2Repository implements ProjectV2Gateway, ProjectStatusGatew
               parent?: { id: string; number: number; repository: { nameWithOwner: string } } | null;
               subIssuesSummary?: { total: number } | null;
             } | null;
-          } | null>;
+          } | null> | null;
         } | null } | null;
       } = await this.octokit.graphql(PROJECT_ISSUES_BY_FIELD_QUERY, { projectId, fieldName, after: cursor });
       const connection = data.node?.items;
       if (!connection) throw new Error(`Unable to read items for project ${projectId}.`);
-      for (const item of connection.nodes) {
+      for (const item of connection.nodes ?? []) {
         const issue = item?.content;
         if (!issue?.id || !issue.number || issue.state !== 'OPEN' || !issue.repository?.nameWithOwner) continue;
         result.push({

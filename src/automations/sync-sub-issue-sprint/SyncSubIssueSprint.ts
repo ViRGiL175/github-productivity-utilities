@@ -1,6 +1,6 @@
 import type { IssueReader, RepositoryCoordinates, SubIssueReader } from '../../github/IssueRepository.ts';
 import { parseRepositoryUrl } from '../../github/IssueRepository.ts';
-import type { ProjectIssueScanGateway, ProjectV2Gateway } from '../../github/ProjectV2Repository.ts';
+import type { ProjectIssueScanGateway, ProjectIssueWithField, ProjectV2Gateway } from '../../github/ProjectV2Repository.ts';
 import type { Logger } from '../../runtime/Logger.ts';
 
 export interface SyncSubIssueSprintInput {
@@ -100,17 +100,28 @@ export async function reconcileSubIssueSprints(
     parentIssueNumber?: number;
     parentRepository?: RepositoryCoordinates;
   },
-  issues: SubIssueReader,
+  issues: SubIssueReader & Pick<IssueReader, 'getIssue'>,
   projects: ProjectV2Gateway & ProjectIssueScanGateway,
   logger: Logger,
 ): Promise<void> {
   const project = await projects.getProjectMetadata(input.projectOwner, input.projectNumber, input.iterationFieldName);
-  const items = await projects.listOpenIssuesWithField(project.projectId, input.iterationFieldName);
-  const parents = items.filter((item) => item.iterationId && item.subIssueCount > 0 && (
-    !input.parentIssueNumber || (item.number === input.parentIssueNumber &&
-      (!input.parentRepository || item.repositoryNameWithOwner.toLowerCase() ===
-        `${input.parentRepository.owner}/${input.parentRepository.repo}`.toLowerCase()))
-  ));
+  let parents: ProjectIssueWithField[];
+  if (input.parentIssueNumber !== undefined) {
+    if (!Number.isSafeInteger(input.parentIssueNumber) || input.parentIssueNumber <= 0 || !input.parentRepository) {
+      throw new Error('A targeted reconciliation needs a positive parent issue number and repository.');
+    }
+    const issue = await issues.getIssue(input.parentRepository, input.parentIssueNumber);
+    const item = issue.isOpen === false ? null : await projects.getIssueProjectItem(issue.nodeId, project.projectId, input.iterationFieldName);
+    parents = item?.iterationId ? [{
+      nodeId: issue.nodeId, number: issue.number,
+      repositoryNameWithOwner: `${input.parentRepository.owner}/${input.parentRepository.repo}`,
+      parentNodeId: null, parentNumber: null, parentRepositoryNameWithOwner: null,
+      fieldValue: null, iterationId: item.iterationId, subIssueCount: 0,
+    }] : [];
+  } else {
+    const items = await projects.listOpenIssuesWithField(project.projectId, input.iterationFieldName);
+    parents = items.filter((item) => item.iterationId && item.subIssueCount > 0);
+  }
   const failures: string[] = [];
   for (const parent of parents) {
     const parentLabel = `${parent.repositoryNameWithOwner}#${parent.number}`;
