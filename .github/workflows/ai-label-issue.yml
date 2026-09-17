@@ -1,6 +1,7 @@
+# DEPRECATED: сохранён для совместимости с Dreddbook/scrum-dreddbook-backlog и не развивается.
 # Назначение: анализирует issue через Gemini и выставляет только явно разрешённые issue/project поля.
 # Когда использовать: как reusable workflow или вручную для LLM-assisted triage без Scrum-review политики.
-name: AI label issue
+name: '[DEPRECATED] AI label issue'
 
 on:
   workflow_call:
@@ -118,6 +119,10 @@ jobs:
       APP_ID: ${{ secrets.app_id || secrets.ORG_AUTOMATION_APP_ID }}
       APP_PRIVATE_KEY: ${{ secrets.app_private_key || secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
     steps:
+      - name: Deprecation warning
+        shell: bash
+        run: echo "::warning title=Deprecated workflow::ai-label-issue is deprecated and kept only for Dreddbook/scrum-dreddbook-backlog compatibility."
+
       - name: Validate workflow auth configuration
         shell: bash
         run: |

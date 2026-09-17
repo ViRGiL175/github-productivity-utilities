@@ -127,6 +127,13 @@ jobs:
 
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
+      - name: Checkout automation implementation
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .github-productivity-utilities-runtime
+
       - name: Check linked open PRs and reopen if needed
         uses: actions/github-script@v8
         env:
@@ -136,97 +143,5 @@ jobs:
         with:
           github-token: ${{ steps.auth.outputs.token }}
           script: |
-            const projectOwner = process.env.PROJECT_OWNER;
-            const backlogRepo = process.env.BACKLOG_REPO;
-            const issueNumber = Number(process.env.ISSUE_NUMBER);
-
-            if (!Number.isInteger(issueNumber) || issueNumber <= 0) {
-              throw new Error('A valid issue_number input or github.event.issue.number is required.');
-            }
-
-            const ISSUE_TIMELINE_QUERY = `
-              query($owner: String!, $repo: String!, $number: Int!) {
-                repository(owner: $owner, name: $repo) {
-                  issue(number: $number) {
-                    timelineItems(itemTypes: [CROSS_REFERENCED_EVENT], first: 100) {
-                      nodes {
-                        ... on CrossReferencedEvent {
-                          source {
-                            __typename
-                            ... on PullRequest {
-                              number
-                              state
-                              title
-                              body
-                              repository {
-                                nameWithOwner
-                              }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            `;
-
-            function escapeRegExp(value) {
-              return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            }
-
-            const data = await github.graphql(ISSUE_TIMELINE_QUERY, {
-              owner: projectOwner,
-              repo: backlogRepo,
-              number: issueNumber,
-            });
-
-            const timelineNodes = data.repository?.issue?.timelineItems?.nodes ?? [];
-            const targetRef = `${projectOwner}/${backlogRepo}#${issueNumber}`;
-            const closingPattern = new RegExp(`\\b(?:closes|fixes|resolves)\\s+${escapeRegExp(targetRef)}\\b`, 'i');
-
-            const openPullRequests = timelineNodes
-              .map((node) => node?.source)
-              .filter((source) => source?.__typename === 'PullRequest')
-              .filter((pullRequest) => pullRequest.state === 'OPEN')
-              .filter((pullRequest) => closingPattern.test(pullRequest.body || ''));
-
-            if (openPullRequests.length === 0) {
-              core.info('No open linked PRs with closing keywords. Issue stays closed.');
-              return;
-            }
-
-            const pullRequestLines = openPullRequests.map((pullRequest) =>
-              `- ${pullRequest.repository.nameWithOwner}#${pullRequest.number} — ${pullRequest.title}`,
-            );
-
-            core.info(`Open linked PRs found:\n${pullRequestLines.join('\n')}`);
-
-            await github.request('PATCH /repos/{owner}/{repo}/issues/{issue_number}', {
-              owner: projectOwner,
-              repo: backlogRepo,
-              issue_number: issueNumber,
-              state: 'open',
-            });
-
-            const body = [
-              '🔁 **Issue переоткрыта автоматически.**',
-              '',
-              'К ней привязаны открытые PR:',
-              '',
-              ...pullRequestLines,
-              '',
-              'Чтобы закрыть Issue, выберите один из вариантов для каждого PR:',
-              '1. **Мёрдж PR** — Issue закроется сама через `Closes`.',
-              '2. **Закрыть PR без мёрджа** — Issue больше не будет переоткрываться из-за него.',
-              `3. **Отвязать PR от Issue** — уберите строку \`Closes ${targetRef}\` из тела PR, затем закройте Issue вручную.`,
-            ].join('\n');
-
-            await github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-              owner: projectOwner,
-              repo: backlogRepo,
-              issue_number: issueNumber,
-              body,
-            });
-
-            core.info(`Issue #${issueNumber} was reopened and commented successfully.`);
+            const { run } = await import(`${process.env.GITHUB_WORKSPACE}/.github-productivity-utilities-runtime/src/scripts/reopen-issue-if-pr-open.ts`)
+            await run(github)

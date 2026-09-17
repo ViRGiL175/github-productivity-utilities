@@ -1,0 +1,42 @@
+name: Test TypeScript implementation
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/test-typescript.yml'
+      - 'src/**'
+      - 'test/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-typescript:
+    name: Typecheck and unit test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Run unit tests
+        run: npm test
+
+      - name: Load every script directly with Node.js
+        run: |
+          node --input-type=module -e "for (const name of ['sync-sub-issue-sprint', 'link-pr-to-project', 'ensure-next-iteration-reminder', 'safe-dependabot-pr-link', 'reopen-issue-if-pr-open', 'collect-linked-context', 'gemini-generate-text']) { const script = await import('./src/scripts/' + name + '.ts'); if (typeof script.run !== 'function') throw new Error(name + ' has no run function') }"
