@@ -103,6 +103,16 @@ jobs:
               process.env.PROJECT_NUMBER = String(projectNumber);
               process.env.HORIZON_FIELD_NAME = fieldName;
               process.env.INBOX_VALUE = '📥 Inbox';
+              const { ProjectV2Repository } = await import(`${process.env.GITHUB_WORKSPACE}/src/github/ProjectV2Repository.ts`);
+              const projects = new ProjectV2Repository(github);
+              let fixtureVisible = false;
+              for (let attempt = 0; attempt < 12; attempt += 1) {
+                const items = await projects.listOpenIssuesWithField(projectId, fieldName);
+                fixtureVisible = items.some((item) => item.nodeId === child.node_id && item.parentNodeId === parent.node_id && item.fieldValue === '📥 Inbox');
+                if (fixtureVisible) break;
+                await new Promise((resolve) => setTimeout(resolve, 3000));
+              }
+              if (!fixtureVisible) throw new Error('Inbox fixture did not become visible in the project scan.');
               const { run } = await import(`${process.env.GITHUB_WORKSPACE}/src/scripts/detach-inbox-sub-issues.ts`);
               process.env.DRY_RUN = 'true';
               await run(github);
