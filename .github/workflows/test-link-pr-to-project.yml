@@ -20,6 +20,8 @@ on:
     paths:
       - '.github/workflows/link-pr-to-project.yml'
       - '.github/workflows/test-link-pr-to-project.yml'
+      - 'src/**'
+      - 'test/**'
 
 concurrency:
   group: ${{ github.workflow }}

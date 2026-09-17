@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { syncSubIssueSprint } from '../src/automations/sync-sub-issue-sprint/SyncSubIssueSprint.js';
+import { reconcileSubIssueSprints, syncSubIssueSprint } from '../src/automations/sync-sub-issue-sprint/SyncSubIssueSprint.js';
+import type { SubIssueReader } from '../src/github/IssueRepository.js';
+import type { ProjectIssueScanGateway } from '../src/github/ProjectV2Repository.js';
 import type { IssueReader } from '../src/github/IssueRepository.js';
 import type { ProjectV2Gateway } from '../src/github/ProjectV2Repository.js';
 import type { Logger } from '../src/runtime/Logger.js';
@@ -74,5 +76,59 @@ describe('SyncSubIssueSprint', () => {
 
     expect(dependencies.issues.getIssue).not.toHaveBeenCalled();
     expect(dependencies.projects.getProjectMetadata).not.toHaveBeenCalled();
+  });
+});
+
+describe('ReconcileSubIssueSprints', () => {
+  function reconciliationDependencies(childIterationId: string | null = null) {
+    const issues: SubIssueReader = {
+      listSubIssues: vi.fn().mockResolvedValue([{
+        id: 42, nodeId: 'ISSUE_child', number: 42,
+        repositoryUrl: 'https://api.github.com/repos/owner/backlog', isPullRequest: false, isOpen: true,
+      }]),
+    };
+    const projects = {
+      getProjectMetadata: vi.fn().mockResolvedValue({ projectId: 'PROJECT', iterationFieldId: 'FIELD' }),
+      listOpenIssuesWithField: vi.fn().mockResolvedValue([{
+        nodeId: 'ISSUE_parent', number: 41, repositoryNameWithOwner: 'owner/backlog',
+        parentNodeId: null, parentNumber: null, parentRepositoryNameWithOwner: null,
+        fieldValue: null, iterationId: 'SPRINT', subIssueCount: 1,
+      }]),
+      getIssueProjectItem: vi.fn().mockImplementation((nodeId: string) => Promise.resolve(
+        nodeId === 'ISSUE_parent'
+          ? { id: 'PARENT_ITEM', iterationId: 'SPRINT', iterationTitle: 'Sprint 1' }
+          : childIterationId === null ? null : { id: 'CHILD_ITEM', iterationId: childIterationId, iterationTitle: '' },
+      )),
+      addIssueToProject: vi.fn().mockResolvedValue('CHILD_ITEM'),
+      setIteration: vi.fn().mockResolvedValue(undefined),
+    } as unknown as ProjectV2Gateway & ProjectIssueScanGateway;
+    const logger: Logger = { info: vi.fn(), warning: vi.fn() };
+    return { issues, projects, logger };
+  }
+
+  const reconcileInput = { projectOwner: 'owner', projectNumber: 10, iterationFieldName: 'Iteration', dryRun: false };
+
+  it('adds an existing sub-issue to the project and inherits the current Sprint', async () => {
+    const { issues, projects, logger } = reconciliationDependencies();
+    await reconcileSubIssueSprints(reconcileInput, issues, projects, logger);
+    expect(projects.addIssueToProject).toHaveBeenCalledWith('PROJECT', 'ISSUE_child');
+    expect(projects.setIteration).toHaveBeenCalledWith('PROJECT', 'CHILD_ITEM', 'FIELD', 'SPRINT');
+  });
+
+  it('updates a child after its parent Sprint changes', async () => {
+    const { issues, projects, logger } = reconciliationDependencies('OLD_SPRINT');
+    await reconcileSubIssueSprints(reconcileInput, issues, projects, logger);
+    expect(projects.addIssueToProject).not.toHaveBeenCalled();
+    expect(projects.setIteration).toHaveBeenCalledWith('PROJECT', 'CHILD_ITEM', 'FIELD', 'SPRINT');
+  });
+
+  it('is idempotent and supports dry-run', async () => {
+    const matching = reconciliationDependencies('SPRINT');
+    await reconcileSubIssueSprints(reconcileInput, matching.issues, matching.projects, matching.logger);
+    expect(matching.projects.setIteration).not.toHaveBeenCalled();
+    const dryRun = reconciliationDependencies();
+    await reconcileSubIssueSprints({ ...reconcileInput, dryRun: true }, dryRun.issues, dryRun.projects, dryRun.logger);
+    expect(dryRun.projects.addIssueToProject).not.toHaveBeenCalled();
+    expect(dryRun.projects.setIteration).not.toHaveBeenCalled();
   });
 });

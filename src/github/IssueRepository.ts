@@ -31,6 +31,16 @@ export interface IssueReader {
   getParentIssue(repository: RepositoryCoordinates, issueNumber: number): Promise<IssueRecord | null>;
 }
 
+export interface IssueHierarchyGateway extends IssueReader {
+  getIssueBody(repository: RepositoryCoordinates, issueNumber: number): Promise<string>;
+  updateIssueBody(repository: RepositoryCoordinates, issueNumber: number, body: string): Promise<void>;
+  removeSubIssue(parentRepository: RepositoryCoordinates, parentNumber: number, childId: number): Promise<void>;
+}
+
+export interface SubIssueReader {
+  listSubIssues(repository: RepositoryCoordinates, parentNumber: number): Promise<Array<IssueRecord & { isOpen: boolean }>>;
+}
+
 export interface LinkedPullRequest {
   number: number;
   state: string;
@@ -94,7 +104,7 @@ interface IssueTimelineQueryResult {
   } | null;
 }
 
-export class IssueRepository implements IssueReader, IssueReopenGateway {
+export class IssueRepository implements IssueReader, IssueReopenGateway, IssueHierarchyGateway, SubIssueReader {
   private readonly octokit: Octokit;
   constructor(octokit: Octokit) { this.octokit = octokit; }
 
@@ -123,6 +133,38 @@ export class IssueRepository implements IssueReader, IssueReopenGateway {
       }
 
       throw error;
+    }
+  }
+
+  async getIssueBody(repository: RepositoryCoordinates, issueNumber: number): Promise<string> {
+    const response = await this.octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
+      ...repository, issue_number: issueNumber, headers: API_HEADERS,
+    });
+    return response.data.body ?? '';
+  }
+
+  async updateIssueBody(repository: RepositoryCoordinates, issueNumber: number, body: string): Promise<void> {
+    await this.octokit.request('PATCH /repos/{owner}/{repo}/issues/{issue_number}', {
+      ...repository, issue_number: issueNumber, body, headers: API_HEADERS,
+    });
+  }
+
+  async removeSubIssue(parentRepository: RepositoryCoordinates, parentNumber: number, childId: number): Promise<void> {
+    await this.octokit.request('DELETE /repos/{owner}/{repo}/issues/{issue_number}/sub_issue', {
+      ...parentRepository, issue_number: parentNumber, sub_issue_id: childId, headers: API_HEADERS,
+    });
+  }
+
+  async listSubIssues(repository: RepositoryCoordinates, parentNumber: number): Promise<Array<IssueRecord & { isOpen: boolean }>> {
+    const result: Array<IssueRecord & { isOpen: boolean }> = [];
+    for (let page = 1; ; page += 1) {
+      const response = await this.octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues', {
+        ...repository, issue_number: parentNumber, page, per_page: 100, headers: API_HEADERS,
+      });
+      for (const issue of response.data) {
+        result.push({ ...mapIssue(issue as GitHubIssueData), isOpen: issue.state === 'open' });
+      }
+      if (response.data.length < 100) return result;
     }
   }
 

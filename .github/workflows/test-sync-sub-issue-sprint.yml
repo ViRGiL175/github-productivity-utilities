@@ -63,6 +63,7 @@ jobs:
     outputs:
       project_id: ${{ steps.prepare.outputs.project_id }}
       target_iteration_id: ${{ steps.prepare.outputs.target_iteration_id }}
+      alternative_iteration_id: ${{ steps.prepare.outputs.alternative_iteration_id }}
       parent_number: ${{ steps.prepare.outputs.parent_number }}
       parent_node_id: ${{ steps.prepare.outputs.parent_node_id }}
       child_number: ${{ steps.prepare.outputs.child_number }}
@@ -290,14 +291,15 @@ jobs:
                 ...(iterationField.configuration?.completedIterations ?? []),
               ]).filter((iteration) => iteration.startDate);
 
-              if (iterations.length === 0) {
-                throw new Error('Need at least one iteration in the sandbox project to run sync-sub-issue-sprint integration tests.');
+              if (iterations.length < 2) {
+                throw new Error('Need at least two iterations in the sandbox project to run sync-sub-issue-sprint integration tests.');
               }
 
               return {
                 projectId: project.id,
                 iterationFieldId: iterationField.id,
                 targetIterationId: iterations[0].id,
+                alternativeIterationId: iterations[1].id,
               };
             }
 
@@ -352,6 +354,7 @@ jobs:
 
             core.setOutput('project_id', project.projectId);
             core.setOutput('target_iteration_id', project.targetIterationId);
+            core.setOutput('alternative_iteration_id', project.alternativeIterationId);
             core.setOutput('parent_number', String(parentIssue.number));
             core.setOutput('parent_node_id', parentIssue.node_id);
             core.setOutput('child_number', String(childIssue.number));
@@ -494,6 +497,75 @@ jobs:
 
             core.info(`Child issue project item ${projectItem.id} inherited iteration ${targetIterationId}.`);
 
+      - uses: actions/checkout@v6
+
+      - name: Reconcile an existing child after the parent Sprint changes
+        uses: actions/github-script@v8
+        env:
+          PROJECT_ID: ${{ needs.prepare-sync-scenario.outputs.project_id }}
+          ALTERNATIVE_ITERATION_ID: ${{ needs.prepare-sync-scenario.outputs.alternative_iteration_id }}
+          PARENT_NUMBER: ${{ needs.prepare-sync-scenario.outputs.parent_number }}
+          PARENT_NODE_ID: ${{ needs.prepare-sync-scenario.outputs.parent_node_id }}
+          FIRST_CHILD_NODE_ID: ${{ needs.prepare-sync-scenario.outputs.child_node_id }}
+        with:
+          github-token: ${{ steps.auth.outputs.token }}
+          script: |
+            const owner = process.env.REPO_OWNER;
+            const repo = process.env.REPO_NAME;
+            const parentNumber = Number(process.env.PARENT_NUMBER);
+            const projectId = process.env.PROJECT_ID;
+            const alternative = process.env.ALTERNATIVE_ITERATION_ID;
+            const headers = { accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
+            const { ProjectV2Repository } = await import(`${process.env.GITHUB_WORKSPACE}/src/github/ProjectV2Repository.ts`);
+            const { run } = await import(`${process.env.GITHUB_WORKSPACE}/src/scripts/sync-sub-issue-sprint.ts`);
+            const projects = new ProjectV2Repository(github);
+            let secondChild;
+            let childItemId;
+            try {
+              secondChild = (await github.request('POST /repos/{owner}/{repo}/issues', {
+                owner, repo, title: `ITEST ${context.runId} existing sub-issue`, headers,
+              })).data;
+              const metadata = await projects.getProjectMetadata(process.env.PROJECT_OWNER, Number(process.env.PROJECT_NUMBER), process.env.ITERATION_FIELD_NAME);
+              const parentItem = await projects.getIssueProjectItem(process.env.PARENT_NODE_ID, projectId, process.env.ITERATION_FIELD_NAME);
+              if (!parentItem) throw new Error('Parent project item is missing.');
+              await projects.setIteration(projectId, parentItem.id, metadata.iterationFieldId, alternative);
+              await github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues', {
+                owner, repo, issue_number: parentNumber, sub_issue_id: secondChild.id, headers,
+              });
+              process.env.ACTION = 'reconcile';
+              process.env.ISSUE_NUMBER = String(parentNumber);
+              process.env.DRY_RUN = 'true';
+              await run(github);
+              if (await projects.getIssueProjectItem(secondChild.node_id, projectId, process.env.ITERATION_FIELD_NAME)) {
+                throw new Error('Dry-run added the existing child to the project.');
+              }
+              process.env.DRY_RUN = 'false';
+              for (let attempt = 0; attempt < 6; attempt += 1) {
+                await run(github);
+                const first = await projects.getIssueProjectItem(process.env.FIRST_CHILD_NODE_ID, projectId, process.env.ITERATION_FIELD_NAME);
+                const second = await projects.getIssueProjectItem(secondChild.node_id, projectId, process.env.ITERATION_FIELD_NAME);
+                if (first?.iterationId === alternative && second?.iterationId === alternative) {
+                  childItemId = second.id;
+                  break;
+                }
+                await new Promise((resolve) => setTimeout(resolve, 2000));
+              }
+              if (!childItemId) throw new Error('Reconciliation did not update both children to the new Sprint.');
+              await run(github);
+              core.info('Existing child was added, both children followed the changed parent Sprint, and rerun was idempotent.');
+            } finally {
+              if (secondChild) {
+                try { await github.request('DELETE /repos/{owner}/{repo}/issues/{issue_number}/sub_issue', {
+                  owner, repo, issue_number: parentNumber, sub_issue_id: secondChild.id, headers,
+                }); } catch (error) { if (error.status !== 404) core.warning(error.message); }
+                const item = childItemId || (await projects.getIssueProjectItem(secondChild.node_id, projectId, process.env.ITERATION_FIELD_NAME))?.id;
+                if (item) await projects.deleteProjectItem(projectId, item);
+                await github.request('PATCH /repos/{owner}/{repo}/issues/{issue_number}', {
+                  owner, repo, issue_number: secondChild.number, state: 'closed', headers,
+                });
+              }
+            }
+
   rerun-sync-scenario:
     name: Rerun sub-issue sync scenario
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
@@ -582,7 +654,7 @@ jobs:
         env:
           PROJECT_ID: ${{ needs.prepare-sync-scenario.outputs.project_id }}
           ITERATION_FIELD_NAME: ${{ env.ITERATION_FIELD_NAME }}
-          TARGET_ITERATION_ID: ${{ needs.prepare-sync-scenario.outputs.target_iteration_id }}
+          TARGET_ITERATION_ID: ${{ needs.prepare-sync-scenario.outputs.alternative_iteration_id }}
           CHILD_NODE_ID: ${{ needs.prepare-sync-scenario.outputs.child_node_id }}
         with:
           github-token: ${{ steps.auth.outputs.token }}

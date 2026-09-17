@@ -23,6 +23,7 @@ export interface LinkPrToProjectInput {
   pullRequestBodyHint: string;
   headRef: string;
   action: string;
+  reviewState?: string;
   requestedReviewersJson: string;
 }
 
@@ -66,6 +67,16 @@ logger: Logger,
 
   if (input.action === 'review_requested') {
     await handleReviewRequested(input, statusMetadata.projectId, statusMetadata.statusFieldId, inReviewOptionId, pullRequests, projects, logger);
+    await syncReviewAssignees(input, pullRequests, logger);
+    return;
+  }
+
+  if (['review_request_removed', 'submitted', 'dismissed'].includes(input.action)) {
+    if (input.action === 'submitted' && input.reviewState?.toLowerCase() === 'commented') {
+      logger.info('Comment-only review does not change assignees.');
+      return;
+    }
+    await syncReviewAssignees(input, pullRequests, logger);
     return;
   }
 
@@ -184,6 +195,33 @@ async function syncAssignees(input: LinkPrToProjectInput, issueNumber: number, p
       throw error;
     }
     logger.info(`Copied assignees ${toCopy.join(', ')} from issue #${issueNumber} to PR #${input.pullRequestNumber}.`);
+}
+
+async function syncReviewAssignees(input: LinkPrToProjectInput, pullRequests: PullRequestMutationGateway, logger: Logger): Promise<void> {
+  const repository = input.pullRequestRepository;
+  const state = await pullRequests.getReviewState(repository, input.pullRequestNumber);
+  const assignable = await pullRequests.listAssignableLogins(repository);
+  const reviewers = [...new Set(state.requestedReviewers
+    .filter((user) => user.type === 'User' && assignable.has(user.login))
+    .map((user) => user.login))];
+  if (!state.changesRequested && reviewers.length === 0 && state.requestedTeams > 0) {
+    logger.info(`PR #${input.pullRequestNumber} has only team review requests; individual assignees are unchanged.`);
+    return;
+  }
+  const desired = state.changesRequested || reviewers.length === 0
+    ? (state.author && assignable.has(state.author) ? [state.author] : [])
+    : reviewers;
+  if (desired.length === 0) {
+    logger.info(`No assignable human actor found for PR #${input.pullRequestNumber}; keeping current assignees.`);
+    return;
+  }
+  const current = await pullRequests.getAssigneeLogins(repository, input.pullRequestNumber);
+  if (current.length === desired.length && current.every((login) => desired.includes(login))) {
+    logger.info(`PR #${input.pullRequestNumber} already has the correct review assignees.`);
+    return;
+  }
+  await pullRequests.setAssignees(repository, input.pullRequestNumber, desired);
+  logger.info(`Set PR #${input.pullRequestNumber} assignees to ${desired.join(', ')}.`);
 }
 
 async function appendClosingReference(input: LinkPrToProjectInput, issueNumber: number, pullRequests: PullRequestMutationGateway): Promise<void> {
