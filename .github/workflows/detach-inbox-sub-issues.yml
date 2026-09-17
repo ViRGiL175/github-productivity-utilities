@@ -1,4 +1,4 @@
-# Scan a Project V2 board and detach open Inbox issues from their parent.
+# Handle one verified Horizon transition into Inbox; never scan and flatten the board.
 name: Detach Inbox sub-issues
 
 on:
@@ -17,6 +17,24 @@ on:
       inbox_value:
         required: false
         default: 📥 Inbox
+        type: string
+      issue_node_id:
+        required: true
+        type: string
+      issue_repo_owner:
+        required: true
+        type: string
+      issue_repo_name:
+        required: true
+        type: string
+      issue_number:
+        required: true
+        type: number
+      previous_horizon:
+        required: false
+        type: string
+      current_horizon:
+        required: true
         type: string
       dry_run:
         required: false
@@ -59,6 +77,12 @@ jobs:
       PROJECT_NUMBER: ${{ inputs.project_number }}
       HORIZON_FIELD_NAME: ${{ inputs.horizon_field_name }}
       INBOX_VALUE: ${{ inputs.inbox_value }}
+      ISSUE_NODE_ID: ${{ inputs.issue_node_id }}
+      ISSUE_REPO_OWNER: ${{ inputs.issue_repo_owner }}
+      ISSUE_REPO_NAME: ${{ inputs.issue_repo_name }}
+      ISSUE_NUMBER: ${{ inputs.issue_number }}
+      PREVIOUS_HORIZON: ${{ inputs.previous_horizon }}
+      CURRENT_HORIZON: ${{ inputs.current_horizon }}
       DRY_RUN: ${{ inputs.dry_run }}
     steps:
       - name: Validate auth configuration

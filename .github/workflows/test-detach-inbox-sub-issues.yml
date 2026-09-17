@@ -86,9 +86,12 @@ jobs:
                 createProjectV2Field(input: $input) { projectV2Field {
                   ... on ProjectV2SingleSelectField { id options { id name } }
                 } }
-              }`, { input: { projectId, name: fieldName, dataType: 'SINGLE_SELECT', singleSelectOptions: [{ name: '📥 Inbox', color: 'GRAY', description: '' }] } });
+              }`, { input: { projectId, name: fieldName, dataType: 'SINGLE_SELECT', singleSelectOptions: [
+                { name: 'Ideas', color: 'BLUE', description: '' }, { name: '📥 Inbox', color: 'GRAY', description: '' },
+              ] } });
               fieldId = field.createProjectV2Field.projectV2Field.id;
-              const optionId = field.createProjectV2Field.projectV2Field.options[0].id;
+              const ideasOptionId = field.createProjectV2Field.projectV2Field.options.find((option) => option.name === 'Ideas').id;
+              const inboxOptionId = field.createProjectV2Field.projectV2Field.options.find((option) => option.name === '📥 Inbox').id;
               parent = (await github.request('POST /repos/{owner}/{repo}/issues', { owner, repo, title: `ITEST ${context.runId} Inbox parent`, headers })).data;
               child = (await github.request('POST /repos/{owner}/{repo}/issues', { owner, repo, title: `ITEST ${context.runId} Inbox child`, body: 'Manual text', headers })).data;
               childItemId = (await github.graphql(`mutation($projectId: ID!, $contentId: ID!) {
@@ -96,13 +99,22 @@ jobs:
               }`, { projectId, contentId: child.node_id })).addProjectV2ItemById.item.id;
               await github.graphql(`mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
                 updateProjectV2ItemFieldValue(input: { projectId: $projectId, itemId: $itemId, fieldId: $fieldId, value: { singleSelectOptionId: $optionId } }) { projectV2Item { id } }
-              }`, { projectId, itemId: childItemId, fieldId, optionId });
+              }`, { projectId, itemId: childItemId, fieldId, optionId: ideasOptionId });
               await github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues', { owner, repo, issue_number: parent.number, sub_issue_id: child.id, headers });
+              await github.graphql(`mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                updateProjectV2ItemFieldValue(input: { projectId: $projectId, itemId: $itemId, fieldId: $fieldId, value: { singleSelectOptionId: $optionId } }) { projectV2Item { id } }
+              }`, { projectId, itemId: childItemId, fieldId, optionId: inboxOptionId });
 
               process.env.PROJECT_OWNER = projectOwner;
               process.env.PROJECT_NUMBER = String(projectNumber);
               process.env.HORIZON_FIELD_NAME = fieldName;
               process.env.INBOX_VALUE = '📥 Inbox';
+              process.env.ISSUE_NODE_ID = child.node_id;
+              process.env.ISSUE_REPO_OWNER = owner;
+              process.env.ISSUE_REPO_NAME = repo;
+              process.env.ISSUE_NUMBER = String(child.number);
+              process.env.PREVIOUS_HORIZON = 'Ideas';
+              process.env.CURRENT_HORIZON = '📥 Inbox';
               const { ProjectV2Repository } = await import(`${process.env.GITHUB_WORKSPACE}/src/github/ProjectV2Repository.ts`);
               const projects = new ProjectV2Repository(github);
               let fixtureVisible = false;
