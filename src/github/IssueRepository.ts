@@ -16,6 +16,7 @@ export interface IssueRecord {
   number: number;
   repositoryUrl: string;
   isPullRequest: boolean;
+  isOpen?: boolean;
 }
 
 type GitHubIssueData = {
@@ -24,6 +25,7 @@ type GitHubIssueData = {
   number: number;
   repository_url: string;
   pull_request?: unknown;
+  state?: string;
 };
 
 export interface IssueReader {
@@ -240,6 +242,7 @@ function mapIssue(issue: GitHubIssueData): IssueRecord {
     number: issue.number,
     repositoryUrl: issue.repository_url,
     isPullRequest: issue.pull_request !== undefined,
+    isOpen: issue.state === 'open',
   };
 }
 

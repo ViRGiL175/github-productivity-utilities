@@ -36,7 +36,6 @@ export interface PullRequestReviewState {
   author: string;
   requestedReviewers: Array<{ login: string; type: string }>;
   requestedTeams: number;
-  changesRequested: boolean;
 }
 
 export class PullRequestRepository implements PullRequestListGateway, PullRequestMutationGateway {
@@ -138,25 +137,11 @@ export class PullRequestRepository implements PullRequestListGateway, PullReques
     const pull = await this.octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
       ...repository, pull_number: pullRequestNumber, headers: API_HEADERS,
     });
-    const latestReview = new Map<string, string>();
-    for (let page = 1; ; page += 1) {
-      const response = await this.octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews', {
-        ...repository, pull_number: pullRequestNumber, page, per_page: 100, headers: API_HEADERS,
-      });
-      for (const review of response.data) {
-        const login = review.user?.login;
-        if (login && ['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(review.state)) {
-          latestReview.set(login, review.state);
-        }
-      }
-      if (response.data.length < 100) break;
-    }
     return {
       author: pull.data.user?.login ?? '',
       requestedReviewers: (pull.data.requested_reviewers ?? []).flatMap((user) =>
         user?.login ? [{ login: user.login, type: user.type }] : []),
       requestedTeams: pull.data.requested_teams?.length ?? 0,
-      changesRequested: [...latestReview.values()].includes('CHANGES_REQUESTED'),
     };
   }
 }

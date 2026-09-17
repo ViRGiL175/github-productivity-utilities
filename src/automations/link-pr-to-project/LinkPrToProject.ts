@@ -24,6 +24,8 @@ export interface LinkPrToProjectInput {
   headRef: string;
   action: string;
   reviewState?: string;
+  reviewActorLogin?: string;
+  reviewActorType?: string;
   requestedReviewersJson: string;
 }
 
@@ -204,18 +206,32 @@ async function syncReviewAssignees(input: LinkPrToProjectInput, pullRequests: Pu
   const reviewers = [...new Set(state.requestedReviewers
     .filter((user) => user.type === 'User' && assignable.has(user.login))
     .map((user) => user.login))];
-  if (!state.changesRequested && reviewers.length === 0 && state.requestedTeams > 0) {
-    logger.info(`PR #${input.pullRequestNumber} has only team review requests; individual assignees are unchanged.`);
-    return;
-  }
-  const desired = state.changesRequested || reviewers.length === 0
-    ? (state.author && assignable.has(state.author) ? [state.author] : [])
-    : reviewers;
-  if (desired.length === 0) {
-    logger.info(`No assignable human actor found for PR #${input.pullRequestNumber}; keeping current assignees.`);
-    return;
-  }
   const current = await pullRequests.getAssigneeLogins(repository, input.pullRequestNumber);
+  const actor = input.reviewActorLogin;
+  const actorType = actor ? (input.reviewActorType || await pullRequests.getUserType(actor)) : null;
+  if (actor && actorType !== 'User') {
+    logger.info(`Review actor @${actor} is not a human user; assignees are unchanged.`);
+    return;
+  }
+  let desired: string[];
+  if (input.action === 'review_requested') {
+    const requested = [...new Set([...reviewers, ...(actor && assignable.has(actor) ? [actor] : [])])];
+    if (requested.length === 0) {
+      logger.info(`No assignable human reviewers requested for PR #${input.pullRequestNumber}; assignees are unchanged.`);
+      return;
+    }
+    desired = [...new Set([...current.filter((login) => login !== state.author), ...requested])];
+  } else {
+    if (!actor) {
+      logger.info('Review actor is missing; refusing to remove an assignee.');
+      return;
+    }
+    desired = current.filter((login) => login !== actor);
+    const remainingReviewers = reviewers.filter((login) => login !== actor);
+    if (remainingReviewers.length === 0 && state.requestedTeams === 0 && state.author && assignable.has(state.author)) {
+      desired = [...new Set([...desired, state.author])];
+    }
+  }
   if (current.length === desired.length && current.every((login) => desired.includes(login))) {
     logger.info(`PR #${input.pullRequestNumber} already has the correct review assignees.`);
     return;

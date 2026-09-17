@@ -1,5 +1,6 @@
-import type { IssueHierarchyGateway } from '../../github/IssueRepository.ts';
-import type { ProjectIssueScanGateway, ProjectStatusGateway } from '../../github/ProjectV2Repository.ts';
+import type { IssueHierarchyGateway, RepositoryCoordinates } from '../../github/IssueRepository.ts';
+import { parseRepositoryUrl } from '../../github/IssueRepository.ts';
+import type { ProjectStatusGateway } from '../../github/ProjectV2Repository.ts';
 import type { Logger } from '../../runtime/Logger.ts';
 
 const BLOCK_START = '<!-- github-productivity-utilities:former-parent:start -->';
@@ -10,55 +11,59 @@ export interface DetachInboxInput {
   projectNumber: number;
   horizonFieldName: string;
   inboxValue: string;
+  issueNodeId: string;
+  issueRepository: RepositoryCoordinates;
+  issueNumber: number;
+  previousHorizon: string;
+  currentHorizon: string;
   dryRun: boolean;
 }
 
 export async function detachInboxSubIssues(
   input: DetachInboxInput,
-  projects: ProjectIssueScanGateway & ProjectStatusGateway,
+  projects: ProjectStatusGateway,
   issues: IssueHierarchyGateway,
   logger: Logger,
 ): Promise<void> {
+  // Initial placement in Inbox is allowed to form a temporary hierarchy.
+  if (!input.previousHorizon || input.previousHorizon === input.inboxValue || input.currentHorizon !== input.inboxValue) {
+    logger.info('Horizon did not move from another value into Inbox; leaving the hierarchy unchanged.');
+    return;
+  }
   const metadata = await projects.getStatusMetadata(input.projectOwner, input.projectNumber, input.horizonFieldName);
   if (!metadata.optionIdsByName.has(input.inboxValue)) {
     throw new Error(`Horizon option "${input.inboxValue}" was not found in ${input.projectOwner}#${input.projectNumber}.`);
   }
-  const candidates = (await projects.listOpenIssuesWithField(metadata.projectId, input.horizonFieldName))
-    .filter((item) => item.fieldValue === input.inboxValue && item.parentNodeId);
-  const failures: string[] = [];
-  for (const item of candidates) {
-    const label = `${item.repositoryNameWithOwner}#${item.number}`;
-    try {
-      if (!item.parentNumber || !item.parentRepositoryNameWithOwner) throw new Error('Parent metadata is incomplete.');
-      const childRepository = splitRepository(item.repositoryNameWithOwner);
-      const parentRepository = splitRepository(item.parentRepositoryNameWithOwner);
-      const [child, actualParent] = await Promise.all([
-        issues.getIssue(childRepository, item.number),
-        issues.getParentIssue(childRepository, item.number),
-      ]);
-      if (!actualParent || actualParent.nodeId !== item.parentNodeId) {
-        logger.info(`Parent of ${label} changed since the project scan; skipping this run.`);
-        continue;
-      }
-      const parentUrl = `https://github.com/${parentRepository.owner}/${parentRepository.repo}/issues/${item.parentNumber}`;
-      const body = await issues.getIssueBody(childRepository, item.number);
-      const updated = withFormerParentBlock(body, parentUrl);
-      if (input.dryRun) {
-        logger.info(`DRY RUN: would save ${parentUrl} and detach ${label}.`);
-        continue;
-      }
-      // Save the link first. A failed unlink can be retried without duplicating the block.
-      if (updated !== body) await issues.updateIssueBody(childRepository, item.number, updated);
-      await issues.removeSubIssue(parentRepository, item.parentNumber, child.id);
-      logger.info(`Saved former parent ${parentUrl} and detached ${label}.`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      failures.push(`${label}: ${message}`);
-      logger.warning(`Could not detach ${label}: ${message}`);
-    }
+  const projectItem = await projects.getContentProjectItem(input.issueNodeId, metadata.projectId, input.horizonFieldName);
+  if (projectItem?.statusName !== input.inboxValue) {
+    logger.info('Issue is no longer in Inbox; ignoring the stale transition.');
+    return;
   }
-  if (failures.length) throw new Error(`${failures.length} Inbox issue(s) failed: ${failures.join('; ')}`);
-  logger.info(`Scanned ${candidates.length} Inbox issue(s) with a parent.`);
+  const child = await issues.getIssue(input.issueRepository, input.issueNumber);
+  if (child.nodeId !== input.issueNodeId || child.isPullRequest) {
+    throw new Error('Inbox transition does not match the expected issue.');
+  }
+  if (child.isOpen === false) {
+    logger.info(`Issue #${input.issueNumber} is closed; leaving its hierarchy unchanged.`);
+    return;
+  }
+  const parent = await issues.getParentIssue(input.issueRepository, input.issueNumber);
+  if (!parent) {
+    logger.info(`Issue #${input.issueNumber} has no parent; nothing to detach.`);
+    return;
+  }
+  const parentRepository = parseRepositoryUrl(parent.repositoryUrl);
+  const parentUrl = `https://github.com/${parentRepository.owner}/${parentRepository.repo}/issues/${parent.number}`;
+  const body = await issues.getIssueBody(input.issueRepository, input.issueNumber);
+  const updated = withFormerParentBlock(body, parentUrl);
+  if (input.dryRun) {
+    logger.info(`DRY RUN: would save ${parentUrl} and detach ${input.issueRepository.owner}/${input.issueRepository.repo}#${input.issueNumber}.`);
+    return;
+  }
+  // Save the link first. A failed unlink can be retried without duplicating the block.
+  if (updated !== body) await issues.updateIssueBody(input.issueRepository, input.issueNumber, updated);
+  await issues.removeSubIssue(parentRepository, parent.number, child.id);
+  logger.info(`Saved former parent ${parentUrl} and detached issue #${input.issueNumber}.`);
 }
 
 export function withFormerParentBlock(body: string, parentUrl: string): string {
@@ -72,10 +77,4 @@ export function withFormerParentBlock(body: string, parentUrl: string): string {
     return body.slice(0, start) + block + body.slice(end + BLOCK_END.length);
   }
   return body.trimEnd() ? `${body.trimEnd()}\n\n${block}` : block;
-}
-
-function splitRepository(nameWithOwner: string): { owner: string; repo: string } {
-  const [owner, repo, extra] = nameWithOwner.split('/');
-  if (!owner || !repo || extra) throw new Error(`Invalid repository name: ${nameWithOwner}`);
-  return { owner, repo };
 }
