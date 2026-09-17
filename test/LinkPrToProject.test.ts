@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { linkPrToProject } from '../src/automations/link-pr-to-project/LinkPrToProject.js';
-import type { IssueReader } from '../src/github/IssueRepository.js';
+import type { IssueClosingPullRequestsGateway, IssueReader } from '../src/github/IssueRepository.js';
 import type { ProjectStatusGateway, ProjectV2Gateway } from '../src/github/ProjectV2Repository.js';
 import type { PullRequestMutationGateway } from '../src/github/PullRequestRepository.js';
 import type { Logger } from '../src/runtime/Logger.js';
@@ -24,12 +24,13 @@ const input = {
 };
 
 function createDependencies() {
-  const issues: IssueReader = {
+  const issues: IssueReader & IssueClosingPullRequestsGateway = {
     getIssue: vi.fn().mockResolvedValue({
       id: 42, nodeId: 'ISSUE_NODE', number: 42,
       repositoryUrl: 'https://api.github.com/repos/owner/backlog', isPullRequest: false,
     }),
     getParentIssue: vi.fn(),
+    listOpenClosingPullRequests: vi.fn().mockResolvedValue([{ nodeId: 'PR_NODE', number: 7, repositoryNameWithOwner: 'owner/service' }]),
   };
   const pullRequests: PullRequestMutationGateway = {
     getPullRequestBody: vi.fn().mockResolvedValue('Description'),
@@ -88,6 +89,42 @@ describe('LinkPrToProject', () => {
     }, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
     expect(dependencies.projects.setSingleSelect).toHaveBeenCalledWith('PROJECT', 'PR_ITEM', 'STATUS_FIELD', 'REVIEW');
     expect(dependencies.pullRequests.setAssignees).toHaveBeenCalledWith(input.pullRequestRepository, 7, ['reviewer']);
+  });
+
+  it('moves the linked issue to review only after every open linked PR is in review, preserving issue assignees', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.pullRequests.listAssignableLogins).mockResolvedValue(new Set(['author', 'reviewer']));
+    vi.mocked(dependencies.issues.listOpenClosingPullRequests).mockResolvedValue([
+      { nodeId: 'PR_NODE', number: 7, repositoryNameWithOwner: 'owner/service' },
+      { nodeId: 'OTHER_PR', number: 8, repositoryNameWithOwner: 'owner/service' },
+    ]);
+    vi.mocked(dependencies.projects.getContentProjectItem).mockImplementation(async (nodeId) =>
+      nodeId === 'ISSUE_NODE'
+        ? { id: 'ISSUE_ITEM', statusName: 'In progress', statusOptionId: 'PROGRESS' }
+        : { id: nodeId, statusName: 'In review', statusOptionId: 'REVIEW' });
+    await linkPrToProject({ ...input, action: 'review_requested', requestedReviewersJson: '[{"login":"reviewer","type":"User"}]' }, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+    expect(dependencies.projects.setSingleSelect).toHaveBeenCalledWith('PROJECT', 'ISSUE_ITEM', 'STATUS_FIELD', 'REVIEW');
+    expect(dependencies.pullRequests.setAssignees).toHaveBeenCalledWith(input.pullRequestRepository, 7, ['reviewer']);
+    expect(dependencies.pullRequests.setAssignees).not.toHaveBeenCalledWith(input.backlogRepository, 42, expect.anything());
+  });
+
+  it('leaves the issue in progress while another linked PR has not entered review', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.issues.listOpenClosingPullRequests).mockResolvedValue([
+      { nodeId: 'PR_NODE', number: 7, repositoryNameWithOwner: 'owner/service' },
+      { nodeId: 'OTHER_PR', number: 8, repositoryNameWithOwner: 'owner/service' },
+    ]);
+    vi.mocked(dependencies.projects.getContentProjectItem).mockImplementation(async (nodeId) =>
+      ({ id: nodeId, statusName: nodeId === 'OTHER_PR' ? 'In progress' : 'In review', statusOptionId: null }));
+    await linkPrToProject({ ...input, action: 'review_requested', requestedReviewersJson: '[{"login":"reviewer","type":"User"}]' }, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+    expect(dependencies.projects.setSingleSelect).not.toHaveBeenCalledWith('PROJECT', 'ISSUE_ITEM', 'STATUS_FIELD', 'REVIEW');
+  });
+
+  it('waits when GitHub has not indexed the current PR as linked to the issue', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.issues.listOpenClosingPullRequests).mockResolvedValue([]);
+    await linkPrToProject({ ...input, action: 'review_requested', requestedReviewersJson: '[{"login":"reviewer","type":"User"}]' }, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+    expect(dependencies.projects.setSingleSelect).not.toHaveBeenCalledWith('PROJECT', 'ISSUE_ITEM', 'STATUS_FIELD', 'REVIEW');
   });
 
   it('assigns all outstanding human reviewers, ignoring bots and teams', async () => {

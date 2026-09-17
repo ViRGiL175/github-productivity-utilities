@@ -51,6 +51,16 @@ export interface LinkedPullRequest {
   repositoryNameWithOwner: string;
 }
 
+export interface ClosingPullRequest {
+  nodeId: string;
+  number: number;
+  repositoryNameWithOwner: string;
+}
+
+export interface IssueClosingPullRequestsGateway {
+  listOpenClosingPullRequests(repository: RepositoryCoordinates, issueNumber: number): Promise<ClosingPullRequest[]>;
+}
+
 export interface IssueReopenGateway {
   listCrossReferencedPullRequests(
     repository: RepositoryCoordinates,
@@ -87,6 +97,19 @@ const ISSUE_TIMELINE_QUERY = `
   }
 `;
 
+const OPEN_CLOSING_PULL_REQUESTS_QUERY = `
+  query($owner: String!, $repo: String!, $number: Int!, $after: String) {
+    repository(owner: $owner, name: $repo) {
+      issue(number: $number) {
+        closedByPullRequestsReferences(first: 100, after: $after) {
+          pageInfo { hasNextPage endCursor }
+          nodes { id number repository { nameWithOwner } }
+        }
+      }
+    }
+  }
+`;
+
 interface IssueTimelineQueryResult {
   repository?: {
     issue?: {
@@ -106,7 +129,18 @@ interface IssueTimelineQueryResult {
   } | null;
 }
 
-export class IssueRepository implements IssueReader, IssueReopenGateway, IssueHierarchyGateway, SubIssueReader {
+interface ClosingPullRequestsQueryResult {
+  repository?: {
+    issue?: {
+      closedByPullRequestsReferences?: {
+        pageInfo: { hasNextPage: boolean; endCursor?: string | null };
+        nodes: Array<{ id: string; number: number; repository: { nameWithOwner: string } } | null>;
+      } | null;
+    } | null;
+  } | null;
+}
+
+export class IssueRepository implements IssueReader, IssueReopenGateway, IssueHierarchyGateway, SubIssueReader, IssueClosingPullRequestsGateway {
   private readonly octokit: Octokit;
   constructor(octokit: Octokit) { this.octokit = octokit; }
 
@@ -199,6 +233,26 @@ export class IssueRepository implements IssueReader, IssueReopenGateway, IssueHi
         repositoryNameWithOwner: source.repository.nameWithOwner,
       }];
     });
+  }
+
+  async listOpenClosingPullRequests(repository: RepositoryCoordinates, issueNumber: number): Promise<ClosingPullRequest[]> {
+    const result: ClosingPullRequest[] = [];
+    let after: string | null = null;
+    for (;;) {
+      const data: ClosingPullRequestsQueryResult = await this.octokit.graphql<ClosingPullRequestsQueryResult>(
+        OPEN_CLOSING_PULL_REQUESTS_QUERY, { ...repository, number: issueNumber, after },
+      );
+      const connection = data.repository?.issue?.closedByPullRequestsReferences;
+      if (!connection) throw new Error(`Could not read closing PRs for ${repository.owner}/${repository.repo}#${issueNumber}.`);
+      for (const item of connection.nodes) {
+        if (item?.id && item.repository?.nameWithOwner) {
+          result.push({ nodeId: item.id, number: item.number, repositoryNameWithOwner: item.repository.nameWithOwner });
+        }
+      }
+      if (!connection.pageInfo.hasNextPage) return result;
+      if (!connection.pageInfo.endCursor) throw new Error('Missing closing PR pagination cursor.');
+      after = connection.pageInfo.endCursor;
+    }
   }
 
   async reopenIssue(repository: RepositoryCoordinates, issueNumber: number): Promise<void> {
