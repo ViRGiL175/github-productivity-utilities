@@ -1,4 +1,4 @@
-import type { IssueReader, RepositoryCoordinates } from '../../github/IssueRepository.ts';
+import type { IssueClosingPullRequestsGateway, IssueReader, RepositoryCoordinates } from '../../github/IssueRepository.ts';
 import type { ProjectStatusGateway, ProjectV2Gateway } from '../../github/ProjectV2Repository.ts';
 import type { PullRequestMutationGateway } from '../../github/PullRequestRepository.ts';
 import type { Logger } from '../../runtime/Logger.ts';
@@ -33,7 +33,7 @@ type ProjectGateway = ProjectV2Gateway & ProjectStatusGateway;
 
 export async function linkPrToProject(
 input: LinkPrToProjectInput,
-issues: IssueReader,
+issues: IssueReader & IssueClosingPullRequestsGateway,
 pullRequests: PullRequestMutationGateway,
 projects: ProjectGateway,
 logger: Logger,
@@ -70,6 +70,7 @@ logger: Logger,
   if (input.action === 'review_requested') {
     await handleReviewRequested(input, statusMetadata.projectId, statusMetadata.statusFieldId, inReviewOptionId, pullRequests, projects, logger);
     await syncReviewAssignees(input, pullRequests, logger);
+    await syncLinkedIssueReviewStatus(input, issues, projects, statusMetadata.projectId, statusMetadata.statusFieldId, inReviewOptionId, logger);
     return;
   }
 
@@ -238,6 +239,38 @@ async function syncReviewAssignees(input: LinkPrToProjectInput, pullRequests: Pu
   }
   await pullRequests.setAssignees(repository, input.pullRequestNumber, desired);
   logger.info(`Set PR #${input.pullRequestNumber} assignees to ${desired.join(', ')}.`);
+}
+
+async function syncLinkedIssueReviewStatus(
+  input: LinkPrToProjectInput,
+  issues: IssueReader & IssueClosingPullRequestsGateway,
+  projects: ProjectGateway,
+  projectId: string,
+  statusFieldId: string,
+  inReviewOptionId: string | null,
+  logger: Logger,
+): Promise<void> {
+  if (!inReviewOptionId) return;
+  const issueNumber = extractIssueNumber(input.headRef);
+  if (!issueNumber) return;
+  const issue = await issues.getIssue(input.backlogRepository, issueNumber);
+  if (issue.isOpen === false) return;
+  const linked = await issues.listOpenClosingPullRequests(input.backlogRepository, issueNumber);
+  if (!linked.some((pullRequest) => pullRequest.nodeId === input.pullRequestNodeId)) {
+    logger.info(`PR #${input.pullRequestNumber} is not yet listed among closing PRs of issue #${issueNumber}; leaving its status unchanged.`);
+    return;
+  }
+  for (const pullRequest of linked) {
+    const item = await projects.getContentProjectItem(pullRequest.nodeId, projectId, input.statusFieldName);
+    if (item?.statusName !== input.statusInReviewValue) {
+      logger.info(`Linked PR ${pullRequest.repositoryNameWithOwner}#${pullRequest.number} is not in review; issue #${issueNumber} stays unchanged.`);
+      return;
+    }
+  }
+  const issueItem = await projects.getContentProjectItem(issue.nodeId, projectId, input.statusFieldName);
+  if (!issueItem || issueItem.statusName === input.statusInReviewValue) return;
+  await projects.setSingleSelect(projectId, issueItem.id, statusFieldId, inReviewOptionId);
+  logger.info(`All ${linked.length} open linked PR(s) are in review; set issue #${issueNumber} status to ${input.statusInReviewValue}.`);
 }
 
 async function appendClosingReference(input: LinkPrToProjectInput, issueNumber: number, pullRequests: PullRequestMutationGateway): Promise<void> {
