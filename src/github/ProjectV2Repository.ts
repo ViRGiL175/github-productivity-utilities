@@ -148,6 +148,32 @@ const PROJECT_ITEMS_QUERY = `
   }
 `;
 
+const PROJECT_ISSUES_BY_FIELD_QUERY = `
+  query($projectId: ID!, $fieldName: String!, $after: String) {
+    node(id: $projectId) {
+      ... on ProjectV2 {
+        items(first: 100, after: $after) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            fieldValueByName(name: $fieldName) {
+              ... on ProjectV2ItemFieldSingleSelectValue { name }
+              ... on ProjectV2ItemFieldIterationValue { iterationId title }
+            }
+            content {
+              ... on Issue {
+                id number state
+                repository { nameWithOwner }
+                parent { id number repository { nameWithOwner } }
+                subIssuesSummary { total }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
 const ADD_DRAFT_MUTATION = `
   mutation($input: AddProjectV2DraftIssueInput!) {
     addProjectV2DraftIssue(input: $input) { projectItem { id } }
@@ -281,6 +307,22 @@ export interface ProjectV2Gateway {
   setIteration(projectId: string, itemId: string, fieldId: string, iterationId: string): Promise<void>;
 }
 
+export interface ProjectIssueWithField {
+  nodeId: string;
+  number: number;
+  repositoryNameWithOwner: string;
+  parentNodeId: string | null;
+  parentNumber: number | null;
+  parentRepositoryNameWithOwner: string | null;
+  fieldValue: string | null;
+  iterationId: string | null;
+  subIssueCount: number;
+}
+
+export interface ProjectIssueScanGateway {
+  listOpenIssuesWithField(projectId: string, fieldName: string): Promise<ProjectIssueWithField[]>;
+}
+
 export interface ProjectStatusMetadata {
   projectId: string;
   projectTitle: string;
@@ -332,7 +374,7 @@ export interface ProjectIterationGateway {
   deleteProjectItem(projectId: string, itemId: string): Promise<void>;
 }
 
-export class ProjectV2Repository implements ProjectV2Gateway, ProjectStatusGateway, ProjectIterationGateway {
+export class ProjectV2Repository implements ProjectV2Gateway, ProjectStatusGateway, ProjectIterationGateway, ProjectIssueScanGateway {
   private readonly octokit: Octokit;
   constructor(octokit: Octokit) { this.octokit = octokit; }
 
@@ -472,6 +514,47 @@ export class ProjectV2Repository implements ProjectV2Gateway, ProjectStatusGatew
       cursor = connection.pageInfo.endCursor ?? null;
     }
     return result;
+  }
+
+  async listOpenIssuesWithField(projectId: string, fieldName: string): Promise<ProjectIssueWithField[]> {
+    const result: ProjectIssueWithField[] = [];
+    let cursor: string | null = null;
+    for (;;) {
+      const data: {
+        node?: { items?: {
+          pageInfo: { hasNextPage: boolean; endCursor?: string | null };
+          nodes: Array<{
+            fieldValueByName?: { name?: string | null; iterationId?: string | null } | null;
+            content?: {
+              id?: string; number?: number; state?: string;
+              repository?: { nameWithOwner?: string } | null;
+              parent?: { id: string; number: number; repository: { nameWithOwner: string } } | null;
+              subIssuesSummary?: { total: number } | null;
+            } | null;
+          } | null>;
+        } | null } | null;
+      } = await this.octokit.graphql(PROJECT_ISSUES_BY_FIELD_QUERY, { projectId, fieldName, after: cursor });
+      const connection = data.node?.items;
+      if (!connection) throw new Error(`Unable to read items for project ${projectId}.`);
+      for (const item of connection.nodes) {
+        const issue = item?.content;
+        if (!issue?.id || !issue.number || issue.state !== 'OPEN' || !issue.repository?.nameWithOwner) continue;
+        result.push({
+          nodeId: issue.id,
+          number: issue.number,
+          repositoryNameWithOwner: issue.repository.nameWithOwner,
+          parentNodeId: issue.parent?.id ?? null,
+          parentNumber: issue.parent?.number ?? null,
+          parentRepositoryNameWithOwner: issue.parent?.repository.nameWithOwner ?? null,
+          fieldValue: item?.fieldValueByName?.name ?? null,
+          iterationId: item?.fieldValueByName?.iterationId ?? null,
+          subIssueCount: issue.subIssuesSummary?.total ?? 0,
+        });
+      }
+      if (!connection.pageInfo.hasNextPage) return result;
+      if (!connection.pageInfo.endCursor) throw new Error(`Missing pagination cursor for project ${projectId}.`);
+      cursor = connection.pageInfo.endCursor;
+    }
   }
 
   async createDraftIssue(projectId: string, title: string): Promise<string> {

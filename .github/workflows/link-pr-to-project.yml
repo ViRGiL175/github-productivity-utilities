@@ -76,6 +76,10 @@ on:
         description: Action override; falls back to github.event.action when omitted
         required: false
         type: string
+      review_state:
+        description: Review decision override; falls back to github.event.review.state when omitted
+        required: false
+        type: string
       requested_reviewers_json:
         description: JSON array of requested reviewers with login fields; falls back to github.event.pull_request.requested_reviewers when omitted
         required: false
@@ -267,6 +271,7 @@ jobs:
           PULL_REQUEST_BODY: ${{ inputs.pull_request_body || github.event.pull_request.body || '' }}
           HEAD_REF: ${{ inputs.head_ref || github.event.pull_request.head.ref || '' }}
           ACTION: ${{ inputs.action || github.event.action || 'opened' }}
+          REVIEW_STATE: ${{ inputs.review_state || github.event.review.state || '' }}
           REQUESTED_REVIEWERS_JSON: ${{ inputs.requested_reviewers_json || toJSON(github.event.pull_request.requested_reviewers) }}
         with:
           github-token: ${{ steps.auth.outputs.token }}

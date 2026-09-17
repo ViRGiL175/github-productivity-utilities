@@ -34,6 +34,11 @@ on:
         description: Action override; falls back to github.event.action when omitted
         required: false
         type: string
+      dry_run:
+        description: Preview scheduled reconciliation without changing issues or project fields
+        required: false
+        default: false
+        type: boolean
       auth_mode:
         description: Auth mode used to resolve a token when project_token is not provided
         required: false
@@ -74,6 +79,7 @@ jobs:
       REPO_OWNER: ${{ inputs.repo_owner || github.repository_owner }}
       REPO_NAME: ${{ inputs.repo_name || github.event.repository.name || github.repository }}
       ACTION: ${{ inputs.action || github.event.action || 'opened' }}
+      DRY_RUN: ${{ inputs.dry_run }}
 
     steps:
       - name: Validate workflow auth configuration
