@@ -1,14 +1,11 @@
 import type { IssueHierarchyGateway, RepositoryCoordinates } from '../../github/IssueRepository.ts';
 import { parseRepositoryUrl } from '../../github/IssueRepository.ts';
-import type { ProjectStatusGateway } from '../../github/ProjectV2Repository.ts';
 import type { Logger } from '../../runtime/Logger.ts';
 
 const BLOCK_START = '<!-- github-productivity-utilities:former-parent:start -->';
 const BLOCK_END = '<!-- github-productivity-utilities:former-parent:end -->';
 
 export interface DetachInboxInput {
-  projectOwner: string;
-  projectNumber: number;
   horizonFieldName: string;
   inboxValue: string;
   issueNodeId: string;
@@ -21,7 +18,6 @@ export interface DetachInboxInput {
 
 export async function detachInboxSubIssues(
   input: DetachInboxInput,
-  projects: ProjectStatusGateway,
   issues: IssueHierarchyGateway,
   logger: Logger,
 ): Promise<void> {
@@ -30,12 +26,8 @@ export async function detachInboxSubIssues(
     logger.info('Horizon did not move from another value into Inbox; leaving the hierarchy unchanged.');
     return;
   }
-  const metadata = await projects.getStatusMetadata(input.projectOwner, input.projectNumber, input.horizonFieldName);
-  if (!metadata.optionIdsByName.has(input.inboxValue)) {
-    throw new Error(`Horizon option "${input.inboxValue}" was not found in ${input.projectOwner}#${input.projectNumber}.`);
-  }
-  const projectItem = await projects.getContentProjectItem(input.issueNodeId, metadata.projectId, input.horizonFieldName);
-  if (projectItem?.statusName !== input.inboxValue) {
+  const current = await issues.getSingleSelectFieldValue(input.issueRepository, input.issueNumber, input.horizonFieldName);
+  if (current !== input.inboxValue) {
     logger.info('Issue is no longer in Inbox; ignoring the stale transition.');
     return;
   }
@@ -53,6 +45,11 @@ export async function detachInboxSubIssues(
     return;
   }
   const parentRepository = parseRepositoryUrl(parent.repositoryUrl);
+  const parentHorizon = await issues.getSingleSelectFieldValue(parentRepository, parent.number, input.horizonFieldName);
+  if (parentHorizon === input.inboxValue) {
+    logger.info(`Parent #${parent.number} is also in Inbox; preserving the hierarchy.`);
+    return;
+  }
   const parentUrl = `https://github.com/${parentRepository.owner}/${parentRepository.repo}/issues/${parent.number}`;
   const body = await issues.getIssueBody(input.issueRepository, input.issueNumber);
   const updated = withFormerParentBlock(body, parentUrl);

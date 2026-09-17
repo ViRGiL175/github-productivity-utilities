@@ -34,6 +34,7 @@ export interface IssueReader {
 }
 
 export interface IssueHierarchyGateway extends IssueReader {
+  getSingleSelectFieldValue(repository: RepositoryCoordinates, issueNumber: number, fieldName: string): Promise<string | null>;
   getIssueBody(repository: RepositoryCoordinates, issueNumber: number): Promise<string>;
   updateIssueBody(repository: RepositoryCoordinates, issueNumber: number, body: string): Promise<void>;
   removeSubIssue(parentRepository: RepositoryCoordinates, parentNumber: number, childId: number): Promise<void>;
@@ -170,6 +171,23 @@ export class IssueRepository implements IssueReader, IssueReopenGateway, IssueHi
 
       throw error;
     }
+  }
+
+  async getSingleSelectFieldValue(repository: RepositoryCoordinates, issueNumber: number, fieldName: string): Promise<string | null> {
+    const response = await this.octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/issue-field-values', {
+      ...repository,
+      issue_number: issueNumber,
+      headers: { ...API_HEADERS, 'X-GitHub-Api-Version': '2026-03-10' },
+    });
+    const fields = response.data as Array<{
+      issue_field_name: string;
+      data_type: string;
+      single_select_option?: { name: string } | null;
+    }>;
+    const field = fields.find((item) => item.issue_field_name === fieldName);
+    if (!field) return null;
+    if (field.data_type !== 'single_select') throw new Error(`Issue field "${fieldName}" is not single-select.`);
+    return field.single_select_option?.name ?? null;
   }
 
   async getIssueBody(repository: RepositoryCoordinates, issueNumber: number): Promise<string> {
