@@ -535,9 +535,11 @@ jobs:
               process.env.ACTION = 'reconcile';
               process.env.ISSUE_NUMBER = String(parentNumber);
               process.env.DRY_RUN = 'true';
+              const beforeDryRun = await projects.getIssueProjectItem(secondChild.node_id, projectId, process.env.ITERATION_FIELD_NAME);
               await run(github);
-              if (await projects.getIssueProjectItem(secondChild.node_id, projectId, process.env.ITERATION_FIELD_NAME)) {
-                throw new Error('Dry-run added the existing child to the project.');
+              const afterDryRun = await projects.getIssueProjectItem(secondChild.node_id, projectId, process.env.ITERATION_FIELD_NAME);
+              if (beforeDryRun?.id !== afterDryRun?.id || beforeDryRun?.iterationId !== afterDryRun?.iterationId) {
+                throw new Error('Dry-run changed the existing child project item.');
               }
               process.env.DRY_RUN = 'false';
               for (let attempt = 0; attempt < 6; attempt += 1) {
