@@ -12,7 +12,7 @@ describe('GitHub App private key handling', () => {
       const workflow = readFileSync(join(workflowsDirectory, filename), 'utf8');
       const steps = workflow.split(/^\s*- name: /m);
 
-      for (const step of steps.filter((part) => part.startsWith('Normalize GitHub App private key\n'))) {
+      for (const step of steps.filter((part) => /^Normalize GitHub App private key\r?\n/.test(part))) {
         normalizers += 1;
         const mask = step.indexOf("printf '::add-mask::%s\\n' \"$line\"");
         const output = step.indexOf('>> "$GITHUB_OUTPUT"');
