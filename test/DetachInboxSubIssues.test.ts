@@ -87,6 +87,11 @@ describe('DetachInboxSubIssues', () => {
     expect(second).toContain('/issues/2');
   });
 
+  it('preserves trailing spaces and blank lines in the manual description', () => {
+    const body = 'Manual text  \n\n';
+    expect(withFormerParentBlock(body, 'https://github.com/org/repo/issues/1').startsWith(body)).toBe(true);
+  });
+
   it('refuses to edit an incomplete managed block', () => {
     expect(() => withFormerParentBlock('Text\n<!-- github-productivity-utilities:former-parent:start -->', 'https://example.com')).toThrow('incomplete');
   });

@@ -73,5 +73,5 @@ export function withFormerParentBlock(body: string, parentUrl: string): string {
   if (start !== -1) {
     return body.slice(0, start) + block + body.slice(end + BLOCK_END.length);
   }
-  return body.trimEnd() ? `${body.trimEnd()}\n\n${block}` : block;
+  return body ? `${body}\n\n${block}` : block;
 }
