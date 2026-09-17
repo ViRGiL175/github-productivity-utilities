@@ -135,20 +135,21 @@ export class PullRequestRepository implements PullRequestListGateway, PullReques
   }
 
   async getReviewState(repository: RepositoryCoordinates, pullRequestNumber: number): Promise<PullRequestReviewState> {
-    const [pull, reviews] = await Promise.all([
-      this.octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
-        ...repository, pull_number: pullRequestNumber, headers: API_HEADERS,
-      }),
-      this.octokit.paginate(this.octokit.pulls.listReviews, {
-        ...repository, pull_number: pullRequestNumber, per_page: 100, headers: API_HEADERS,
-      }),
-    ]);
+    const pull = await this.octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+      ...repository, pull_number: pullRequestNumber, headers: API_HEADERS,
+    });
     const latestReview = new Map<string, string>();
-    for (const review of reviews) {
-      const login = review.user?.login;
-      if (login && ['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(review.state)) {
-        latestReview.set(login, review.state);
+    for (let page = 1; ; page += 1) {
+      const response = await this.octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews', {
+        ...repository, pull_number: pullRequestNumber, page, per_page: 100, headers: API_HEADERS,
+      });
+      for (const review of response.data) {
+        const login = review.user?.login;
+        if (login && ['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(review.state)) {
+          latestReview.set(login, review.state);
+        }
       }
+      if (response.data.length < 100) break;
     }
     return {
       author: pull.data.user?.login ?? '',
