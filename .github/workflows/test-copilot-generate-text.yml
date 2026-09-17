@@ -101,13 +101,13 @@ jobs:
           fi
 
   # ─── Case 3: prompt_text + context_files (no input_text) ──────────────────
-  # The model should read the magic word from the context file and return it.
+  # The model should copy the unique sentinel from the context file.
   gen-context-only:
     name: '[3] Generate — prompt + context_files'
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     uses: ./.github/workflows/gemini-generate-text.yml
     with:
-      prompt_text: 'You are a test assistant. The user will provide a context document. Extract and return only the magic word from the document, with no explanation or punctuation.'
+      prompt_text: 'Copy the complete CONTEXT_FILE_SENTINEL token from the supplied context document exactly. Return only that token, with no explanation or punctuation.'
       context_files: 'itest/copilot-context-fixture.txt'
       model: ${{ inputs.model || 'gemini-3.5-flash' }}
     secrets:
@@ -128,12 +128,12 @@ jobs:
             echo "Output is empty" >&2
             exit 1
           fi
-      - name: Check output contains magic word from context file
+      - name: Check output contains sentinel from context file
         shell: bash
         run: |
           actual="$(printf '%s' "$ACTUAL_OUTPUT" | tr -d '\r\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-          if ! echo "$actual" | grep -qiF 'strawberry'; then
-            echo "Expected output to contain 'strawberry' (magic word from itest/copilot-context-fixture.txt), got: '$ACTUAL_OUTPUT'" >&2
+          if ! echo "$actual" | grep -qF 'CONTEXT_FILE_SENTINEL_7F3A_STRAWBERRY'; then
+            echo "Expected output to contain the sentinel from itest/copilot-context-fixture.txt, got: '$ACTUAL_OUTPUT'" >&2
             exit 1
           fi
 

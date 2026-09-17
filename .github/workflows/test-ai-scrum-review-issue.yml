@@ -17,15 +17,6 @@ on:
         required: false
         default: gemini-3.5-flash
         type: string
-  pull_request:
-    paths:
-      - '.github/workflows/ai-scrum-review-issue.yml'
-      - '.github/workflows/test-ai-scrum-review-issue.yml'
-      - '.github/workflows/gemini-generate-text.yml'
-      - '.secrets.example'
-      - 'README.md'
-      - 'scripts/run-act-test.js'
-
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: false

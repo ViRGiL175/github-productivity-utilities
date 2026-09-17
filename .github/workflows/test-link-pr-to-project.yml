@@ -504,7 +504,7 @@ jobs:
       pull_request_node_id: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
       pull_request_number: ${{ needs.prepare-link-scenario.outputs.pull_number }}
       pull_request_repo_owner: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_owner }}
-      pull_request_repo_name: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_name }}
+      pull_request_repo_name: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && needs.prepare-link-scenario.outputs.pull_request_repo_name || '' }}
       head_ref: ${{ needs.prepare-link-scenario.outputs.branch_name }}
       action: opened
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
