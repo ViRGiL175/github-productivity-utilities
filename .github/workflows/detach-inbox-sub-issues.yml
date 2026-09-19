@@ -1,0 +1,132 @@
+# Handle one native issue-field transition into Inbox; never scan and flatten the board.
+name: Detach Inbox sub-issues
+
+on:
+  workflow_call:
+    inputs:
+      horizon_field_name:
+        required: false
+        default: Horizon
+        type: string
+      inbox_value:
+        required: false
+        default: 📥 Inbox
+        type: string
+      issue_node_id:
+        required: true
+        type: string
+      issue_repo_owner:
+        required: true
+        type: string
+      issue_repo_name:
+        required: true
+        type: string
+      issue_number:
+        required: true
+        type: number
+      previous_horizon:
+        required: false
+        type: string
+      current_horizon:
+        required: true
+        type: string
+      dry_run:
+        required: false
+        default: true
+        type: boolean
+      auth_mode:
+        required: false
+        default: app
+        type: string
+      installation_owner:
+        required: false
+        type: string
+    secrets:
+      issue_token:
+        required: false
+      pat_token:
+        required: false
+      app_id:
+        required: false
+      app_private_key:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  detach-inbox-sub-issues:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: detach-inbox-${{ inputs.issue_repo_owner }}-${{ inputs.issue_repo_name }}-${{ inputs.issue_number }}
+      cancel-in-progress: false
+    env:
+      AUTH_MODE: ${{ inputs.auth_mode }}
+      INSTALLATION_OWNER: ${{ inputs.installation_owner }}
+      DIRECT_TOKEN: ${{ secrets.issue_token }}
+      PAT_TOKEN: ${{ secrets.pat_token }}
+      APP_ID: ${{ secrets.app_id }}
+      APP_PRIVATE_KEY: ${{ secrets.app_private_key }}
+      HORIZON_FIELD_NAME: ${{ inputs.horizon_field_name }}
+      INBOX_VALUE: ${{ inputs.inbox_value }}
+      ISSUE_NODE_ID: ${{ inputs.issue_node_id }}
+      ISSUE_REPO_OWNER: ${{ inputs.issue_repo_owner }}
+      ISSUE_REPO_NAME: ${{ inputs.issue_repo_name }}
+      ISSUE_NUMBER: ${{ inputs.issue_number }}
+      PREVIOUS_HORIZON: ${{ inputs.previous_horizon }}
+      CURRENT_HORIZON: ${{ inputs.current_horizon }}
+      DRY_RUN: ${{ inputs.dry_run }}
+    steps:
+      - name: Validate auth configuration
+        shell: bash
+        run: |
+          if [ -n "$DIRECT_TOKEN" ]; then exit 0; fi
+          case "$AUTH_MODE" in
+            pat) test -n "$PAT_TOKEN" ;;
+            app) test -n "$APP_ID" && test -n "$APP_PRIVATE_KEY" && test -n "$INSTALLATION_OWNER" ;;
+            *) echo "Unsupported auth_mode: $AUTH_MODE" >&2; exit 1 ;;
+          esac
+      - name: Normalize GitHub App private key
+        if: ${{ env.DIRECT_TOKEN == '' && env.AUTH_MODE == 'app' }}
+        id: normalize-key
+        shell: bash
+        run: |
+          NORMALIZED_KEY=$(printf '%b' "$APP_PRIVATE_KEY")
+          while IFS= read -r line; do
+            printf '::add-mask::%s\n' "$line"
+          done <<< "$NORMALIZED_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
+      - name: Create GitHub App installation token
+        if: ${{ env.DIRECT_TOKEN == '' && env.AUTH_MODE == 'app' }}
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.app_id }}
+          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          owner: ${{ inputs.installation_owner }}
+          skip-token-revoke: true
+      - name: Resolve token
+        id: auth
+        shell: bash
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          if [ -n "$DIRECT_TOKEN" ]; then TOKEN="$DIRECT_TOKEN"
+          elif [ "$AUTH_MODE" = app ]; then TOKEN="$APP_TOKEN"
+          else TOKEN="$PAT_TOKEN"; fi
+          if [ -z "$TOKEN" ]; then echo "Resolved token is empty" >&2; exit 1; fi
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+      - name: Checkout automation implementation
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .github-productivity-utilities-runtime
+          persist-credentials: false
+      - name: Detach Inbox issues
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ steps.auth.outputs.token }}
+          script: |
+            const { run } = await import(`${process.env.GITHUB_WORKSPACE}/.github-productivity-utilities-runtime/src/scripts/detach-inbox-sub-issues.ts`)
+            await run(github)
