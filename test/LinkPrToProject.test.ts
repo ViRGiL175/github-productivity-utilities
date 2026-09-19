@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { linkPrToProject } from '../src/automations/link-pr-to-project/LinkPrToProject.js';
-import type { IssueClosingPullRequestsGateway, IssueReader } from '../src/github/IssueRepository.js';
-import type { ProjectStatusGateway, ProjectV2Gateway } from '../src/github/ProjectV2Repository.js';
+import { linkPrToProject, NO_ACTIVE_SPRINT_COMMENT_MARKER } from '../src/automations/link-pr-to-project/LinkPrToProject.js';
+import type { IssueClosingPullRequestsGateway, IssueManagedCommentGateway, IssueReader } from '../src/github/IssueRepository.js';
+import type { ProjectIterationGateway, ProjectStatusGateway, ProjectV2Gateway } from '../src/github/ProjectV2Repository.js';
 import type { PullRequestClosingIssuesGateway, PullRequestMutationGateway } from '../src/github/PullRequestRepository.js';
 import type { Logger } from '../src/runtime/Logger.js';
 
@@ -24,13 +24,14 @@ const input = {
 };
 
 function createDependencies() {
-  const issues: IssueReader & IssueClosingPullRequestsGateway = {
+  const issues: IssueReader & IssueClosingPullRequestsGateway & IssueManagedCommentGateway = {
     getIssue: vi.fn().mockResolvedValue({
       id: 42, nodeId: 'ISSUE_NODE', number: 42,
       repositoryUrl: 'https://api.github.com/repos/owner/backlog', isPullRequest: false,
     }),
     getParentIssue: vi.fn(),
     listOpenClosingPullRequests: vi.fn().mockResolvedValue([{ nodeId: 'PR_NODE', number: 7, repositoryNameWithOwner: 'owner/service' }]),
+    upsertIssueCommentByMarker: vi.fn().mockResolvedValue('created'),
   };
   const pullRequests: PullRequestMutationGateway & PullRequestClosingIssuesGateway = {
     listClosingIssues: vi.fn().mockResolvedValue([]),
@@ -42,7 +43,7 @@ function createDependencies() {
     getUserType: vi.fn().mockResolvedValue('User'),
     getReviewState: vi.fn().mockResolvedValue({ author: 'author', requestedReviewers: [{ login: 'reviewer', type: 'User' }], requestedTeams: 0 }),
   };
-  const projects: ProjectV2Gateway & ProjectStatusGateway = {
+  const projects: ProjectV2Gateway & ProjectStatusGateway & Pick<ProjectIterationGateway, 'getIterationMetadata'> = {
     getProjectMetadata: vi.fn().mockResolvedValue({ projectId: 'PROJECT', iterationFieldId: 'ITERATION_FIELD' }),
     getStatusMetadata: vi.fn().mockResolvedValue({
       projectId: 'PROJECT', projectTitle: 'Project', statusFieldId: 'STATUS_FIELD',
@@ -56,6 +57,9 @@ function createDependencies() {
     getContentProjectItem: vi.fn().mockResolvedValue({ id: 'PR_ITEM', statusName: null, statusOptionId: null }),
     addContentToProject: vi.fn().mockResolvedValue('PR_ITEM'),
     setSingleSelect: vi.fn().mockResolvedValue(undefined),
+    getIterationMetadata: vi.fn().mockResolvedValue({
+      projectId: 'PROJECT', projectTitle: 'Project', iterationFieldId: 'ITERATION_FIELD', iterations: [],
+    }),
   };
   const logger: Logger = { info: vi.fn(), warning: vi.fn() };
   return { issues, pullRequests, projects, logger };
@@ -180,6 +184,59 @@ describe('LinkPrToProject', () => {
     });
     await linkPrToProject({ ...input, action: 'submitted', reviewActorLogin: 'copilot-pull-request-reviewer[bot]', reviewActorType: 'Bot' }, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
     expect(dependencies.pullRequests.setAssignees).not.toHaveBeenCalled();
+  });
+
+  it('copies the PR sprint to an issue that is outside a sprint', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.projects.getIssueProjectItem)
+      .mockReset()
+      .mockResolvedValueOnce({ id: 'PR_ITEM', iterationId: 'SPRINT', iterationTitle: 'Sprint 1' })
+      .mockResolvedValueOnce({ id: 'ISSUE_ITEM', iterationId: null, iterationTitle: '' });
+
+    await linkPrToProject(input, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+
+    expect(dependencies.projects.setIteration).toHaveBeenCalledTimes(1);
+    expect(dependencies.projects.setIteration).toHaveBeenCalledWith('PROJECT', 'ISSUE_ITEM', 'ITERATION_FIELD', 'SPRINT');
+  });
+
+  it('assigns the active sprint to both the issue and PR when neither has one', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.projects.getIssueProjectItem)
+      .mockReset()
+      .mockResolvedValueOnce({ id: 'PR_ITEM', iterationId: null, iterationTitle: '' })
+      .mockResolvedValueOnce({ id: 'ISSUE_ITEM', iterationId: null, iterationTitle: '' });
+    vi.mocked(dependencies.projects.getIterationMetadata).mockResolvedValue({
+      projectId: 'PROJECT', projectTitle: 'Project', iterationFieldId: 'ITERATION_FIELD',
+      iterations: [{ id: 'ACTIVE', title: 'Sprint 2', startDate: '2026-09-14', duration: 14 }],
+    });
+
+    await linkPrToProject(
+      input, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger,
+      () => new Date('2026-09-19T12:00:00Z'),
+    );
+
+    expect(dependencies.projects.setIteration).toHaveBeenNthCalledWith(1, 'PROJECT', 'ISSUE_ITEM', 'ITERATION_FIELD', 'ACTIVE');
+    expect(dependencies.projects.setIteration).toHaveBeenNthCalledWith(2, 'PROJECT', 'PR_ITEM', 'ITERATION_FIELD', 'ACTIVE');
+    expect(dependencies.issues.upsertIssueCommentByMarker).not.toHaveBeenCalled();
+  });
+
+  it('leaves sprint empty and writes one managed issue comment when no sprint is active', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.projects.getIssueProjectItem)
+      .mockReset()
+      .mockResolvedValueOnce({ id: 'PR_ITEM', iterationId: null, iterationTitle: '' })
+      .mockResolvedValueOnce({ id: 'ISSUE_ITEM', iterationId: null, iterationTitle: '' });
+
+    await linkPrToProject(
+      input, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger,
+      () => new Date('2026-09-19T12:00:00Z'),
+    );
+
+    expect(dependencies.projects.setIteration).not.toHaveBeenCalled();
+    expect(dependencies.issues.upsertIssueCommentByMarker).toHaveBeenCalledWith(
+      input.backlogRepository, 42, NO_ACTIVE_SPRINT_COMMENT_MARKER,
+      expect.stringContaining('PR owner/service#7, но активный Sprint не найден'),
+    );
   });
 
   it('promotes an existing Todo PR when an edited body creates a closing reference', async () => {
