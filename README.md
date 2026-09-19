@@ -12,6 +12,7 @@
 | [`./.github/workflows/ai-label-issue.yml`](./.github/workflows/ai-label-issue.yml) | **Deprecated.** Сохранён только для совместимости с `Dreddbook/scrum-dreddbook-backlog`; новые подключения не поддерживаются. |
 | [`./.github/workflows/ai-scrum-review-issue.yml`](./.github/workflows/ai-scrum-review-issue.yml) | **Deprecated.** Сохранён только для совместимости с `Dreddbook/scrum-dreddbook-backlog`; новые подключения не поддерживаются. |
 | [`./.github/workflows/link-pr-to-project.yml`](./.github/workflows/link-pr-to-project.yml) | Добавляет PR в Project V2, копирует sprint и assignee из связанной issue и ставит статус Done при закрытии. Когда все открытые связанные PR уже в статусе ревью, переводит и backlog issue в этот статус, не меняя её ответственных. Для синхронизации assignee токену нужны права на запись в issues PR-репозитория. |
+| [`./.github/workflows/detach-inbox-sub-issues.yml`](./.github/workflows/detach-inbox-sub-issues.yml) | Обрабатывает одну issue при переходе нативного поля `Horizon` из другого значения в `📥 Inbox`: сохраняет ссылку на бывшего родителя в управляемом блоке описания и снимает связь, только если родитель не в Inbox. Первичное размещение и иерархию внутри Inbox не трогает. По умолчанию работает в `dry_run`. |
 | [`./.github/workflows/reopen-issue-if-pr-open.yml`](./.github/workflows/reopen-issue-if-pr-open.yml) | Переоткрывает issue автоматически, если связанные PR, которые должны её закрыть, всё ещё открыты. |
 | [`./.github/workflows/safe-dependabot-pr-link.yml`](./.github/workflows/safe-dependabot-pr-link.yml) | Безопасно синхронизирует PR от Dependabot по списку репозиториев: принимает многострочный `repositories`, открытым ставит стартовый статус, закрытым — финальный. |
 | [`./.github/workflows/sync-sub-issue-sprint.yml`](./.github/workflows/sync-sub-issue-sprint.yml) | Наследует sprint/iteration-метаданные из родительской issue в её sub-issue. `action: reconcile` сверяет уже существующие sub-issues после изменения Sprint родителя; поддерживает `dry_run`. |
@@ -25,7 +26,7 @@
 
 Все прежние inputs, secrets, defaults и правила обработки сохранены. В каждом reusable workflow checkout реализации использует `job.workflow_sha`: тесты выполняют исходный код из проверяемого коммита, а вызов workflow через `@tag` — код из коммита этого тега. Внешним репозиториям не нужно отдельно выбирать ref реализации.
 
-Новые правила не включаются в репозиториях-потребителях автоматически. Для периодической сверки Sprint caller вызывает `sync-sub-issue-sprint.yml` с `action: reconcile`. Ревью-назначения в `link-pr-to-project.yml` требуют добавить в caller события `pull_request: review_request_removed` и `pull_request_review: [submitted, dismissed]`. При обычном комментарии без решения assignee не меняются.
+Новые правила не включаются в репозиториях-потребителях автоматически. Отвязка `Inbox` больше не запускается по расписанию и не сканирует всю доску: caller должен передать конкретную issue и фактический переход `previous_horizon` → `current_horizon`. Нативное поле issue вызывает событие `issues: field_added` и при первичной установке, и при изменении. Проверенный payload: `issue_field.name`, `issue_field_value.option.name` и `changes.issue_field_value.from.option.name`. В `ViRGiL-GH-Productivity/scrum-test-backlog` есть caller с фильтром по этим значениям; он выключен переменной `ENABLE_NATIVE_HORIZON`, пока в тестовом репозитории не появятся App credentials с доступом к полям задач. Встроенный `GITHUB_TOKEN` возвращает 403 при чтении этих полей, несмотря на `issues: write`. До подключения можно проверить единичный переход вручную с `dry_run: true`. Для периодической сверки Sprint caller вызывает `sync-sub-issue-sprint.yml` с `action: reconcile`. Ревью-назначения в `link-pr-to-project.yml` требуют добавить в caller события `pull_request: review_request_removed` и `pull_request_review: [submitted, dismissed]`. При обычном комментарии без решения assignee не меняются.
 
 Локальные проверки TypeScript:
 
@@ -75,6 +76,7 @@ TypeScript используется в форме, которую Node.js 24 з�
 - `test-copilot-generate-text.yml`
 - `test-ensure-next-iteration-reminder.yml`
 - `test-link-pr-to-project.yml`
+- `test-detach-inbox-sub-issues.yml`
 - `test-reopen-issue-if-pr-open.yml`
 - `test-safe-dependabot-pr-link.yml`
 - `test-sync-sub-issue-sprint.yml`
