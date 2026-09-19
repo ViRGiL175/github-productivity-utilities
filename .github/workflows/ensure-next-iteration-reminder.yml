@@ -138,7 +138,7 @@ jobs:
           path: .github-productivity-utilities-runtime
 
       - name: Ensure reminder draft exists in target iteration
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_OWNER: ${{ inputs.project_owner }}
           PROJECT_NUMBER: ${{ inputs.project_number }}
