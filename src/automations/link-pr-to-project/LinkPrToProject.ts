@@ -1,7 +1,8 @@
-import type { IssueClosingPullRequestsGateway, IssueReader, RepositoryCoordinates } from '../../github/IssueRepository.ts';
-import type { ProjectStatusGateway, ProjectV2Gateway } from '../../github/ProjectV2Repository.ts';
+import type { IssueClosingPullRequestsGateway, IssueManagedCommentGateway, IssueReader, RepositoryCoordinates } from '../../github/IssueRepository.ts';
+import type { ProjectIterationGateway, ProjectStatusGateway, ProjectV2Gateway } from '../../github/ProjectV2Repository.ts';
 import type { PullRequestClosingIssuesGateway, PullRequestMutationGateway } from '../../github/PullRequestRepository.ts';
 import type { Logger } from '../../runtime/Logger.ts';
+import { findCurrentIteration } from '../ensure-next-iteration-reminder/EnsureNextIterationReminder.ts';
 
 export interface RequestedReviewer {
   login?: string;
@@ -29,17 +30,20 @@ export interface LinkPrToProjectInput {
   requestedReviewersJson: string;
 }
 
-type ProjectGateway = ProjectV2Gateway & ProjectStatusGateway;
+type ProjectGateway = ProjectV2Gateway & ProjectStatusGateway & Pick<ProjectIterationGateway, 'getIterationMetadata'>;
 type PullRequestGateway = PullRequestMutationGateway & PullRequestClosingIssuesGateway;
+type IssueGateway = IssueReader & IssueClosingPullRequestsGateway & IssueManagedCommentGateway;
 
 const CLOSING_ISSUE_RETRY_DELAYS_MS = [1_000, 2_000] as const;
+export const NO_ACTIVE_SPRINT_COMMENT_MARKER = '<!-- github-productivity-utilities:no-active-sprint -->';
 
 export async function linkPrToProject(
 input: LinkPrToProjectInput,
-issues: IssueReader & IssueClosingPullRequestsGateway,
+issues: IssueGateway,
 pullRequests: PullRequestGateway,
 projects: ProjectGateway,
 logger: Logger,
+now: () => Date = () => new Date(),
 ): Promise<void> {
   validateInput(input);
   const [iterationMetadata, statusMetadata] = await Promise.all([
@@ -138,16 +142,10 @@ logger: Logger,
     iterationMetadata.projectId,
     input.iterationFieldName,
   );
-  if (!issueItem) {
-    logger.info(`Issue #${issueNumber} is not in project ${input.projectOwner}#${input.projectNumber}.`);
-  } else if (!issueItem.iterationId) {
-    logger.info(`Issue #${issueNumber} has no value in field ${input.iterationFieldName}.`);
-  } else if (projectItem?.iterationId === issueItem.iterationId) {
-    logger.info(`PR #${input.pullRequestNumber} already has sprint ${issueItem.iterationTitle || issueItem.iterationId}.`);
-  } else {
-    await projects.setIteration(iterationMetadata.projectId, itemId, iterationMetadata.iterationFieldId, issueItem.iterationId);
-    logger.info(`Copied sprint ${issueItem.iterationTitle || issueItem.iterationId} from issue #${issueNumber} to PR #${input.pullRequestNumber}.`);
-  }
+  await syncSprint(
+    input, issueNumber, issueItem, projectItem, itemId, iterationMetadata.projectId,
+    iterationMetadata.iterationFieldId, issues, projects, logger, now,
+  );
   if (!closingIssueNumbers.includes(issueNumber)) {
     await appendClosingReference(input, issueNumber, pullRequests);
   }
@@ -161,6 +159,69 @@ logger: Logger,
     inReviewOptionId,
     logger,
   );
+}
+
+async function syncSprint(
+  input: LinkPrToProjectInput,
+  issueNumber: number,
+  issueItem: Awaited<ReturnType<ProjectV2Gateway['getIssueProjectItem']>>,
+  pullRequestItem: Awaited<ReturnType<ProjectV2Gateway['getIssueProjectItem']>>,
+  pullRequestItemId: string,
+  projectId: string,
+  iterationFieldId: string,
+  issues: IssueManagedCommentGateway,
+  projects: ProjectGateway,
+  logger: Logger,
+  now: () => Date,
+): Promise<void> {
+  if (!issueItem) {
+    logger.info(`Issue #${issueNumber} is not in project ${input.projectOwner}#${input.projectNumber}.`);
+    return;
+  }
+  if (issueItem.iterationId) {
+    if (pullRequestItem?.iterationId === issueItem.iterationId) {
+      logger.info(`PR #${input.pullRequestNumber} already has sprint ${issueItem.iterationTitle || issueItem.iterationId}.`);
+      return;
+    }
+    await projects.setIteration(projectId, pullRequestItemId, iterationFieldId, issueItem.iterationId);
+    logger.info(`Copied sprint ${issueItem.iterationTitle || issueItem.iterationId} from issue #${issueNumber} to PR #${input.pullRequestNumber}.`);
+    return;
+  }
+  if (pullRequestItem?.iterationId) {
+    await projects.setIteration(projectId, issueItem.id, iterationFieldId, pullRequestItem.iterationId);
+    logger.info(`Copied sprint ${pullRequestItem.iterationTitle || pullRequestItem.iterationId} from PR #${input.pullRequestNumber} to issue #${issueNumber}.`);
+    return;
+  }
+
+  const metadata = await projects.getIterationMetadata(
+    input.projectOwner,
+    input.projectNumber,
+    input.iterationFieldName,
+  );
+  if (metadata.projectId !== projectId || metadata.iterationFieldId !== iterationFieldId) {
+    throw new Error('Resolved iteration metadata is inconsistent.');
+  }
+  const active = findCurrentIteration(metadata.iterations, now());
+  if (active) {
+    await projects.setIteration(projectId, issueItem.id, iterationFieldId, active.id);
+    await projects.setIteration(projectId, pullRequestItemId, iterationFieldId, active.id);
+    logger.info(`Assigned active sprint ${active.title} to issue #${issueNumber} and PR #${input.pullRequestNumber}.`);
+    return;
+  }
+
+  const pullRequestReference = `${input.pullRequestRepository.owner}/${input.pullRequestRepository.repo}#${input.pullRequestNumber}`;
+  const comment = [
+    `⚠️ Задача связана с PR ${pullRequestReference}, но активный Sprint не найден. Назначь Sprint вручную.`,
+    '',
+    NO_ACTIVE_SPRINT_COMMENT_MARKER,
+  ].join('\n');
+  const result = await issues.upsertIssueCommentByMarker(
+    input.backlogRepository,
+    issueNumber,
+    NO_ACTIVE_SPRINT_COMMENT_MARKER,
+    comment,
+  );
+  logger.info(`Active sprint was not found; managed issue comment was ${result}.`);
 }
 
 function optionalStatusOption(
@@ -279,7 +340,7 @@ async function syncReviewAssignees(input: LinkPrToProjectInput, pullRequests: Pu
 async function syncLinkedIssueReviewStatus(
   input: LinkPrToProjectInput,
   issueNumbers: number[],
-  issues: IssueReader & IssueClosingPullRequestsGateway,
+  issues: IssueGateway,
   projects: ProjectGateway,
   projectId: string,
   statusFieldId: string,

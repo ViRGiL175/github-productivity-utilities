@@ -67,6 +67,7 @@ jobs:
       - resolve-auth
     outputs:
       project_id: ${{ steps.prepare.outputs.project_id }}
+      iteration_field_id: ${{ steps.prepare.outputs.iteration_field_id }}
       status_field_id: ${{ steps.prepare.outputs.status_field_id }}
       target_iteration_id: ${{ steps.prepare.outputs.target_iteration_id }}
       status_in_progress_value: ${{ steps.prepare.outputs.status_in_progress_value }}
@@ -472,6 +473,7 @@ jobs:
             const pullRequest = pullResponse.data;
 
             core.setOutput('project_id', project.projectId);
+            core.setOutput('iteration_field_id', project.iterationFieldId);
             core.setOutput('status_field_id', project.statusFieldId);
             core.setOutput('target_iteration_id', project.targetIterationId);
             core.setOutput('status_in_progress_value', project.statusInProgressValue);
@@ -972,38 +974,51 @@ jobs:
           if [ -z "$TOKEN" ]; then echo "Resolved token is empty" >&2; exit 1; fi
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
-      - name: Clear PR status before edited event
+      - name: Clear PR status and both Sprint values before edited event
         uses: actions/github-script@v8
         env:
           PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
+          ITERATION_FIELD_ID: ${{ needs.prepare-link-scenario.outputs.iteration_field_id }}
           STATUS_FIELD_ID: ${{ needs.prepare-link-scenario.outputs.status_field_id }}
           PULL_NODE_ID: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
+          ISSUE_NODE_ID: ${{ needs.prepare-link-scenario.outputs.issue_node_id }}
         with:
           github-token: ${{ steps.auth.outputs.token }}
           script: |
             const projectId = process.env.PROJECT_ID;
+            const iterationFieldId = process.env.ITERATION_FIELD_ID;
             const statusFieldId = process.env.STATUS_FIELD_ID;
             const pullNodeId = process.env.PULL_NODE_ID;
+            const issueNodeId = process.env.ISSUE_NODE_ID;
             const data = await github.graphql(`
-              query($nodeId: ID!) {
-                node(id: $nodeId) {
+              query($pullNodeId: ID!, $issueNodeId: ID!) {
+                pull: node(id: $pullNodeId) {
                   ... on PullRequest {
                     projectItems(first: 100) { nodes { id project { id } } }
                   }
                 }
+                issue: node(id: $issueNodeId) {
+                  ... on Issue {
+                    projectItems(first: 100) { nodes { id project { id } } }
+                  }
+                }
               }
-            `, { nodeId: pullNodeId });
-            const item = data.node?.projectItems?.nodes?.find((candidate) => candidate.project?.id === projectId);
-            if (!item) throw new Error('PR project item is missing before edited scenario.');
-            await github.graphql(`
-              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!) {
-                clearProjectV2ItemFieldValue(input: {
-                  projectId: $projectId
-                  itemId: $itemId
-                  fieldId: $fieldId
-                }) { projectV2Item { id } }
-              }
-            `, { projectId, itemId: item.id, fieldId: statusFieldId });
+            `, { pullNodeId, issueNodeId });
+            const pullItem = data.pull?.projectItems?.nodes?.find((candidate) => candidate.project?.id === projectId);
+            const issueItem = data.issue?.projectItems?.nodes?.find((candidate) => candidate.project?.id === projectId);
+            if (!pullItem || !issueItem) throw new Error('PR or issue project item is missing before edited scenario.');
+            const clearField = (itemId, fieldId) => github.graphql(`
+                mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!) {
+                  clearProjectV2ItemFieldValue(input: {
+                    projectId: $projectId
+                    itemId: $itemId
+                    fieldId: $fieldId
+                  }) { projectV2Item { id } }
+                }
+              `, { projectId, itemId, fieldId });
+            await clearField(pullItem.id, statusFieldId);
+            await clearField(pullItem.id, iterationFieldId);
+            await clearField(issueItem.id, iterationFieldId);
 
   run-link-edited-scenario:
     name: Run late closing reference scenario
@@ -1079,13 +1094,18 @@ jobs:
           if [ -z "$TOKEN" ]; then echo "Resolved token is empty" >&2; exit 1; fi
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
-      - name: Assert edited event restored In Progress without duplicating link
+      - name: Assert edited event restored In Progress, Sprint, and link
         uses: actions/github-script@v8
         env:
           PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
+          ITERATION_FIELD_NAME: ${{ env.ITERATION_FIELD_NAME }}
           STATUS_FIELD_NAME: ${{ env.STATUS_FIELD_NAME }}
           STATUS_IN_PROGRESS_VALUE: ${{ needs.prepare-link-scenario.outputs.status_in_progress_value }}
           PULL_NODE_ID: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
+          ISSUE_NODE_ID: ${{ needs.prepare-link-scenario.outputs.issue_node_id }}
+          ISSUE_NUMBER: ${{ needs.prepare-link-scenario.outputs.issue_number }}
+          BACKLOG_REPO_OWNER: ${{ needs.prepare-link-scenario.outputs.backlog_repo_owner }}
+          BACKLOG_REPO_NAME: ${{ needs.prepare-link-scenario.outputs.backlog_repo_name }}
           PULL_NUMBER: ${{ needs.prepare-link-scenario.outputs.pull_number }}
           PULL_REQUEST_REPO_OWNER: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_owner }}
           PULL_REQUEST_REPO_NAME: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_name }}
@@ -1094,14 +1114,29 @@ jobs:
           github-token: ${{ steps.auth.outputs.token }}
           script: |
             const query = `
-              query($nodeId: ID!, $fieldName: String!) {
-                node(id: $nodeId) {
+              query($pullNodeId: ID!, $issueNodeId: ID!, $statusFieldName: String!, $iterationFieldName: String!) {
+                pull: node(id: $pullNodeId) {
                   ... on PullRequest {
                     projectItems(first: 100) {
                       nodes {
                         project { id }
-                        fieldValueByName(name: $fieldName) {
+                        status: fieldValueByName(name: $statusFieldName) {
                           ... on ProjectV2ItemFieldSingleSelectValue { name }
+                        }
+                        iteration: fieldValueByName(name: $iterationFieldName) {
+                          ... on ProjectV2ItemFieldIterationValue { iterationId }
+                        }
+                      }
+                    }
+                  }
+                }
+                issue: node(id: $issueNodeId) {
+                  ... on Issue {
+                    projectItems(first: 100) {
+                      nodes {
+                        project { id }
+                        iteration: fieldValueByName(name: $iterationFieldName) {
+                          ... on ProjectV2ItemFieldIterationValue { iterationId }
                         }
                       }
                     }
@@ -1110,13 +1145,64 @@ jobs:
               }
             `;
             const data = await github.graphql(query, {
-              nodeId: process.env.PULL_NODE_ID,
-              fieldName: process.env.STATUS_FIELD_NAME,
+              pullNodeId: process.env.PULL_NODE_ID,
+              issueNodeId: process.env.ISSUE_NODE_ID,
+              statusFieldName: process.env.STATUS_FIELD_NAME,
+              iterationFieldName: process.env.ITERATION_FIELD_NAME,
             });
-            const item = data.node?.projectItems?.nodes?.find((candidate) => candidate.project?.id === process.env.PROJECT_ID);
-            const status = item?.fieldValueByName?.name ?? null;
+            const pullItem = data.pull?.projectItems?.nodes?.find((candidate) => candidate.project?.id === process.env.PROJECT_ID);
+            const issueItem = data.issue?.projectItems?.nodes?.find((candidate) => candidate.project?.id === process.env.PROJECT_ID);
+            const status = pullItem?.status?.name ?? null;
             if (status !== process.env.STATUS_IN_PROGRESS_VALUE) {
               throw new Error(`Expected edited PR status ${process.env.STATUS_IN_PROGRESS_VALUE}, got ${status || 'none'}.`);
+            }
+            const project = await github.graphql(`
+              query($projectId: ID!) {
+                node(id: $projectId) {
+                  ... on ProjectV2 {
+                    fields(first: 100) {
+                      nodes {
+                        __typename
+                        ... on ProjectV2FieldCommon { name }
+                        ... on ProjectV2IterationField {
+                          configuration {
+                            completedIterations { id startDate duration }
+                            iterations { id startDate duration }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `, { projectId: process.env.PROJECT_ID });
+            const field = project.node?.fields?.nodes?.find((candidate) =>
+              candidate?.__typename === 'ProjectV2IterationField' && candidate.name === process.env.ITERATION_FIELD_NAME,
+            );
+            const now = new Date();
+            const active = [
+              ...(field?.configuration?.completedIterations ?? []),
+              ...(field?.configuration?.iterations ?? []),
+            ].find((iteration) => {
+              const start = new Date(`${iteration.startDate}T00:00:00Z`);
+              const end = new Date(start);
+              end.setUTCDate(end.getUTCDate() + iteration.duration);
+              return now >= start && now < end;
+            });
+            if (active) {
+              if (pullItem?.iteration?.iterationId !== active.id || issueItem?.iteration?.iterationId !== active.id) {
+                throw new Error(`Expected active Sprint ${active.id} on both issue and PR.`);
+              }
+            } else {
+              const comments = await github.paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+                owner: process.env.BACKLOG_REPO_OWNER,
+                repo: process.env.BACKLOG_REPO_NAME,
+                issue_number: Number(process.env.ISSUE_NUMBER),
+                per_page: 100,
+              });
+              if (!comments.some((comment) => comment.body?.includes('<!-- github-productivity-utilities:no-active-sprint -->'))) {
+                throw new Error('Expected a managed no-active-Sprint comment on the issue.');
+              }
             }
             const pull = await github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
               owner: process.env.PULL_REQUEST_REPO_OWNER,
