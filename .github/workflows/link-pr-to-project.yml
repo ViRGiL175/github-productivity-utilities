@@ -76,6 +76,18 @@ on:
         description: Action override; falls back to github.event.action when omitted
         required: false
         type: string
+      review_state:
+        description: Review decision override; falls back to github.event.review.state when omitted
+        required: false
+        type: string
+      review_actor_login:
+        description: Reviewer login override for completed or removed review requests
+        required: false
+        type: string
+      review_actor_type:
+        description: Reviewer actor type override, for example User or Bot
+        required: false
+        type: string
       requested_reviewers_json:
         description: JSON array of requested reviewers with login fields; falls back to github.event.pull_request.requested_reviewers when omitted
         required: false
@@ -267,6 +279,9 @@ jobs:
           PULL_REQUEST_BODY: ${{ inputs.pull_request_body || github.event.pull_request.body || '' }}
           HEAD_REF: ${{ inputs.head_ref || github.event.pull_request.head.ref || '' }}
           ACTION: ${{ inputs.action || github.event.action || 'opened' }}
+          REVIEW_STATE: ${{ inputs.review_state || github.event.review.state || '' }}
+          REVIEW_ACTOR_LOGIN: ${{ inputs.review_actor_login || github.event.requested_reviewer.login || github.event.review.user.login || '' }}
+          REVIEW_ACTOR_TYPE: ${{ inputs.review_actor_type || github.event.requested_reviewer.type || github.event.review.user.type || '' }}
           REQUESTED_REVIEWERS_JSON: ${{ inputs.requested_reviewers_json || toJSON(github.event.pull_request.requested_reviewers) }}
         with:
           github-token: ${{ steps.auth.outputs.token }}

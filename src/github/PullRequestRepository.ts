@@ -29,6 +29,13 @@ export interface PullRequestMutationGateway {
   listAssignableLogins(repository: RepositoryCoordinates): Promise<Set<string>>;
   setAssignees(repository: RepositoryCoordinates, issueNumber: number, assignees: string[]): Promise<void>;
   getUserType(login: string): Promise<string | null>;
+  getReviewState(repository: RepositoryCoordinates, pullRequestNumber: number): Promise<PullRequestReviewState>;
+}
+
+export interface PullRequestReviewState {
+  author: string;
+  requestedReviewers: Array<{ login: string; type: string }>;
+  requestedTeams: number;
 }
 
 export class PullRequestRepository implements PullRequestListGateway, PullRequestMutationGateway {
@@ -124,5 +131,17 @@ export class PullRequestRepository implements PullRequestListGateway, PullReques
       if (typeof error === 'object' && error !== null && 'status' in error && error.status === 404) return null;
       throw error;
     }
+  }
+
+  async getReviewState(repository: RepositoryCoordinates, pullRequestNumber: number): Promise<PullRequestReviewState> {
+    const pull = await this.octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+      ...repository, pull_number: pullRequestNumber, headers: API_HEADERS,
+    });
+    return {
+      author: pull.data.user?.login ?? '',
+      requestedReviewers: (pull.data.requested_reviewers ?? []).flatMap((user) =>
+        user?.login ? [{ login: user.login, type: user.type }] : []),
+      requestedTeams: pull.data.requested_teams?.length ?? 0,
+    };
   }
 }

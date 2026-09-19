@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { linkPrToProject } from '../src/automations/link-pr-to-project/LinkPrToProject.js';
-import type { IssueReader } from '../src/github/IssueRepository.js';
+import type { IssueClosingPullRequestsGateway, IssueReader } from '../src/github/IssueRepository.js';
 import type { ProjectStatusGateway, ProjectV2Gateway } from '../src/github/ProjectV2Repository.js';
 import type { PullRequestMutationGateway } from '../src/github/PullRequestRepository.js';
 import type { Logger } from '../src/runtime/Logger.js';
@@ -24,12 +24,13 @@ const input = {
 };
 
 function createDependencies() {
-  const issues: IssueReader = {
+  const issues: IssueReader & IssueClosingPullRequestsGateway = {
     getIssue: vi.fn().mockResolvedValue({
       id: 42, nodeId: 'ISSUE_NODE', number: 42,
       repositoryUrl: 'https://api.github.com/repos/owner/backlog', isPullRequest: false,
     }),
     getParentIssue: vi.fn(),
+    listOpenClosingPullRequests: vi.fn().mockResolvedValue([{ nodeId: 'PR_NODE', number: 7, repositoryNameWithOwner: 'owner/service' }]),
   };
   const pullRequests: PullRequestMutationGateway = {
     getPullRequestBody: vi.fn().mockResolvedValue('Description'),
@@ -38,6 +39,7 @@ function createDependencies() {
     listAssignableLogins: vi.fn().mockResolvedValue(new Set()),
     setAssignees: vi.fn().mockResolvedValue(undefined),
     getUserType: vi.fn().mockResolvedValue('User'),
+    getReviewState: vi.fn().mockResolvedValue({ author: 'author', requestedReviewers: [{ login: 'reviewer', type: 'User' }], requestedTeams: 0 }),
   };
   const projects: ProjectV2Gateway & ProjectStatusGateway = {
     getProjectMetadata: vi.fn().mockResolvedValue({ projectId: 'PROJECT', iterationFieldId: 'ITERATION_FIELD' }),
@@ -81,10 +83,149 @@ describe('LinkPrToProject', () => {
 
   it('moves an existing item to review only for human reviewers', async () => {
     const dependencies = createDependencies();
+    vi.mocked(dependencies.pullRequests.listAssignableLogins).mockResolvedValue(new Set(['author', 'reviewer']));
     await linkPrToProject({
       ...input, action: 'review_requested', requestedReviewersJson: '[{"login":"reviewer","type":"User"}]',
     }, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
     expect(dependencies.projects.setSingleSelect).toHaveBeenCalledWith('PROJECT', 'PR_ITEM', 'STATUS_FIELD', 'REVIEW');
+    expect(dependencies.pullRequests.setAssignees).toHaveBeenCalledWith(input.pullRequestRepository, 7, ['reviewer']);
+  });
+
+  it('moves the linked issue to review only after every open linked PR is in review, preserving issue assignees', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.pullRequests.listAssignableLogins).mockResolvedValue(new Set(['author', 'reviewer']));
+    vi.mocked(dependencies.issues.listOpenClosingPullRequests).mockResolvedValue([
+      { nodeId: 'PR_NODE', number: 7, repositoryNameWithOwner: 'owner/service' },
+      { nodeId: 'OTHER_PR', number: 8, repositoryNameWithOwner: 'owner/service' },
+    ]);
+    vi.mocked(dependencies.projects.getContentProjectItem).mockImplementation(async (nodeId) =>
+      nodeId === 'ISSUE_NODE'
+        ? { id: 'ISSUE_ITEM', statusName: 'In progress', statusOptionId: 'PROGRESS' }
+        : { id: nodeId, statusName: 'In review', statusOptionId: 'REVIEW' });
+    await linkPrToProject({ ...input, action: 'review_requested', requestedReviewersJson: '[{"login":"reviewer","type":"User"}]' }, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+    expect(dependencies.projects.setSingleSelect).toHaveBeenCalledWith('PROJECT', 'ISSUE_ITEM', 'STATUS_FIELD', 'REVIEW');
+    expect(dependencies.pullRequests.setAssignees).toHaveBeenCalledWith(input.pullRequestRepository, 7, ['reviewer']);
+    expect(dependencies.pullRequests.setAssignees).not.toHaveBeenCalledWith(input.backlogRepository, 42, expect.anything());
+  });
+
+  it('leaves the issue in progress while another linked PR has not entered review', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.issues.listOpenClosingPullRequests).mockResolvedValue([
+      { nodeId: 'PR_NODE', number: 7, repositoryNameWithOwner: 'owner/service' },
+      { nodeId: 'OTHER_PR', number: 8, repositoryNameWithOwner: 'owner/service' },
+    ]);
+    vi.mocked(dependencies.projects.getContentProjectItem).mockImplementation(async (nodeId) =>
+      ({ id: nodeId, statusName: nodeId === 'OTHER_PR' ? 'In progress' : 'In review', statusOptionId: null }));
+    await linkPrToProject({ ...input, action: 'review_requested', requestedReviewersJson: '[{"login":"reviewer","type":"User"}]' }, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+    expect(dependencies.projects.setSingleSelect).not.toHaveBeenCalledWith('PROJECT', 'ISSUE_ITEM', 'STATUS_FIELD', 'REVIEW');
+  });
+
+  it('waits when GitHub has not indexed the current PR as linked to the issue', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.issues.listOpenClosingPullRequests).mockResolvedValue([]);
+    await linkPrToProject({ ...input, action: 'review_requested', requestedReviewersJson: '[{"login":"reviewer","type":"User"}]' }, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+    expect(dependencies.projects.setSingleSelect).not.toHaveBeenCalledWith('PROJECT', 'ISSUE_ITEM', 'STATUS_FIELD', 'REVIEW');
+  });
+
+  it('assigns all outstanding human reviewers, ignoring bots and teams', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.pullRequests.listAssignableLogins).mockResolvedValue(new Set(['author', 'alice', 'bob']));
+    vi.mocked(dependencies.pullRequests.getAssigneeLogins).mockResolvedValue(['author', 'contributor']);
+    vi.mocked(dependencies.pullRequests.getReviewState).mockResolvedValue({
+      author: 'author', requestedReviewers: [
+        { login: 'alice', type: 'User' }, { login: 'bob', type: 'User' }, { login: 'bot', type: 'Bot' },
+      ], requestedTeams: 1,
+    });
+    await linkPrToProject({ ...input, action: 'review_requested' }, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+    expect(dependencies.pullRequests.setAssignees).toHaveBeenCalledWith(input.pullRequestRepository, 7, ['contributor', 'alice', 'bob']);
+  });
+
+  it.each(['review_request_removed', 'submitted', 'dismissed'])('returns the author when review action %s leaves no reviewers', async (action) => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.pullRequests.listAssignableLogins).mockResolvedValue(new Set(['author', 'reviewer']));
+    vi.mocked(dependencies.pullRequests.getAssigneeLogins).mockResolvedValue(['reviewer', 'contributor']);
+    vi.mocked(dependencies.pullRequests.getReviewState).mockResolvedValue({
+      author: 'author', requestedReviewers: [], requestedTeams: 0,
+    });
+    await linkPrToProject({ ...input, action, reviewActorLogin: 'reviewer', reviewActorType: 'User' }, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+    expect(dependencies.pullRequests.setAssignees).toHaveBeenCalledWith(input.pullRequestRepository, 7, ['contributor', 'author']);
+    expect(dependencies.issues.getIssue).not.toHaveBeenCalled();
+  });
+
+  it('removes only the completed reviewer while another reviewer is outstanding', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.pullRequests.listAssignableLogins).mockResolvedValue(new Set(['author', 'reviewer']));
+    vi.mocked(dependencies.pullRequests.getAssigneeLogins).mockResolvedValue(['alice', 'reviewer', 'contributor']);
+    vi.mocked(dependencies.pullRequests.getReviewState).mockResolvedValue({
+      author: 'author', requestedReviewers: [{ login: 'reviewer', type: 'User' }], requestedTeams: 0,
+    });
+    await linkPrToProject({ ...input, action: 'submitted', reviewActorLogin: 'alice', reviewActorType: 'User' }, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+    expect(dependencies.pullRequests.setAssignees).toHaveBeenCalledWith(input.pullRequestRepository, 7, ['reviewer', 'contributor']);
+  });
+
+  it('does not write again when assignees already match review state', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.pullRequests.listAssignableLogins).mockResolvedValue(new Set(['author', 'reviewer']));
+    vi.mocked(dependencies.pullRequests.getAssigneeLogins).mockResolvedValue(['reviewer']);
+    await linkPrToProject({ ...input, action: 'submitted', reviewActorLogin: 'alice', reviewActorType: 'User' }, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+    expect(dependencies.pullRequests.setAssignees).not.toHaveBeenCalled();
+  });
+
+  it('ignores bot review completion even when no human requests remain', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.pullRequests.getAssigneeLogins).mockResolvedValue(['contributor']);
+    vi.mocked(dependencies.pullRequests.getReviewState).mockResolvedValue({
+      author: 'author', requestedReviewers: [], requestedTeams: 0,
+    });
+    await linkPrToProject({ ...input, action: 'submitted', reviewActorLogin: 'copilot-pull-request-reviewer[bot]', reviewActorType: 'Bot' }, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+    expect(dependencies.pullRequests.setAssignees).not.toHaveBeenCalled();
+  });
+
+  it('does not assign a bot PR author after the last human review ends', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.pullRequests.getReviewState).mockResolvedValue({
+      author: 'dependabot[bot]', requestedReviewers: [], requestedTeams: 0,
+    });
+    vi.mocked(dependencies.pullRequests.getAssigneeLogins).mockResolvedValue(['reviewer', 'contributor']);
+    vi.mocked(dependencies.pullRequests.listAssignableLogins).mockResolvedValue(new Set(['dependabot[bot]', 'reviewer', 'contributor']));
+    vi.mocked(dependencies.pullRequests.getUserType).mockResolvedValue('Bot');
+    await linkPrToProject({
+      ...input, action: 'submitted', reviewActorLogin: 'reviewer', reviewActorType: 'User', reviewState: 'approved',
+    }, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+    expect(dependencies.pullRequests.setAssignees).toHaveBeenCalledWith(input.pullRequestRepository, 7, ['contributor']);
+  });
+
+  it('uses the review-request event actor if GitHub has not listed the new reviewer yet', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.pullRequests.listAssignableLogins).mockResolvedValue(new Set(['author', 'reviewer']));
+    vi.mocked(dependencies.pullRequests.getAssigneeLogins).mockResolvedValue(['author', 'contributor']);
+    vi.mocked(dependencies.pullRequests.getReviewState).mockResolvedValue({ author: 'author', requestedReviewers: [], requestedTeams: 0 });
+    await linkPrToProject({ ...input, action: 'review_requested', reviewActorLogin: 'reviewer', reviewActorType: 'User' }, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+    expect(dependencies.pullRequests.setAssignees).toHaveBeenCalledWith(input.pullRequestRepository, 7, ['contributor', 'reviewer']);
+  });
+
+  it('returns the author when the completed reviewer is still in a stale requested-reviewers response', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.pullRequests.listAssignableLogins).mockResolvedValue(new Set(['author', 'reviewer']));
+    vi.mocked(dependencies.pullRequests.getAssigneeLogins).mockResolvedValue(['reviewer', 'contributor']);
+    await linkPrToProject({ ...input, action: 'submitted', reviewActorLogin: 'reviewer', reviewActorType: 'User', reviewState: 'approved' }, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+    expect(dependencies.pullRequests.setAssignees).toHaveBeenCalledWith(input.pullRequestRepository, 7, ['contributor', 'author']);
+  });
+
+  it('does not react to comment-only reviews', async () => {
+    const dependencies = createDependencies();
+    await linkPrToProject({ ...input, action: 'submitted', reviewState: 'commented' }, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+    expect(dependencies.pullRequests.getReviewState).not.toHaveBeenCalled();
+    expect(dependencies.pullRequests.setAssignees).not.toHaveBeenCalled();
+  });
+
+  it('does not assign the author when only a team review is pending', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.pullRequests.getReviewState).mockResolvedValue({
+      author: 'author', requestedReviewers: [], requestedTeams: 1,
+    });
+    await linkPrToProject({ ...input, action: 'review_requested' }, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+    expect(dependencies.pullRequests.setAssignees).not.toHaveBeenCalled();
   });
 
   it('stops after project linking when the branch has no issue prefix', async () => {

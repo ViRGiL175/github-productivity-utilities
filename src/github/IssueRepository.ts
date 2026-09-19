@@ -16,6 +16,7 @@ export interface IssueRecord {
   number: number;
   repositoryUrl: string;
   isPullRequest: boolean;
+  isOpen?: boolean;
 }
 
 type GitHubIssueData = {
@@ -24,11 +25,16 @@ type GitHubIssueData = {
   number: number;
   repository_url: string;
   pull_request?: unknown;
+  state?: string;
 };
 
 export interface IssueReader {
   getIssue(repository: RepositoryCoordinates, issueNumber: number): Promise<IssueRecord>;
   getParentIssue(repository: RepositoryCoordinates, issueNumber: number): Promise<IssueRecord | null>;
+}
+
+export interface SubIssueReader {
+  listSubIssues(repository: RepositoryCoordinates, parentNumber: number): Promise<Array<IssueRecord & { isOpen: boolean }>>;
 }
 
 export interface LinkedPullRequest {
@@ -37,6 +43,16 @@ export interface LinkedPullRequest {
   title: string;
   body: string;
   repositoryNameWithOwner: string;
+}
+
+export interface ClosingPullRequest {
+  nodeId: string;
+  number: number;
+  repositoryNameWithOwner: string;
+}
+
+export interface IssueClosingPullRequestsGateway {
+  listOpenClosingPullRequests(repository: RepositoryCoordinates, issueNumber: number): Promise<ClosingPullRequest[]>;
 }
 
 export interface IssueReopenGateway {
@@ -75,6 +91,19 @@ const ISSUE_TIMELINE_QUERY = `
   }
 `;
 
+const OPEN_CLOSING_PULL_REQUESTS_QUERY = `
+  query($owner: String!, $repo: String!, $number: Int!, $after: String) {
+    repository(owner: $owner, name: $repo) {
+      issue(number: $number) {
+        closedByPullRequestsReferences(first: 100, after: $after) {
+          pageInfo { hasNextPage endCursor }
+          nodes { id number repository { nameWithOwner } }
+        }
+      }
+    }
+  }
+`;
+
 interface IssueTimelineQueryResult {
   repository?: {
     issue?: {
@@ -94,7 +123,18 @@ interface IssueTimelineQueryResult {
   } | null;
 }
 
-export class IssueRepository implements IssueReader, IssueReopenGateway {
+interface ClosingPullRequestsQueryResult {
+  repository?: {
+    issue?: {
+      closedByPullRequestsReferences?: {
+        pageInfo: { hasNextPage: boolean; endCursor?: string | null };
+        nodes: Array<{ id: string; number: number; repository: { nameWithOwner: string } } | null>;
+      } | null;
+    } | null;
+  } | null;
+}
+
+export class IssueRepository implements IssueReader, IssueReopenGateway, SubIssueReader, IssueClosingPullRequestsGateway {
   private readonly octokit: Octokit;
   constructor(octokit: Octokit) { this.octokit = octokit; }
 
@@ -123,6 +163,19 @@ export class IssueRepository implements IssueReader, IssueReopenGateway {
       }
 
       throw error;
+    }
+  }
+
+  async listSubIssues(repository: RepositoryCoordinates, parentNumber: number): Promise<Array<IssueRecord & { isOpen: boolean }>> {
+    const result: Array<IssueRecord & { isOpen: boolean }> = [];
+    for (let page = 1; ; page += 1) {
+      const response = await this.octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues', {
+        ...repository, issue_number: parentNumber, page, per_page: 100, headers: API_HEADERS,
+      });
+      for (const issue of response.data) {
+        result.push({ ...mapIssue(issue as GitHubIssueData), isOpen: issue.state === 'open' });
+      }
+      if (response.data.length < 100) return result;
     }
   }
 
@@ -155,6 +208,26 @@ export class IssueRepository implements IssueReader, IssueReopenGateway {
         repositoryNameWithOwner: source.repository.nameWithOwner,
       }];
     });
+  }
+
+  async listOpenClosingPullRequests(repository: RepositoryCoordinates, issueNumber: number): Promise<ClosingPullRequest[]> {
+    const result: ClosingPullRequest[] = [];
+    let after: string | null = null;
+    for (;;) {
+      const data: ClosingPullRequestsQueryResult = await this.octokit.graphql<ClosingPullRequestsQueryResult>(
+        OPEN_CLOSING_PULL_REQUESTS_QUERY, { ...repository, number: issueNumber, after },
+      );
+      const connection = data.repository?.issue?.closedByPullRequestsReferences;
+      if (!connection) throw new Error(`Could not read closing PRs for ${repository.owner}/${repository.repo}#${issueNumber}.`);
+      for (const item of connection.nodes) {
+        if (item?.id && item.repository?.nameWithOwner) {
+          result.push({ nodeId: item.id, number: item.number, repositoryNameWithOwner: item.repository.nameWithOwner });
+        }
+      }
+      if (!connection.pageInfo.hasNextPage) return result;
+      if (!connection.pageInfo.endCursor) throw new Error('Missing closing PR pagination cursor.');
+      after = connection.pageInfo.endCursor;
+    }
   }
 
   async reopenIssue(repository: RepositoryCoordinates, issueNumber: number): Promise<void> {
@@ -198,6 +271,7 @@ function mapIssue(issue: GitHubIssueData): IssueRecord {
     number: issue.number,
     repositoryUrl: issue.repository_url,
     isPullRequest: issue.pull_request !== undefined,
+    isOpen: issue.state === 'open',
   };
 }
 

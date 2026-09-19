@@ -21,6 +21,9 @@ export async function run(github: Octokit): Promise<void> {
     pullRequestBodyHint: process.env.PULL_REQUEST_BODY ?? '',
     headRef: process.env.HEAD_REF ?? '',
     action: process.env.ACTION || 'opened',
+    reviewState: process.env.REVIEW_STATE ?? '',
+    reviewActorLogin: process.env.REVIEW_ACTOR_LOGIN ?? '',
+    reviewActorType: process.env.REVIEW_ACTOR_TYPE ?? '',
     requestedReviewersJson: process.env.REQUESTED_REVIEWERS_JSON || '[]',
   }, new IssueRepository(github), new PullRequestRepository(github), new ProjectV2Repository(github), logger);
 }

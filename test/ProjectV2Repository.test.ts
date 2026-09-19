@@ -79,4 +79,12 @@ describe('ProjectV2Repository', () => {
     expect(graphql.mock.calls[0]?.[0]).toBe(graphql.mock.calls[1]?.[0]);
     expect(graphql.mock.calls[0]?.[0]).toContain('fragment ProjectItems on ProjectV2ItemConnection');
   });
+
+  it('handles a project scan page with null nodes', async () => {
+    const graphql = vi.fn().mockResolvedValue({ node: { items: {
+      pageInfo: { hasNextPage: false, endCursor: null }, nodes: null,
+    } } });
+    const repository = new ProjectV2Repository({ graphql } as unknown as Octokit);
+    await expect(repository.listOpenIssuesWithField('PROJECT', 'Sprint')).resolves.toEqual([]);
+  });
 });

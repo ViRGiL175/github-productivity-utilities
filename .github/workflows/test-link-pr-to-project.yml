@@ -20,6 +20,8 @@ on:
     paths:
       - '.github/workflows/link-pr-to-project.yml'
       - '.github/workflows/test-link-pr-to-project.yml'
+      - 'src/**'
+      - 'test/**'
 
 concurrency:
   group: ${{ github.workflow }}
@@ -1022,6 +1024,11 @@ jobs:
           STATUS_FIELD_NAME: ${{ env.STATUS_FIELD_NAME }}
           STATUS_IN_REVIEW_VALUE: ${{ needs.prepare-link-scenario.outputs.status_in_review_value }}
           PULL_NODE_ID: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
+          ISSUE_NODE_ID: ${{ needs.prepare-link-scenario.outputs.issue_node_id }}
+          ISSUE_NUMBER: ${{ needs.prepare-link-scenario.outputs.issue_number }}
+          ISSUE_ASSIGNEE_LOGIN: ${{ needs.prepare-link-scenario.outputs.issue_assignee_login }}
+          BACKLOG_REPO_OWNER: ${{ needs.prepare-link-scenario.outputs.backlog_repo_owner }}
+          BACKLOG_REPO_NAME: ${{ needs.prepare-link-scenario.outputs.backlog_repo_name }}
         with:
           github-token: ${{ steps.auth.outputs.token }}
           script: |
@@ -1107,6 +1114,26 @@ jobs:
             });
 
             core.info(`PR project item ${projectItem.id} is marked as ${statusInReviewValue}.`);
+
+            const ISSUE_STATUS_QUERY = PULL_REQUEST_STATUS_QUERY.replace('... on PullRequest', '... on Issue');
+            await withRetry('Assert linked issue review status', async () => {
+              const data = await github.graphql(ISSUE_STATUS_QUERY, {
+                nodeId: process.env.ISSUE_NODE_ID,
+                statusFieldName,
+              });
+              const item = data.node?.projectItems?.nodes?.find((projectNode) => projectNode.project?.id === projectId) ?? null;
+              if (item?.fieldValueByName?.name !== statusInReviewValue) {
+                throw new Error(`Expected linked issue status ${statusInReviewValue}, got ${item?.fieldValueByName?.name || 'none'}.`);
+              }
+            });
+            const issue = (await github.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
+              owner: process.env.BACKLOG_REPO_OWNER, repo: process.env.BACKLOG_REPO_NAME,
+              issue_number: Number(process.env.ISSUE_NUMBER),
+            })).data;
+            if (!issue.assignees?.some((assignee) => assignee.login === process.env.ISSUE_ASSIGNEE_LOGIN)) {
+              throw new Error('Linked issue lost its original assignee.');
+            }
+            core.info('Linked issue is in review and retains its assignee.');
 
   close-pr-before-status-check:
     name: Close PR before status check
