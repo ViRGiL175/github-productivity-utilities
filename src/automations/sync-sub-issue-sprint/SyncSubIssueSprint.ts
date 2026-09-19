@@ -115,8 +115,7 @@ export async function reconcileSubIssueSprints(
     parents = item?.iterationId ? [{
       nodeId: issue.nodeId, number: issue.number,
       repositoryNameWithOwner: `${input.parentRepository.owner}/${input.parentRepository.repo}`,
-      parentNodeId: null, parentNumber: null, parentRepositoryNameWithOwner: null,
-      fieldValue: null, iterationId: item.iterationId, subIssueCount: 0,
+      iterationId: item.iterationId, subIssueCount: 0,
     }] : [];
   } else {
     const items = await projects.listOpenIssuesWithField(project.projectId, input.iterationFieldName);

@@ -156,14 +156,12 @@ const PROJECT_ISSUES_BY_FIELD_QUERY = `
           pageInfo { hasNextPage endCursor }
           nodes {
             fieldValueByName(name: $fieldName) {
-              ... on ProjectV2ItemFieldSingleSelectValue { name }
               ... on ProjectV2ItemFieldIterationValue { iterationId title }
             }
             content {
               ... on Issue {
                 id number state
                 repository { nameWithOwner }
-                parent { id number repository { nameWithOwner } }
                 subIssuesSummary { total }
               }
             }
@@ -311,10 +309,6 @@ export interface ProjectIssueWithField {
   nodeId: string;
   number: number;
   repositoryNameWithOwner: string;
-  parentNodeId: string | null;
-  parentNumber: number | null;
-  parentRepositoryNameWithOwner: string | null;
-  fieldValue: string | null;
   iterationId: string | null;
   subIssueCount: number;
 }
@@ -524,11 +518,10 @@ export class ProjectV2Repository implements ProjectV2Gateway, ProjectStatusGatew
         node?: { items?: {
           pageInfo: { hasNextPage: boolean; endCursor?: string | null };
           nodes?: Array<{
-            fieldValueByName?: { name?: string | null; iterationId?: string | null } | null;
+            fieldValueByName?: { iterationId?: string | null } | null;
             content?: {
               id?: string; number?: number; state?: string;
               repository?: { nameWithOwner?: string } | null;
-              parent?: { id: string; number: number; repository: { nameWithOwner: string } } | null;
               subIssuesSummary?: { total: number } | null;
             } | null;
           } | null> | null;
@@ -543,10 +536,6 @@ export class ProjectV2Repository implements ProjectV2Gateway, ProjectStatusGatew
           nodeId: issue.id,
           number: issue.number,
           repositoryNameWithOwner: issue.repository.nameWithOwner,
-          parentNodeId: issue.parent?.id ?? null,
-          parentNumber: issue.parent?.number ?? null,
-          parentRepositoryNameWithOwner: issue.parent?.repository.nameWithOwner ?? null,
-          fieldValue: item?.fieldValueByName?.name ?? null,
           iterationId: item?.fieldValueByName?.iterationId ?? null,
           subIssueCount: issue.subIssuesSummary?.total ?? 0,
         });
