@@ -39,3 +39,29 @@ describe('PullRequestRepository review state', () => {
     });
   });
 });
+
+describe('PullRequestRepository closing issues', () => {
+  const repository = { owner: 'owner', repo: 'project' };
+
+  it('reads every page of GitHub-recognized closing issue references', async () => {
+    const graphql = vi.fn()
+      .mockResolvedValueOnce({ repository: { pullRequest: { closingIssuesReferences: {
+        pageInfo: { hasNextPage: true, endCursor: 'NEXT' },
+        nodes: [{ id: 'ISSUE_1', number: 11, repository: { nameWithOwner: 'owner/backlog' } }],
+      } } } })
+      .mockResolvedValueOnce({ repository: { pullRequest: { closingIssuesReferences: {
+        pageInfo: { hasNextPage: false, endCursor: null },
+        nodes: [{ id: 'ISSUE_2', number: 12, repository: { nameWithOwner: 'owner/backlog' } }],
+      } } } });
+    const gateway = new PullRequestRepository({ graphql } as unknown as Octokit);
+
+    await expect(gateway.listClosingIssues(repository, 7)).resolves.toEqual([
+      { nodeId: 'ISSUE_1', number: 11, repositoryNameWithOwner: 'owner/backlog' },
+      { nodeId: 'ISSUE_2', number: 12, repositoryNameWithOwner: 'owner/backlog' },
+    ]);
+    expect(graphql).toHaveBeenNthCalledWith(1, expect.stringContaining('closingIssuesReferences'),
+      expect.objectContaining({ owner: 'owner', repo: 'project', number: 7, after: null }));
+    expect(graphql).toHaveBeenNthCalledWith(2, expect.any(String),
+      expect.objectContaining({ after: 'NEXT' }));
+  });
+});
