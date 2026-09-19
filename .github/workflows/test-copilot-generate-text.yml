@@ -14,8 +14,10 @@ on:
       - '.github/workflows/test-copilot-generate-text.yml'
       - 'itest/copilot-context-fixture.txt'
       - '.secrets.example'
-      - 'README.md'
       - 'scripts/run-act-test.js'
+      - 'src/automations/gemini-generate-text/**'
+      - 'src/scripts/gemini-generate-text.ts'
+      - 'test/GeminiGenerateText.test.ts'
 
 concurrency:
   group: ${{ github.workflow }}
@@ -67,6 +69,7 @@ jobs:
   # ─── Case 2: prompt_text + input_text (no context_files) ──────────────────
   gen-input-only:
     name: '[2] Generate — prompt + input_text'
+    needs: gen-prompt-only
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     uses: ./.github/workflows/gemini-generate-text.yml
     with:
@@ -104,6 +107,7 @@ jobs:
   # The model should copy the unique sentinel from the context file.
   gen-context-only:
     name: '[3] Generate — prompt + context_files'
+    needs: gen-input-only
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     uses: ./.github/workflows/gemini-generate-text.yml
     with:
@@ -141,6 +145,7 @@ jobs:
   # Verifies that input_text and context_files are both passed through without conflict.
   gen-all-inputs:
     name: '[4] Generate — prompt + input_text + context_files'
+    needs: gen-context-only
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     uses: ./.github/workflows/gemini-generate-text.yml
     with:
