@@ -64,6 +64,17 @@ export interface IssueReopenGateway {
   addIssueComment(repository: RepositoryCoordinates, issueNumber: number, body: string): Promise<void>;
 }
 
+export type ManagedCommentResult = 'created' | 'updated' | 'unchanged';
+
+export interface IssueManagedCommentGateway {
+  upsertIssueCommentByMarker(
+    repository: RepositoryCoordinates,
+    issueNumber: number,
+    marker: string,
+    body: string,
+  ): Promise<ManagedCommentResult>;
+}
+
 const ISSUE_TIMELINE_QUERY = `
   query($owner: String!, $repo: String!, $number: Int!) {
     repository(owner: $owner, name: $repo) {
@@ -134,7 +145,7 @@ interface ClosingPullRequestsQueryResult {
   } | null;
 }
 
-export class IssueRepository implements IssueReader, IssueReopenGateway, SubIssueReader, IssueClosingPullRequestsGateway {
+export class IssueRepository implements IssueReader, IssueReopenGateway, SubIssueReader, IssueClosingPullRequestsGateway, IssueManagedCommentGateway {
   private readonly octokit: Octokit;
   constructor(octokit: Octokit) { this.octokit = octokit; }
 
@@ -246,6 +257,38 @@ export class IssueRepository implements IssueReader, IssueReopenGateway, SubIssu
       body,
       headers: API_HEADERS,
     });
+  }
+
+  async upsertIssueCommentByMarker(
+    repository: RepositoryCoordinates,
+    issueNumber: number,
+    marker: string,
+    body: string,
+  ): Promise<ManagedCommentResult> {
+    for (let page = 1; ; page += 1) {
+      const response = await this.octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+        ...repository,
+        issue_number: issueNumber,
+        page,
+        per_page: 100,
+        headers: API_HEADERS,
+      });
+      const existing = response.data.find((comment) => comment.body?.includes(marker));
+      if (existing) {
+        if (existing.body === body) return 'unchanged';
+        await this.octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
+          ...repository,
+          comment_id: existing.id,
+          body,
+          headers: API_HEADERS,
+        });
+        return 'updated';
+      }
+      if (response.data.length < 100) break;
+    }
+
+    await this.addIssueComment(repository, issueNumber, body);
+    return 'created';
   }
 }
 
