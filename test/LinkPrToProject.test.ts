@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { linkPrToProject } from '../src/automations/link-pr-to-project/LinkPrToProject.js';
 import type { IssueClosingPullRequestsGateway, IssueReader } from '../src/github/IssueRepository.js';
 import type { ProjectStatusGateway, ProjectV2Gateway } from '../src/github/ProjectV2Repository.js';
-import type { PullRequestMutationGateway } from '../src/github/PullRequestRepository.js';
+import type { PullRequestClosingIssuesGateway, PullRequestMutationGateway } from '../src/github/PullRequestRepository.js';
 import type { Logger } from '../src/runtime/Logger.js';
 
 const input = {
@@ -32,7 +32,8 @@ function createDependencies() {
     getParentIssue: vi.fn(),
     listOpenClosingPullRequests: vi.fn().mockResolvedValue([{ nodeId: 'PR_NODE', number: 7, repositoryNameWithOwner: 'owner/service' }]),
   };
-  const pullRequests: PullRequestMutationGateway = {
+  const pullRequests: PullRequestMutationGateway & PullRequestClosingIssuesGateway = {
+    listClosingIssues: vi.fn().mockResolvedValue([]),
     getPullRequestBody: vi.fn().mockResolvedValue('Description'),
     updatePullRequestBody: vi.fn().mockResolvedValue(undefined),
     getAssigneeLogins: vi.fn().mockResolvedValue([]),
@@ -179,6 +180,96 @@ describe('LinkPrToProject', () => {
     });
     await linkPrToProject({ ...input, action: 'submitted', reviewActorLogin: 'copilot-pull-request-reviewer[bot]', reviewActorType: 'Bot' }, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
     expect(dependencies.pullRequests.setAssignees).not.toHaveBeenCalled();
+  });
+
+  it('promotes an existing Todo PR when an edited body creates a closing reference', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.pullRequests.listClosingIssues).mockResolvedValue([
+      { nodeId: 'ISSUE_NODE', number: 42, repositoryNameWithOwner: 'owner/backlog' },
+    ]);
+    vi.mocked(dependencies.projects.getIssueProjectItem)
+      .mockReset()
+      .mockResolvedValueOnce({ id: 'PR_ITEM', iterationId: null, iterationTitle: '' })
+      .mockResolvedValueOnce({ id: 'ISSUE_ITEM', iterationId: 'SPRINT', iterationTitle: 'Sprint 1' });
+    vi.mocked(dependencies.projects.getContentProjectItem).mockResolvedValue({
+      id: 'PR_ITEM', statusName: 'Todo', statusOptionId: 'TODO',
+    });
+
+    await linkPrToProject({ ...input, action: 'edited', headRef: 'feature-without-issue-prefix' },
+      dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+
+    expect(dependencies.projects.addIssueToProject).not.toHaveBeenCalled();
+    expect(dependencies.projects.setSingleSelect).toHaveBeenCalledWith('PROJECT', 'PR_ITEM', 'STATUS_FIELD', 'PROGRESS');
+    expect(dependencies.pullRequests.updatePullRequestBody).not.toHaveBeenCalled();
+    expect(dependencies.issues.getIssue).toHaveBeenCalledWith(input.backlogRepository, 42);
+  });
+
+  it('retries an edited closing reference while GitHub indexes the relationship', async () => {
+    vi.useFakeTimers();
+    try {
+      const dependencies = createDependencies();
+      vi.mocked(dependencies.pullRequests.listClosingIssues)
+        .mockResolvedValueOnce([])
+        .mockResolvedValue([
+          { nodeId: 'ISSUE_NODE', number: 42, repositoryNameWithOwner: 'owner/backlog' },
+        ]);
+      vi.mocked(dependencies.pullRequests.getPullRequestBody).mockResolvedValue('Closes owner/backlog#42');
+      vi.mocked(dependencies.projects.getIssueProjectItem)
+        .mockReset()
+        .mockResolvedValueOnce({ id: 'PR_ITEM', iterationId: null, iterationTitle: '' })
+        .mockResolvedValueOnce({ id: 'ISSUE_ITEM', iterationId: 'SPRINT', iterationTitle: 'Sprint 1' });
+      vi.mocked(dependencies.projects.getContentProjectItem).mockResolvedValue({
+        id: 'PR_ITEM', statusName: 'Todo', statusOptionId: 'TODO',
+      });
+
+      const run = linkPrToProject({ ...input, action: 'edited', headRef: 'feature-without-issue-prefix' },
+        dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+      await vi.runAllTimersAsync();
+      await run;
+
+      expect(dependencies.pullRequests.listClosingIssues).toHaveBeenCalledTimes(2);
+      expect(dependencies.projects.setSingleSelect).toHaveBeenCalledWith('PROJECT', 'PR_ITEM', 'STATUS_FIELD', 'PROGRESS');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(['In review', 'Done', 'Blocked'])('does not downgrade an existing PR from %s after linking', async (statusName) => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.pullRequests.listClosingIssues).mockResolvedValue([
+      { nodeId: 'ISSUE_NODE', number: 42, repositoryNameWithOwner: 'owner/backlog' },
+    ]);
+    vi.mocked(dependencies.projects.getIssueProjectItem)
+      .mockReset()
+      .mockResolvedValueOnce({ id: 'PR_ITEM', iterationId: 'SPRINT', iterationTitle: 'Sprint 1' })
+      .mockResolvedValueOnce({ id: 'ISSUE_ITEM', iterationId: 'SPRINT', iterationTitle: 'Sprint 1' });
+    vi.mocked(dependencies.projects.getContentProjectItem).mockResolvedValue({
+      id: 'PR_ITEM', statusName, statusOptionId: 'CURRENT',
+    });
+
+    await linkPrToProject({ ...input, action: 'edited', headRef: 'feature-without-issue-prefix' },
+      dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+
+    expect(dependencies.projects.setSingleSelect).not.toHaveBeenCalledWith('PROJECT', 'PR_ITEM', 'STATUS_FIELD', 'PROGRESS');
+  });
+
+  it('ignores closing references to issues outside the configured backlog', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.pullRequests.listClosingIssues).mockResolvedValue([
+      { nodeId: 'OTHER_ISSUE', number: 99, repositoryNameWithOwner: 'owner/other' },
+    ]);
+    vi.mocked(dependencies.projects.getIssueProjectItem)
+      .mockReset()
+      .mockResolvedValue({ id: 'PR_ITEM', iterationId: null, iterationTitle: '' });
+    vi.mocked(dependencies.projects.getContentProjectItem).mockResolvedValue({
+      id: 'PR_ITEM', statusName: 'Todo', statusOptionId: 'TODO',
+    });
+
+    await linkPrToProject({ ...input, action: 'edited', headRef: 'feature-without-issue-prefix' },
+      dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+
+    expect(dependencies.projects.setSingleSelect).not.toHaveBeenCalledWith('PROJECT', 'PR_ITEM', 'STATUS_FIELD', 'PROGRESS');
+    expect(dependencies.issues.getIssue).not.toHaveBeenCalled();
   });
 
   it('does not assign a bot PR author after the last human review ends', async () => {

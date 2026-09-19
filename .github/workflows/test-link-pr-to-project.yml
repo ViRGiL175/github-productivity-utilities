@@ -1,5 +1,5 @@
 # Integration test: создаёт issue и PR, проверяет привязку PR к Project V2,
-# перенос sprint и assignee из issue, установку начального статуса, перевод в Need Review
+# перенос sprint и assignee из issue, позднюю closing reference, перевод в Need Review
 # при запросе human-reviewer и установку статуса Done при закрытии, плюс cleanup.
 # В `pat`-режиме issue и PR живут в одном репозитории.
 # В `app`-режиме issue живёт в backlog-репозитории, а PR — в отдельном client-репозитории.
@@ -67,6 +67,7 @@ jobs:
       - resolve-auth
     outputs:
       project_id: ${{ steps.prepare.outputs.project_id }}
+      status_field_id: ${{ steps.prepare.outputs.status_field_id }}
       target_iteration_id: ${{ steps.prepare.outputs.target_iteration_id }}
       status_in_progress_value: ${{ steps.prepare.outputs.status_in_progress_value }}
       status_in_review_value: ${{ steps.prepare.outputs.status_in_review_value }}
@@ -386,6 +387,7 @@ jobs:
               return {
                 projectId: project.id,
                 iterationFieldId: iterationField.id,
+                statusFieldId: statusField.id,
                 targetIterationId: iterations[0].id,
                 statusInProgressValue,
                 statusInReviewValue,
@@ -470,6 +472,7 @@ jobs:
             const pullRequest = pullResponse.data;
 
             core.setOutput('project_id', project.projectId);
+            core.setOutput('status_field_id', project.statusFieldId);
             core.setOutput('target_iteration_id', project.targetIterationId);
             core.setOutput('status_in_progress_value', project.statusInProgressValue);
             core.setOutput('status_in_review_value', project.statusInReviewValue);
@@ -926,13 +929,142 @@ jobs:
 
             core.info(`PR #${pullNumber} rerun stayed idempotent.`);
 
+  prepare-link-edited-scenario:
+    name: Prepare late closing reference scenario
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs:
+      - resolve-auth
+      - prepare-link-scenario
+      - assert-link-idempotency-scenario
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clear PR status before edited event
+        uses: actions/github-script@v8
+        env:
+          PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
+          STATUS_FIELD_ID: ${{ needs.prepare-link-scenario.outputs.status_field_id }}
+          PULL_NODE_ID: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
+        with:
+          github-token: ${{ needs.resolve-auth.outputs.token }}
+          script: |
+            const projectId = process.env.PROJECT_ID;
+            const statusFieldId = process.env.STATUS_FIELD_ID;
+            const pullNodeId = process.env.PULL_NODE_ID;
+            const data = await github.graphql(`
+              query($nodeId: ID!) {
+                node(id: $nodeId) {
+                  ... on PullRequest {
+                    projectItems(first: 100) { nodes { id project { id } } }
+                  }
+                }
+              }
+            `, { nodeId: pullNodeId });
+            const item = data.node?.projectItems?.nodes?.find((candidate) => candidate.project?.id === projectId);
+            if (!item) throw new Error('PR project item is missing before edited scenario.');
+            await github.graphql(`
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!) {
+                clearProjectV2ItemFieldValue(input: {
+                  projectId: $projectId
+                  itemId: $itemId
+                  fieldId: $fieldId
+                }) { projectV2Item { id } }
+              }
+            `, { projectId, itemId: item.id, fieldId: statusFieldId });
+
+  run-link-edited-scenario:
+    name: Run late closing reference scenario
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs:
+      - resolve-auth
+      - prepare-link-scenario
+      - prepare-link-edited-scenario
+    uses: ./.github/workflows/link-pr-to-project.yml
+    with:
+      project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+      project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
+      backlog_repo: ${{ needs.prepare-link-scenario.outputs.backlog_repo_name }}
+      backlog_repo_owner: ${{ needs.prepare-link-scenario.outputs.backlog_repo_owner }}
+      iteration_field_name: Iteration
+      status_field_name: Status
+      status_done_value: Done
+      status_in_progress_value: ${{ needs.prepare-link-scenario.outputs.status_in_progress_value }}
+      status_in_review_value: ${{ needs.prepare-link-scenario.outputs.status_in_review_value }}
+      pull_request_node_id: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
+      pull_request_number: ${{ needs.prepare-link-scenario.outputs.pull_number }}
+      pull_request_repo_owner: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_owner }}
+      pull_request_repo_name: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_name }}
+      head_ref: itest-manual-link-${{ github.run_id }}
+      action: edited
+      auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
+      installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+    secrets:
+      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
+      app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+      app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+
+  assert-link-edited-scenario:
+    name: Assert late closing reference scenario
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs:
+      - resolve-auth
+      - prepare-link-scenario
+      - run-link-edited-scenario
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assert edited event restored In Progress without duplicating link
+        uses: actions/github-script@v8
+        env:
+          PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
+          STATUS_FIELD_NAME: ${{ env.STATUS_FIELD_NAME }}
+          STATUS_IN_PROGRESS_VALUE: ${{ needs.prepare-link-scenario.outputs.status_in_progress_value }}
+          PULL_NODE_ID: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
+          PULL_NUMBER: ${{ needs.prepare-link-scenario.outputs.pull_number }}
+          PULL_REQUEST_REPO_OWNER: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_owner }}
+          PULL_REQUEST_REPO_NAME: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_name }}
+          CLOSES_REF: ${{ needs.prepare-link-scenario.outputs.closes_ref }}
+        with:
+          github-token: ${{ needs.resolve-auth.outputs.token }}
+          script: |
+            const query = `
+              query($nodeId: ID!, $fieldName: String!) {
+                node(id: $nodeId) {
+                  ... on PullRequest {
+                    projectItems(first: 100) {
+                      nodes {
+                        project { id }
+                        fieldValueByName(name: $fieldName) {
+                          ... on ProjectV2ItemFieldSingleSelectValue { name }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+            const data = await github.graphql(query, {
+              nodeId: process.env.PULL_NODE_ID,
+              fieldName: process.env.STATUS_FIELD_NAME,
+            });
+            const item = data.node?.projectItems?.nodes?.find((candidate) => candidate.project?.id === process.env.PROJECT_ID);
+            const status = item?.fieldValueByName?.name ?? null;
+            if (status !== process.env.STATUS_IN_PROGRESS_VALUE) {
+              throw new Error(`Expected edited PR status ${process.env.STATUS_IN_PROGRESS_VALUE}, got ${status || 'none'}.`);
+            }
+            const pull = await github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+              owner: process.env.PULL_REQUEST_REPO_OWNER,
+              repo: process.env.PULL_REQUEST_REPO_NAME,
+              pull_number: Number(process.env.PULL_NUMBER),
+            });
+            const occurrences = (pull.data.body || '').split(process.env.CLOSES_REF).length - 1;
+            if (occurrences !== 1) throw new Error(`Expected one closing reference, got ${occurrences}.`);
+
   run-link-review-requested-scenario:
     name: Run link PR review requested scenario
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     needs:
       - resolve-auth
       - prepare-link-scenario
-      - assert-link-idempotency-scenario
+      - assert-link-edited-scenario
     uses: ./.github/workflows/link-pr-to-project.yml
     with:
       project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
@@ -1412,6 +1544,9 @@ jobs:
       - assert-link-open-scenario
       - rerun-link-open-scenario
       - assert-link-idempotency-scenario
+      - prepare-link-edited-scenario
+      - run-link-edited-scenario
+      - assert-link-edited-scenario
       - run-link-review-requested-scenario
       - assert-link-review-requested-scenario
       - close-pr-before-status-check
