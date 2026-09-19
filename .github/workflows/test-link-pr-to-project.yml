@@ -938,6 +938,40 @@ jobs:
       - assert-link-idempotency-scenario
     runs-on: ubuntu-latest
     steps:
+      - name: Normalize GitHub App private key
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: normalize-key
+        shell: bash
+        env:
+          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+        run: |
+          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
+          while IFS= read -r line; do
+            printf '::add-mask::%s\n' "$line"
+          done <<< "$NORMALIZED_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub App installation token
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          owner: ${{ env.INSTALLATION_OWNER }}
+          skip-token-revoke: true
+
+      - name: Resolve job auth token
+        id: auth
+        shell: bash
+        env:
+          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          if [ "$AUTH_MODE" = "app" ]; then TOKEN="$APP_TOKEN"; else TOKEN="$DIRECT_TOKEN"; fi
+          if [ -z "$TOKEN" ]; then echo "Resolved token is empty" >&2; exit 1; fi
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
       - name: Clear PR status before edited event
         uses: actions/github-script@v8
         env:
@@ -945,7 +979,7 @@ jobs:
           STATUS_FIELD_ID: ${{ needs.prepare-link-scenario.outputs.status_field_id }}
           PULL_NODE_ID: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
         with:
-          github-token: ${{ needs.resolve-auth.outputs.token }}
+          github-token: ${{ steps.auth.outputs.token }}
           script: |
             const projectId = process.env.PROJECT_ID;
             const statusFieldId = process.env.STATUS_FIELD_ID;
@@ -1011,6 +1045,40 @@ jobs:
       - run-link-edited-scenario
     runs-on: ubuntu-latest
     steps:
+      - name: Normalize GitHub App private key
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: normalize-key
+        shell: bash
+        env:
+          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+        run: |
+          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
+          while IFS= read -r line; do
+            printf '::add-mask::%s\n' "$line"
+          done <<< "$NORMALIZED_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub App installation token
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          owner: ${{ env.INSTALLATION_OWNER }}
+          skip-token-revoke: true
+
+      - name: Resolve job auth token
+        id: auth
+        shell: bash
+        env:
+          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          if [ "$AUTH_MODE" = "app" ]; then TOKEN="$APP_TOKEN"; else TOKEN="$DIRECT_TOKEN"; fi
+          if [ -z "$TOKEN" ]; then echo "Resolved token is empty" >&2; exit 1; fi
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
       - name: Assert edited event restored In Progress without duplicating link
         uses: actions/github-script@v8
         env:
@@ -1023,7 +1091,7 @@ jobs:
           PULL_REQUEST_REPO_NAME: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_name }}
           CLOSES_REF: ${{ needs.prepare-link-scenario.outputs.closes_ref }}
         with:
-          github-token: ${{ needs.resolve-auth.outputs.token }}
+          github-token: ${{ steps.auth.outputs.token }}
           script: |
             const query = `
               query($nodeId: ID!, $fieldName: String!) {
