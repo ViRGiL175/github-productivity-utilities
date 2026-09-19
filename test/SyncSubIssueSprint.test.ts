@@ -95,8 +95,7 @@ describe('ReconcileSubIssueSprints', () => {
       getProjectMetadata: vi.fn().mockResolvedValue({ projectId: 'PROJECT', iterationFieldId: 'FIELD' }),
       listOpenIssuesWithField: vi.fn().mockResolvedValue([{
         nodeId: 'ISSUE_parent', number: 41, repositoryNameWithOwner: 'owner/backlog',
-        parentNodeId: null, parentNumber: null, parentRepositoryNameWithOwner: null,
-        fieldValue: null, iterationId: 'SPRINT', subIssueCount: 1,
+        iterationId: 'SPRINT', subIssueCount: 1,
       }]),
       getIssueProjectItem: vi.fn().mockImplementation((nodeId: string) => Promise.resolve(
         nodeId === 'ISSUE_parent'

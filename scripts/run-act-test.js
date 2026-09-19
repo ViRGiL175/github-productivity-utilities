@@ -32,11 +32,6 @@ const workflowEntries = [
     secrets: ['ORG_PROJECT_TOKEN', 'ORG_AUTOMATION_APP_ID', 'ORG_AUTOMATION_APP_PRIVATE_KEY'],
   },
   {
-    name: 'test-detach-inbox-sub-issues.yml',
-    path: '.github/workflows/test-detach-inbox-sub-issues.yml',
-    secrets: ['ORG_PROJECT_TOKEN', 'ORG_AUTOMATION_APP_ID', 'ORG_AUTOMATION_APP_PRIVATE_KEY'],
-  },
-  {
     name: 'test-reopen-issue-if-pr-open.yml',
     path: '.github/workflows/test-reopen-issue-if-pr-open.yml',
     secrets: ['ORG_PROJECT_TOKEN', 'ORG_AUTOMATION_APP_ID', 'ORG_AUTOMATION_APP_PRIVATE_KEY'],

@@ -33,13 +33,6 @@ export interface IssueReader {
   getParentIssue(repository: RepositoryCoordinates, issueNumber: number): Promise<IssueRecord | null>;
 }
 
-export interface IssueHierarchyGateway extends IssueReader {
-  getSingleSelectFieldValue(repository: RepositoryCoordinates, issueNumber: number, fieldName: string): Promise<string | null>;
-  getIssueBody(repository: RepositoryCoordinates, issueNumber: number): Promise<string>;
-  updateIssueBody(repository: RepositoryCoordinates, issueNumber: number, body: string): Promise<void>;
-  removeSubIssue(parentRepository: RepositoryCoordinates, parentNumber: number, childId: number): Promise<void>;
-}
-
 export interface SubIssueReader {
   listSubIssues(repository: RepositoryCoordinates, parentNumber: number): Promise<Array<IssueRecord & { isOpen: boolean }>>;
 }
@@ -141,7 +134,7 @@ interface ClosingPullRequestsQueryResult {
   } | null;
 }
 
-export class IssueRepository implements IssueReader, IssueReopenGateway, IssueHierarchyGateway, SubIssueReader, IssueClosingPullRequestsGateway {
+export class IssueRepository implements IssueReader, IssueReopenGateway, SubIssueReader, IssueClosingPullRequestsGateway {
   private readonly octokit: Octokit;
   constructor(octokit: Octokit) { this.octokit = octokit; }
 
@@ -171,42 +164,6 @@ export class IssueRepository implements IssueReader, IssueReopenGateway, IssueHi
 
       throw error;
     }
-  }
-
-  async getSingleSelectFieldValue(repository: RepositoryCoordinates, issueNumber: number, fieldName: string): Promise<string | null> {
-    const response = await this.octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/issue-field-values', {
-      ...repository,
-      issue_number: issueNumber,
-      headers: { ...API_HEADERS, 'X-GitHub-Api-Version': '2026-03-10' },
-    });
-    const fields = response.data as Array<{
-      issue_field_name: string;
-      data_type: string;
-      single_select_option?: { name: string } | null;
-    }>;
-    const field = fields.find((item) => item.issue_field_name === fieldName);
-    if (!field) return null;
-    if (field.data_type !== 'single_select') throw new Error(`Issue field "${fieldName}" is not single-select.`);
-    return field.single_select_option?.name ?? null;
-  }
-
-  async getIssueBody(repository: RepositoryCoordinates, issueNumber: number): Promise<string> {
-    const response = await this.octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
-      ...repository, issue_number: issueNumber, headers: API_HEADERS,
-    });
-    return response.data.body ?? '';
-  }
-
-  async updateIssueBody(repository: RepositoryCoordinates, issueNumber: number, body: string): Promise<void> {
-    await this.octokit.request('PATCH /repos/{owner}/{repo}/issues/{issue_number}', {
-      ...repository, issue_number: issueNumber, body, headers: API_HEADERS,
-    });
-  }
-
-  async removeSubIssue(parentRepository: RepositoryCoordinates, parentNumber: number, childId: number): Promise<void> {
-    await this.octokit.request('DELETE /repos/{owner}/{repo}/issues/{issue_number}/sub_issue', {
-      ...parentRepository, issue_number: parentNumber, sub_issue_id: childId, headers: API_HEADERS,
-    });
   }
 
   async listSubIssues(repository: RepositoryCoordinates, parentNumber: number): Promise<Array<IssueRecord & { isOpen: boolean }>> {
