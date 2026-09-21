@@ -186,17 +186,23 @@ describe('LinkPrToProject', () => {
     expect(dependencies.pullRequests.setAssignees).not.toHaveBeenCalled();
   });
 
-  it('copies the PR sprint to an issue that is outside a sprint', async () => {
+  it('uses the active sprint instead of a stale PR sprint when the linked issue has no sprint', async () => {
     const dependencies = createDependencies();
     vi.mocked(dependencies.projects.getIssueProjectItem)
       .mockReset()
       .mockResolvedValueOnce({ id: 'PR_ITEM', iterationId: 'SPRINT', iterationTitle: 'Sprint 1' })
       .mockResolvedValueOnce({ id: 'ISSUE_ITEM', iterationId: null, iterationTitle: '' });
+    vi.mocked(dependencies.projects.getIterationMetadata).mockResolvedValue({
+      projectId: 'PROJECT', projectTitle: 'Project', iterationFieldId: 'ITERATION_FIELD',
+      iterations: [{ id: 'ACTIVE', title: 'Active sprint', startDate: '2026-09-14', duration: 14 }],
+    });
 
-    await linkPrToProject(input, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+    await linkPrToProject(input, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger,
+      () => new Date('2026-09-19T12:00:00Z'));
 
-    expect(dependencies.projects.setIteration).toHaveBeenCalledTimes(1);
-    expect(dependencies.projects.setIteration).toHaveBeenCalledWith('PROJECT', 'ISSUE_ITEM', 'ITERATION_FIELD', 'SPRINT');
+    expect(dependencies.projects.setIteration).toHaveBeenCalledTimes(2);
+    expect(dependencies.projects.setIteration).toHaveBeenCalledWith('PROJECT', 'PR_ITEM', 'ITERATION_FIELD', 'ACTIVE');
+    expect(dependencies.projects.setIteration).toHaveBeenCalledWith('PROJECT', 'ISSUE_ITEM', 'ITERATION_FIELD', 'ACTIVE');
   });
 
   it('assigns the active sprint to both the issue and PR when neither has one', async () => {
@@ -215,8 +221,8 @@ describe('LinkPrToProject', () => {
       () => new Date('2026-09-19T12:00:00Z'),
     );
 
-    expect(dependencies.projects.setIteration).toHaveBeenNthCalledWith(1, 'PROJECT', 'ISSUE_ITEM', 'ITERATION_FIELD', 'ACTIVE');
-    expect(dependencies.projects.setIteration).toHaveBeenNthCalledWith(2, 'PROJECT', 'PR_ITEM', 'ITERATION_FIELD', 'ACTIVE');
+    expect(dependencies.projects.setIteration).toHaveBeenNthCalledWith(1, 'PROJECT', 'PR_ITEM', 'ITERATION_FIELD', 'ACTIVE');
+    expect(dependencies.projects.setIteration).toHaveBeenNthCalledWith(2, 'PROJECT', 'ISSUE_ITEM', 'ITERATION_FIELD', 'ACTIVE');
     expect(dependencies.issues.upsertIssueCommentByMarker).not.toHaveBeenCalled();
   });
 
@@ -237,6 +243,175 @@ describe('LinkPrToProject', () => {
       input.backlogRepository, 42, NO_ACTIVE_SPRINT_COMMENT_MARKER,
       expect.stringContaining('PR owner/service#7, но активный Sprint не найден'),
     );
+  });
+
+  it('selects the latest sprint from every body-linked issue when GitHub returns no indexed references', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.issues.getIssue).mockImplementation(async (_repository, issueNumber) => ({
+      id: issueNumber,
+      nodeId: `ISSUE_${issueNumber}`,
+      number: issueNumber,
+      repositoryUrl: 'https://api.github.com/repos/owner/backlog',
+      isPullRequest: false,
+    }));
+    vi.mocked(dependencies.projects.getIssueProjectItem).mockReset().mockImplementation(async (nodeId) => {
+      if (nodeId === 'PR_NODE') return { id: 'PR_ITEM', iterationId: null, iterationTitle: '' };
+      if (nodeId === 'ISSUE_1078') return { id: 'OLD_ITEM', iterationId: 'OLD', iterationTitle: 'Old sprint' };
+      if (nodeId === 'ISSUE_1145') return { id: 'CURRENT_ITEM', iterationId: 'CURRENT', iterationTitle: 'Current sprint' };
+      return null;
+    });
+    vi.mocked(dependencies.projects.getIterationMetadata).mockResolvedValue({
+      projectId: 'PROJECT',
+      projectTitle: 'Project',
+      iterationFieldId: 'ITERATION_FIELD',
+      iterations: [
+        { id: 'OLD', title: 'Old sprint', startDate: '2026-07-20', duration: 14 },
+        { id: 'CURRENT', title: 'Current sprint', startDate: '2026-09-14', duration: 14 },
+      ],
+    });
+
+    await linkPrToProject({
+      ...input,
+      headRef: '1078-gff-refine-user-info-domain-architecture',
+      pullRequestBodyHint: [
+        'Closes https://github.com/owner/backlog/issues/1145',
+        '',
+        '<!-- auto-linked -->',
+        'Closes owner/backlog#1078',
+      ].join('\n'),
+    }, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+
+    expect(dependencies.pullRequests.listClosingIssues).toHaveBeenCalledTimes(1);
+    expect(dependencies.issues.getIssue).toHaveBeenCalledWith(input.backlogRepository, 1145);
+    expect(dependencies.issues.getIssue).toHaveBeenCalledWith(input.backlogRepository, 1078);
+    expect(dependencies.projects.setIteration).toHaveBeenCalledTimes(1);
+    expect(dependencies.projects.setIteration).toHaveBeenCalledWith(
+      'PROJECT', 'PR_ITEM', 'ITERATION_FIELD', 'CURRENT',
+    );
+    expect(dependencies.projects.setIteration).not.toHaveBeenCalledWith(
+      'PROJECT', 'OLD_ITEM', 'ITERATION_FIELD', expect.anything(),
+    );
+    expect(dependencies.projects.setIteration).not.toHaveBeenCalledWith(
+      'PROJECT', 'CURRENT_ITEM', 'ITERATION_FIELD', expect.anything(),
+    );
+  });
+
+  it('assigns the selected sprint to an open linked issue without one', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.pullRequests.listClosingIssues).mockResolvedValue([
+      { nodeId: 'ISSUE_10', number: 10, repositoryNameWithOwner: 'owner/backlog' },
+      { nodeId: 'ISSUE_20', number: 20, repositoryNameWithOwner: 'owner/backlog' },
+    ]);
+    vi.mocked(dependencies.issues.getIssue).mockImplementation(async (_repository, issueNumber) => ({
+      id: issueNumber, nodeId: `ISSUE_${issueNumber}`, number: issueNumber,
+      repositoryUrl: 'https://api.github.com/repos/owner/backlog', isPullRequest: false,
+    }));
+    vi.mocked(dependencies.projects.getIssueProjectItem).mockReset().mockImplementation(async (nodeId) => {
+      if (nodeId === 'PR_NODE') return { id: 'PR_ITEM', iterationId: null, iterationTitle: '' };
+      if (nodeId === 'ISSUE_10') return { id: 'NO_SPRINT_ITEM', iterationId: null, iterationTitle: '' };
+      if (nodeId === 'ISSUE_20') return { id: 'SPRINT_ITEM', iterationId: 'SPRINT', iterationTitle: 'Sprint 1' };
+      return null;
+    });
+
+    await linkPrToProject({ ...input, headRef: 'feature' },
+      dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+
+    expect(dependencies.projects.setIteration).toHaveBeenCalledTimes(2);
+    expect(dependencies.projects.setIteration).toHaveBeenCalledWith(
+      'PROJECT', 'PR_ITEM', 'ITERATION_FIELD', 'SPRINT',
+    );
+    expect(dependencies.projects.setIteration).toHaveBeenCalledWith(
+      'PROJECT', 'NO_SPRINT_ITEM', 'ITERATION_FIELD', 'SPRINT',
+    );
+    expect(dependencies.projects.getIterationMetadata).not.toHaveBeenCalled();
+  });
+
+  it('assigns the active sprint to the PR and every open linked issue without one', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.pullRequests.listClosingIssues).mockResolvedValue([
+      { nodeId: 'ISSUE_10', number: 10, repositoryNameWithOwner: 'owner/backlog' },
+      { nodeId: 'ISSUE_20', number: 20, repositoryNameWithOwner: 'owner/backlog' },
+    ]);
+    vi.mocked(dependencies.issues.getIssue).mockImplementation(async (_repository, issueNumber) => ({
+      id: issueNumber, nodeId: `ISSUE_${issueNumber}`, number: issueNumber,
+      repositoryUrl: 'https://api.github.com/repos/owner/backlog', isPullRequest: false,
+    }));
+    vi.mocked(dependencies.projects.getIssueProjectItem).mockReset().mockImplementation(async (nodeId) =>
+      nodeId === 'PR_NODE'
+        ? { id: 'PR_ITEM', iterationId: null, iterationTitle: '' }
+        : { id: `${nodeId}_ITEM`, iterationId: null, iterationTitle: '' });
+    vi.mocked(dependencies.projects.getIterationMetadata).mockResolvedValue({
+      projectId: 'PROJECT', projectTitle: 'Project', iterationFieldId: 'ITERATION_FIELD',
+      iterations: [{ id: 'ACTIVE', title: 'Active sprint', startDate: '2026-09-14', duration: 14 }],
+    });
+
+    await linkPrToProject({ ...input, headRef: 'feature' },
+      dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger,
+      () => new Date('2026-09-19T12:00:00Z'));
+
+    expect(dependencies.projects.setIteration).toHaveBeenCalledTimes(3);
+    expect(dependencies.projects.setIteration).toHaveBeenCalledWith(
+      'PROJECT', 'PR_ITEM', 'ITERATION_FIELD', 'ACTIVE',
+    );
+    expect(dependencies.projects.setIteration).toHaveBeenCalledWith(
+      'PROJECT', 'ISSUE_10_ITEM', 'ITERATION_FIELD', 'ACTIVE',
+    );
+    expect(dependencies.projects.setIteration).toHaveBeenCalledWith(
+      'PROJECT', 'ISSUE_20_ITEM', 'ITERATION_FIELD', 'ACTIVE',
+    );
+  });
+
+  it('ignores a closed linked issue when choosing the latest sprint', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.pullRequests.listClosingIssues).mockResolvedValue([
+      { nodeId: 'CLOSED_ISSUE', number: 10, repositoryNameWithOwner: 'owner/backlog' },
+      { nodeId: 'OPEN_ISSUE', number: 20, repositoryNameWithOwner: 'owner/backlog' },
+    ]);
+    vi.mocked(dependencies.issues.getIssue).mockImplementation(async (_repository, issueNumber) => ({
+      id: issueNumber, nodeId: issueNumber === 10 ? 'CLOSED_ISSUE' : 'OPEN_ISSUE', number: issueNumber,
+      repositoryUrl: 'https://api.github.com/repos/owner/backlog', isPullRequest: false, isOpen: issueNumber !== 10,
+    }));
+    vi.mocked(dependencies.projects.getIssueProjectItem).mockReset().mockImplementation(async (nodeId) => {
+      if (nodeId === 'PR_NODE') return { id: 'PR_ITEM', iterationId: null, iterationTitle: '' };
+      if (nodeId === 'OPEN_ISSUE') return { id: 'OPEN_ITEM', iterationId: 'CURRENT', iterationTitle: 'Current sprint' };
+      if (nodeId === 'CLOSED_ISSUE') return { id: 'CLOSED_ITEM', iterationId: 'FUTURE', iterationTitle: 'Future sprint' };
+      return null;
+    });
+
+    await linkPrToProject({ ...input, headRef: 'feature' },
+      dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+
+    expect(dependencies.projects.setIteration).toHaveBeenCalledTimes(1);
+    expect(dependencies.projects.setIteration).toHaveBeenCalledWith(
+      'PROJECT', 'PR_ITEM', 'ITERATION_FIELD', 'CURRENT',
+    );
+    expect(dependencies.projects.getIssueProjectItem).not.toHaveBeenCalledWith(
+      'CLOSED_ISSUE', 'PROJECT', 'Iteration',
+    );
+  });
+
+  it('assigns only the PR to the active sprint when every linked issue is closed', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.issues.getIssue).mockResolvedValue({
+      id: 42, nodeId: 'ISSUE_NODE', number: 42,
+      repositoryUrl: 'https://api.github.com/repos/owner/backlog', isPullRequest: false, isOpen: false,
+    });
+    vi.mocked(dependencies.projects.getIssueProjectItem)
+      .mockReset()
+      .mockResolvedValueOnce({ id: 'PR_ITEM', iterationId: null, iterationTitle: '' });
+    vi.mocked(dependencies.projects.getIterationMetadata).mockResolvedValue({
+      projectId: 'PROJECT', projectTitle: 'Project', iterationFieldId: 'ITERATION_FIELD',
+      iterations: [{ id: 'ACTIVE', title: 'Active sprint', startDate: '2026-09-14', duration: 14 }],
+    });
+
+    await linkPrToProject(input, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger,
+      () => new Date('2026-09-19T12:00:00Z'));
+
+    expect(dependencies.projects.setIteration).toHaveBeenCalledTimes(1);
+    expect(dependencies.projects.setIteration).toHaveBeenCalledWith(
+      'PROJECT', 'PR_ITEM', 'ITERATION_FIELD', 'ACTIVE',
+    );
+    expect(dependencies.projects.addIssueToProject).not.toHaveBeenCalled();
   });
 
   it('promotes an existing Todo PR when an edited body creates a closing reference', async () => {
@@ -261,34 +436,23 @@ describe('LinkPrToProject', () => {
     expect(dependencies.issues.getIssue).toHaveBeenCalledWith(input.backlogRepository, 42);
   });
 
-  it('retries an edited closing reference while GitHub indexes the relationship', async () => {
-    vi.useFakeTimers();
-    try {
-      const dependencies = createDependencies();
-      vi.mocked(dependencies.pullRequests.listClosingIssues)
-        .mockResolvedValueOnce([])
-        .mockResolvedValue([
-          { nodeId: 'ISSUE_NODE', number: 42, repositoryNameWithOwner: 'owner/backlog' },
-        ]);
-      vi.mocked(dependencies.pullRequests.getPullRequestBody).mockResolvedValue('Closes owner/backlog#42');
-      vi.mocked(dependencies.projects.getIssueProjectItem)
-        .mockReset()
-        .mockResolvedValueOnce({ id: 'PR_ITEM', iterationId: null, iterationTitle: '' })
-        .mockResolvedValueOnce({ id: 'ISSUE_ITEM', iterationId: 'SPRINT', iterationTitle: 'Sprint 1' });
-      vi.mocked(dependencies.projects.getContentProjectItem).mockResolvedValue({
-        id: 'PR_ITEM', statusName: 'Todo', statusOptionId: 'TODO',
-      });
+  it('uses the PR body immediately while GitHub indexes an edited closing reference', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.pullRequests.listClosingIssues).mockResolvedValue([]);
+    vi.mocked(dependencies.pullRequests.getPullRequestBody).mockResolvedValue('Closes owner/backlog#42');
+    vi.mocked(dependencies.projects.getIssueProjectItem)
+      .mockReset()
+      .mockResolvedValueOnce({ id: 'PR_ITEM', iterationId: null, iterationTitle: '' })
+      .mockResolvedValueOnce({ id: 'ISSUE_ITEM', iterationId: 'SPRINT', iterationTitle: 'Sprint 1' });
+    vi.mocked(dependencies.projects.getContentProjectItem).mockResolvedValue({
+      id: 'PR_ITEM', statusName: 'Todo', statusOptionId: 'TODO',
+    });
 
-      const run = linkPrToProject({ ...input, action: 'edited', headRef: 'feature-without-issue-prefix' },
-        dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
-      await vi.runAllTimersAsync();
-      await run;
+    await linkPrToProject({ ...input, action: 'edited', headRef: 'feature-without-issue-prefix' },
+      dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
 
-      expect(dependencies.pullRequests.listClosingIssues).toHaveBeenCalledTimes(2);
-      expect(dependencies.projects.setSingleSelect).toHaveBeenCalledWith('PROJECT', 'PR_ITEM', 'STATUS_FIELD', 'PROGRESS');
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(dependencies.pullRequests.listClosingIssues).toHaveBeenCalledTimes(1);
+    expect(dependencies.projects.setSingleSelect).toHaveBeenCalledWith('PROJECT', 'PR_ITEM', 'STATUS_FIELD', 'PROGRESS');
   });
 
   it.each(['In review', 'Done', 'Blocked'])('does not downgrade an existing PR from %s after linking', async (statusName) => {
