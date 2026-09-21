@@ -47,7 +47,7 @@ function createDependencies() {
     getProjectMetadata: vi.fn().mockResolvedValue({ projectId: 'PROJECT', iterationFieldId: 'ITERATION_FIELD' }),
     getStatusMetadata: vi.fn().mockResolvedValue({
       projectId: 'PROJECT', projectTitle: 'Project', statusFieldId: 'STATUS_FIELD',
-      optionIdsByName: new Map([['Done', 'DONE'], ['In progress', 'PROGRESS'], ['In review', 'REVIEW']]),
+      optionIdsByName: new Map([['To do', 'TODO'], ['Done', 'DONE'], ['In progress', 'PROGRESS'], ['In review', 'REVIEW']]),
     }),
     getIssueProjectItem: vi.fn()
       .mockResolvedValueOnce(null)
@@ -365,6 +365,73 @@ describe('LinkPrToProject', () => {
     await linkPrToProject({ ...input, action: 'submitted', reviewState: 'commented' }, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
     expect(dependencies.pullRequests.getReviewState).not.toHaveBeenCalled();
     expect(dependencies.pullRequests.setAssignees).not.toHaveBeenCalled();
+  });
+
+  it('returns a PR and its linked issue to Todo when changes are requested', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.pullRequests.listClosingIssues).mockResolvedValue([
+      { nodeId: 'ISSUE_NODE', number: 42, repositoryNameWithOwner: 'owner/backlog' },
+    ]);
+    vi.mocked(dependencies.pullRequests.listAssignableLogins).mockResolvedValue(new Set(['author', 'reviewer']));
+    vi.mocked(dependencies.pullRequests.getAssigneeLogins).mockResolvedValue(['reviewer']);
+    vi.mocked(dependencies.pullRequests.getReviewState).mockResolvedValue({
+      author: 'author', requestedReviewers: [], requestedTeams: 0,
+    });
+    vi.mocked(dependencies.projects.getContentProjectItem).mockImplementation(async (nodeId) =>
+      ({ id: nodeId === 'ISSUE_NODE' ? 'ISSUE_ITEM' : 'PR_ITEM', statusName: 'In review', statusOptionId: 'REVIEW' }));
+
+    await linkPrToProject({
+      ...input,
+      action: 'submitted',
+      reviewState: 'changes_requested',
+      reviewActorLogin: 'reviewer',
+      reviewActorType: 'User',
+    }, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+
+    expect(dependencies.pullRequests.setAssignees).toHaveBeenCalledWith(input.pullRequestRepository, 7, ['author']);
+    expect(dependencies.projects.setSingleSelect).toHaveBeenCalledWith('PROJECT', 'PR_ITEM', 'STATUS_FIELD', 'TODO');
+    expect(dependencies.projects.setSingleSelect).toHaveBeenCalledWith('PROJECT', 'ISSUE_ITEM', 'STATUS_FIELD', 'TODO');
+  });
+
+  it('recognizes Todo regardless of spaces and letter case', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.projects.getStatusMetadata).mockResolvedValue({
+      projectId: 'PROJECT', projectTitle: 'Project', statusFieldId: 'STATUS_FIELD',
+      optionIdsByName: new Map([['TODO', 'TODO'], ['Done', 'DONE'], ['In progress', 'PROGRESS'], ['In review', 'REVIEW']]),
+    });
+    vi.mocked(dependencies.pullRequests.getReviewState).mockResolvedValue({
+      author: 'author', requestedReviewers: [], requestedTeams: 0,
+    });
+    vi.mocked(dependencies.projects.getContentProjectItem).mockResolvedValue({
+      id: 'PR_ITEM', statusName: 'In review', statusOptionId: 'REVIEW',
+    });
+
+    await linkPrToProject({
+      ...input,
+      headRef: 'feature',
+      action: 'submitted',
+      reviewState: 'changes_requested',
+      reviewActorLogin: 'reviewer',
+      reviewActorType: 'User',
+    }, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+
+    expect(dependencies.projects.setSingleSelect).toHaveBeenCalledWith('PROJECT', 'PR_ITEM', 'STATUS_FIELD', 'TODO');
+  });
+
+  it('does not return a PR to Todo for bot review changes', async () => {
+    const dependencies = createDependencies();
+
+    await linkPrToProject({
+      ...input,
+      headRef: 'feature',
+      action: 'submitted',
+      reviewState: 'changes_requested',
+      reviewActorLogin: 'review-bot[bot]',
+      reviewActorType: 'Bot',
+    }, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+
+    expect(dependencies.projects.getContentProjectItem).not.toHaveBeenCalled();
+    expect(dependencies.projects.setSingleSelect).not.toHaveBeenCalled();
   });
 
   it('does not assign the author when only a team review is pending', async () => {
