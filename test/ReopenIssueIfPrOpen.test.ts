@@ -36,6 +36,13 @@ describe('ReopenIssueIfPrOpen', () => {
     );
   });
 
+  it('reopens for a full GitHub issue URL using the shared closing-reference parser', async () => {
+    const dependencies = createDependencies('Fixes https://github.com/owner/backlog/issues/42');
+    await reopenIssueIfPrOpen(input, dependencies.issues, dependencies.logger);
+
+    expect(dependencies.issues.reopenIssue).toHaveBeenCalledWith(input.repository, 42);
+  });
+
   it('ignores cross-references without a closing keyword for the target issue', async () => {
     const dependencies = createDependencies('Related to owner/backlog#42');
     await reopenIssueIfPrOpen(input, dependencies.issues, dependencies.logger);
