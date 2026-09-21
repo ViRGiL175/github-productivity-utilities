@@ -2,6 +2,7 @@ import type { IssueClosingPullRequestsGateway, IssueManagedCommentGateway, Issue
 import type { ProjectIterationGateway, ProjectStatusGateway, ProjectV2Gateway } from '../../github/ProjectV2Repository.ts';
 import type { PullRequestClosingIssuesGateway, PullRequestMutationGateway } from '../../github/PullRequestRepository.ts';
 import type { Logger } from '../../runtime/Logger.ts';
+import { collectClosingIssueReferences } from '../../github/ClosingReferenceParser.ts';
 import { findCurrentIteration } from '../ensure-next-iteration-reminder/EnsureNextIterationReminder.ts';
 
 export interface RequestedReviewer {
@@ -151,38 +152,37 @@ now: () => Date = () => new Date(),
     logger.info(`PR #${input.pullRequestNumber} already has status ${currentStatus.statusName}; it will not be downgraded to ${input.statusInProgressValue}.`);
   }
 
-  const issueNumber = selectPrimaryIssueNumber(closingIssueNumbers, branchIssueNumber, logger);
   if (linkedIssueNumbers.length === 0) {
     logger.info(`No backlog issue is linked to PR #${input.pullRequestNumber}. Skipping sprint and assignee sync.`);
     return;
   }
 
+  const openIssues: Array<Awaited<ReturnType<IssueReader['getIssue']>>> = [];
+  for (const linkedIssueNumber of linkedIssueNumbers) {
+    const issue = await issues.getIssue(input.backlogRepository, linkedIssueNumber);
+    if (issue.isOpen === false) {
+      logger.info(`Ignoring closed linked issue #${linkedIssueNumber} for sprint and assignee sync.`);
+      continue;
+    }
+    openIssues.push(issue);
+  }
+  const openIssueNumbers = openIssues.map((issue) => issue.number);
+  const openBranchIssueNumber = branchIssueNumber && openIssueNumbers.includes(branchIssueNumber)
+    ? branchIssueNumber
+    : null;
+  const issueNumber = selectPrimaryIssueNumber(openIssueNumbers, openBranchIssueNumber, logger);
   if (issueNumber) {
     await syncAssignees(input, issueNumber, pullRequests, logger);
-  } else {
+  } else if (openIssueNumbers.length > 0) {
     logger.info(`No unambiguous backlog issue is available for assignee sync on PR #${input.pullRequestNumber}.`);
   }
 
-  if (linkedIssueNumbers.length === 1) {
-    const linkedIssueNumber = linkedIssueNumbers[0]!;
-    const issue = await issues.getIssue(input.backlogRepository, linkedIssueNumber);
-    const issueItem = await projects.getIssueProjectItem(
-      issue.nodeId,
-      iterationMetadata.projectId,
-      input.iterationFieldName,
-    );
-    await syncSprint(
-      input, linkedIssueNumber, issueItem, projectItem, itemId, iterationMetadata.projectId,
-      iterationMetadata.iterationFieldId, issues, projects, logger, now,
-    );
-    if (!closingIssueNumbers.includes(linkedIssueNumber)) {
-      await appendClosingReference(input, linkedIssueNumber, pullRequests);
-    }
-  } else {
-    await syncLatestLinkedIssueSprint(
-      input, linkedIssueNumbers, projectItem, itemId, iterationMetadata.projectId,
-      iterationMetadata.iterationFieldId, issues, projects, logger, now,
-    );
+  await syncLinkedIssueSprints(
+    input, openIssues, projectItem, itemId, iterationMetadata.projectId,
+    iterationMetadata.iterationFieldId, issues, projects, logger, now,
+  );
+  if (openIssueNumbers.length === 1 && !closingIssueNumbers.includes(openIssueNumbers[0]!)) {
+    await appendClosingReference(input, openIssueNumbers[0]!, pullRequests);
   }
   await syncLinkedIssueReviewStatus(
     input,
@@ -196,14 +196,14 @@ now: () => Date = () => new Date(),
   );
 }
 
-async function syncLatestLinkedIssueSprint(
+async function syncLinkedIssueSprints(
   input: LinkPrToProjectInput,
-  issueNumbers: number[],
+  openIssues: Array<Awaited<ReturnType<IssueReader['getIssue']>>>,
   pullRequestItem: Awaited<ReturnType<ProjectV2Gateway['getIssueProjectItem']>>,
   pullRequestItemId: string,
   projectId: string,
   iterationFieldId: string,
-  issues: IssueReader,
+  issues: IssueManagedCommentGateway,
   projects: ProjectGateway,
   logger: Logger,
   now: () => Date,
@@ -212,14 +212,18 @@ async function syncLatestLinkedIssueSprint(
     issueNumber: number;
     item: NonNullable<Awaited<ReturnType<ProjectV2Gateway['getIssueProjectItem']>>>;
   }> = [];
-  for (const issueNumber of issueNumbers) {
-    const issue = await issues.getIssue(input.backlogRepository, issueNumber);
-    const item = await projects.getIssueProjectItem(issue.nodeId, projectId, input.iterationFieldName);
-    if (item) issueItems.push({ issueNumber, item });
-    else logger.info(`Issue #${issueNumber} is not in project ${input.projectOwner}#${input.projectNumber}.`);
+  for (const issue of openIssues) {
+    let item = await projects.getIssueProjectItem(issue.nodeId, projectId, input.iterationFieldName);
+    if (!item) {
+      const itemId = await projects.addIssueToProject(projectId, issue.nodeId);
+      item = { id: itemId, iterationId: null, iterationTitle: '' };
+      logger.info(`Added linked issue #${issue.number} to project ${input.projectOwner}#${input.projectNumber}.`);
+    }
+    issueItems.push({ issueNumber: issue.number, item });
   }
 
   const sprintItems = issueItems.filter(({ item }) => item.iterationId !== null);
+  let targetSprint: { id: string; title: string } | null = null;
   if (sprintItems.length === 0) {
     const metadata = await projects.getIterationMetadata(
       input.projectOwner,
@@ -229,43 +233,42 @@ async function syncLatestLinkedIssueSprint(
     assertIterationMetadata(metadata, projectId, iterationFieldId);
     const active = findCurrentIteration(metadata.iterations, now());
     if (!active) {
-      logger.warning(`None of the linked issues has a sprint and no active sprint was found for PR #${input.pullRequestNumber}.`);
+      await commentWhenNoActiveSprint(input, openIssues.map((issue) => issue.number), issues, logger);
       return;
     }
-    if (pullRequestItem?.iterationId !== active.id) {
-      await projects.setIteration(projectId, pullRequestItemId, iterationFieldId, active.id);
+    targetSprint = active;
+  } else {
+    let selected = sprintItems[0]!;
+    const distinctSprintIds = new Set(sprintItems.map(({ item }) => item.iterationId));
+    if (distinctSprintIds.size > 1) {
+      const metadata = await projects.getIterationMetadata(
+        input.projectOwner,
+        input.projectNumber,
+        input.iterationFieldName,
+      );
+      assertIterationMetadata(metadata, projectId, iterationFieldId);
+      const iterationsById = new Map(metadata.iterations.map((iteration) => [iteration.id, iteration]));
+      const missing = [...distinctSprintIds].filter((id) => id && !iterationsById.has(id));
+      if (missing.length > 0) {
+        throw new Error(`Sprint metadata is missing for linked issue iteration(s): ${missing.join(', ')}.`);
+      }
+      selected = sprintItems.reduce((latest, candidate) => {
+        const latestStart = iterationsById.get(latest.item.iterationId!)!.startDate;
+        const candidateStart = iterationsById.get(candidate.item.iterationId!)!.startDate;
+        return candidateStart > latestStart ? candidate : latest;
+      });
     }
-    logger.info(`None of the linked issues has a sprint; assigned active sprint ${active.title} to PR #${input.pullRequestNumber}.`);
-    return;
+    targetSprint = { id: selected.item.iterationId!, title: selected.item.iterationTitle || selected.item.iterationId! };
   }
 
-  let selected = sprintItems[0]!;
-  const distinctSprintIds = new Set(sprintItems.map(({ item }) => item.iterationId));
-  if (distinctSprintIds.size > 1) {
-    const metadata = await projects.getIterationMetadata(
-      input.projectOwner,
-      input.projectNumber,
-      input.iterationFieldName,
-    );
-    assertIterationMetadata(metadata, projectId, iterationFieldId);
-    const iterationsById = new Map(metadata.iterations.map((iteration) => [iteration.id, iteration]));
-    const missing = [...distinctSprintIds].filter((id) => id && !iterationsById.has(id));
-    if (missing.length > 0) {
-      throw new Error(`Sprint metadata is missing for linked issue iteration(s): ${missing.join(', ')}.`);
-    }
-    selected = sprintItems.reduce((latest, candidate) => {
-      const latestStart = iterationsById.get(latest.item.iterationId!)!.startDate;
-      const candidateStart = iterationsById.get(candidate.item.iterationId!)!.startDate;
-      return candidateStart > latestStart ? candidate : latest;
-    });
+  if (pullRequestItem?.iterationId !== targetSprint.id) {
+    await projects.setIteration(projectId, pullRequestItemId, iterationFieldId, targetSprint.id);
   }
-
-  if (pullRequestItem?.iterationId === selected.item.iterationId) {
-    logger.info(`PR #${input.pullRequestNumber} already has the latest linked sprint ${selected.item.iterationTitle || selected.item.iterationId}.`);
-    return;
+  for (const { issueNumber, item } of issueItems.filter(({ item }) => item.iterationId === null)) {
+    await projects.setIteration(projectId, item.id, iterationFieldId, targetSprint.id);
+    logger.info(`Assigned sprint ${targetSprint.title} to linked issue #${issueNumber}.`);
   }
-  await projects.setIteration(projectId, pullRequestItemId, iterationFieldId, selected.item.iterationId!);
-  logger.info(`Selected latest sprint ${selected.item.iterationTitle || selected.item.iterationId} from linked issue #${selected.issueNumber} for PR #${input.pullRequestNumber}.`);
+  logger.info(`Assigned selected sprint ${targetSprint.title} to PR #${input.pullRequestNumber} and every open linked issue without a sprint.`);
 }
 
 function assertIterationMetadata(
@@ -278,65 +281,31 @@ function assertIterationMetadata(
   }
 }
 
-async function syncSprint(
+async function commentWhenNoActiveSprint(
   input: LinkPrToProjectInput,
-  issueNumber: number,
-  issueItem: Awaited<ReturnType<ProjectV2Gateway['getIssueProjectItem']>>,
-  pullRequestItem: Awaited<ReturnType<ProjectV2Gateway['getIssueProjectItem']>>,
-  pullRequestItemId: string,
-  projectId: string,
-  iterationFieldId: string,
+  issueNumbers: number[],
   issues: IssueManagedCommentGateway,
-  projects: ProjectGateway,
   logger: Logger,
-  now: () => Date,
 ): Promise<void> {
-  if (!issueItem) {
-    logger.info(`Issue #${issueNumber} is not in project ${input.projectOwner}#${input.projectNumber}.`);
-    return;
-  }
-  if (issueItem.iterationId) {
-    if (pullRequestItem?.iterationId === issueItem.iterationId) {
-      logger.info(`PR #${input.pullRequestNumber} already has sprint ${issueItem.iterationTitle || issueItem.iterationId}.`);
-      return;
-    }
-    await projects.setIteration(projectId, pullRequestItemId, iterationFieldId, issueItem.iterationId);
-    logger.info(`Copied sprint ${issueItem.iterationTitle || issueItem.iterationId} from issue #${issueNumber} to PR #${input.pullRequestNumber}.`);
-    return;
-  }
-  if (pullRequestItem?.iterationId) {
-    await projects.setIteration(projectId, issueItem.id, iterationFieldId, pullRequestItem.iterationId);
-    logger.info(`Copied sprint ${pullRequestItem.iterationTitle || pullRequestItem.iterationId} from PR #${input.pullRequestNumber} to issue #${issueNumber}.`);
-    return;
-  }
-
-  const metadata = await projects.getIterationMetadata(
-    input.projectOwner,
-    input.projectNumber,
-    input.iterationFieldName,
-  );
-  assertIterationMetadata(metadata, projectId, iterationFieldId);
-  const active = findCurrentIteration(metadata.iterations, now());
-  if (active) {
-    await projects.setIteration(projectId, issueItem.id, iterationFieldId, active.id);
-    await projects.setIteration(projectId, pullRequestItemId, iterationFieldId, active.id);
-    logger.info(`Assigned active sprint ${active.title} to issue #${issueNumber} and PR #${input.pullRequestNumber}.`);
-    return;
-  }
-
   const pullRequestReference = `${input.pullRequestRepository.owner}/${input.pullRequestRepository.repo}#${input.pullRequestNumber}`;
   const comment = [
     `⚠️ Задача связана с PR ${pullRequestReference}, но активный Sprint не найден. Назначь Sprint вручную.`,
     '',
     NO_ACTIVE_SPRINT_COMMENT_MARKER,
   ].join('\n');
-  const result = await issues.upsertIssueCommentByMarker(
-    input.backlogRepository,
-    issueNumber,
-    NO_ACTIVE_SPRINT_COMMENT_MARKER,
-    comment,
-  );
-  logger.info(`Active sprint was not found; managed issue comment was ${result}.`);
+  if (issueNumbers.length === 0) {
+    logger.warning(`No open linked issues have a sprint and no active sprint was found for PR #${input.pullRequestNumber}.`);
+    return;
+  }
+  for (const issueNumber of issueNumbers) {
+    const result = await issues.upsertIssueCommentByMarker(
+      input.backlogRepository,
+      issueNumber,
+      NO_ACTIVE_SPRINT_COMMENT_MARKER,
+      comment,
+    );
+    logger.info(`Active sprint was not found; managed comment on issue #${issueNumber} was ${result}.`);
+  }
 }
 
 function optionalStatusOption(
@@ -544,7 +513,11 @@ async function resolveClosingIssueNumbers(
   const matching = matchingBacklogIssueNumbers(references, input.backlogRepository);
   const body = input.pullRequestBodyHint
     || await pullRequests.getPullRequestBody(input.pullRequestRepository, input.pullRequestNumber);
-  const bodyIssueNumbers = extractClosingIssueNumbers(body, input);
+  const bodyIssueNumbers = collectClosingIssueReferences(body, input.pullRequestRepository)
+    .filter((reference) =>
+      reference.repository.owner.toLowerCase() === input.backlogRepository.owner.toLowerCase()
+      && reference.repository.repo.toLowerCase() === input.backlogRepository.repo.toLowerCase())
+    .map((reference) => reference.number);
   const resolved = [...new Set([...matching, ...bodyIssueNumbers])];
   if (bodyIssueNumbers.length > 0 && matching.length < resolved.length) {
     logger.info(`Read closing issue reference(s) ${bodyIssueNumbers.join(', ')} from the PR body because GitHub's relationship index may be incomplete.`);
@@ -560,23 +533,6 @@ function matchingBacklogIssueNumbers(
   return [...new Set(references
     .filter((reference) => reference.repositoryNameWithOwner.toLowerCase() === expected)
     .map((reference) => reference.number))];
-}
-
-function extractClosingIssueNumbers(body: string, input: LinkPrToProjectInput): number[] {
-  const keyword = '(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)';
-  const fullRepository = escapeRegExp(`${input.backlogRepository.owner}/${input.backlogRepository.repo}`);
-  const sameRepository = input.backlogRepository.owner.toLowerCase() === input.pullRequestRepository.owner.toLowerCase()
-    && input.backlogRepository.repo.toLowerCase() === input.pullRequestRepository.repo.toLowerCase();
-  const repositoryReference = `${fullRepository}#(\\d+)`;
-  const issueUrl = `https://github\\.com/${fullRepository}/issues/(\\d+)`;
-  const sameRepositoryReference = sameRepository ? '|#(\\d+)' : '';
-  const pattern = new RegExp(`\\b${keyword}\\s+(?:${issueUrl}|${repositoryReference}${sameRepositoryReference})\\b`, 'gi');
-  const numbers: number[] = [];
-  for (const match of body.matchAll(pattern)) {
-    const value = match[1] ?? match[2] ?? match[3];
-    if (value) numbers.push(Number(value));
-  }
-  return [...new Set(numbers)];
 }
 
 function selectPrimaryIssueNumber(
@@ -600,10 +556,6 @@ function findTodoStatusOption(options: ReadonlyMap<string, string>): { id: strin
     if (name.toLowerCase().replace(/[\s_-]+/g, '') === 'todo') return { id, name };
   }
   return null;
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 export function extractIssueNumber(branchName: string): number | null {
