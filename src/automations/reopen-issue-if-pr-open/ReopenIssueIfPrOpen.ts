@@ -1,4 +1,5 @@
 import type { IssueReopenGateway, RepositoryCoordinates } from '../../github/IssueRepository.ts';
+import { hasClosingIssueReference } from '../../github/ClosingReferenceParser.ts';
 import type { Logger } from '../../runtime/Logger.ts';
 
 export interface ReopenIssueIfPrOpenInput {
@@ -15,11 +16,14 @@ logger: Logger,
     throw new Error('A valid issue_number input or github.event.issue.number is required.');
   }
 
-  const targetRef = `${input.repository.owner}/${input.repository.repo}#${input.issueNumber}`;
-  const closingPattern = new RegExp(`\\b(?:closes|fixes|resolves)\\s+${escapeRegExp(targetRef)}\\b`, 'i');
   const pullRequests = await issues.listCrossReferencedPullRequests(input.repository, input.issueNumber);
   const openPullRequests = pullRequests.filter(
-    (pullRequest) => pullRequest.state === 'OPEN' && closingPattern.test(pullRequest.body),
+    (pullRequest) => pullRequest.state === 'OPEN' && hasClosingIssueReference(
+      pullRequest.body,
+      input.repository,
+      input.issueNumber,
+      parseRepositoryNameWithOwner(pullRequest.repositoryNameWithOwner),
+    ),
   );
 
   if (openPullRequests.length === 0) {
@@ -47,13 +51,14 @@ logger: Logger,
       'Чтобы закрыть Issue, выберите один из вариантов для каждого PR:',
       '1. **Мёрдж PR** — Issue закроется сама через `Closes`.',
       '2. **Закрыть PR без мёрджа** — Issue больше не будет переоткрываться из-за него.',
-      `3. **Отвязать PR от Issue** — уберите строку \`Closes ${targetRef}\` из тела PR, затем закройте Issue вручную.`,
+      `3. **Отвязать PR от Issue** — уберите closing-ссылку на ${input.repository.owner}/${input.repository.repo}#${input.issueNumber} из тела PR, затем закройте Issue вручную.`,
     ].join('\n'),
   );
 
   logger.info(`Issue #${input.issueNumber} was reopened and commented successfully.`);
 }
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function parseRepositoryNameWithOwner(value: string): RepositoryCoordinates | undefined {
+  const [owner, repo, ...rest] = value.split('/');
+  return owner && repo && rest.length === 0 ? { owner, repo } : undefined;
 }
