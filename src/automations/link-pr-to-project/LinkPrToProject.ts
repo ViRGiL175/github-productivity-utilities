@@ -98,6 +98,26 @@ now: () => Date = () => new Date(),
       return;
     }
     await syncReviewAssignees(input, pullRequests, logger);
+    if (input.action === 'submitted' && input.reviewState?.toLowerCase() === 'changes_requested' &&
+      await isHumanReviewActor(input, pullRequests)) {
+      const todoOption = findTodoStatusOption(statusMetadata.optionIdsByName);
+      if (!todoOption) {
+        logger.warning(`Todo status option was not found in field ${input.statusFieldName}; status update will be skipped.`);
+        return;
+      }
+      const closingIssueNumbers = await resolveClosingIssueNumbers(input, pullRequests, logger);
+      const branchIssueNumber = extractIssueNumber(input.headRef);
+      await moveReviewBackToTodo(
+        input,
+        closingIssueNumbers.length > 0 ? closingIssueNumbers : branchIssueNumber ? [branchIssueNumber] : [],
+        issues,
+        projects,
+        statusMetadata.projectId,
+        statusMetadata.statusFieldId,
+        todoOption,
+        logger,
+      );
+    }
     return;
   }
 
@@ -337,6 +357,11 @@ async function syncReviewAssignees(input: LinkPrToProjectInput, pullRequests: Pu
   logger.info(`Set PR #${input.pullRequestNumber} assignees to ${desired.join(', ')}.`);
 }
 
+async function isHumanReviewActor(input: LinkPrToProjectInput, pullRequests: PullRequestGateway): Promise<boolean> {
+  if (!input.reviewActorLogin) return false;
+  return (input.reviewActorType || await pullRequests.getUserType(input.reviewActorLogin)) === 'User';
+}
+
 async function syncLinkedIssueReviewStatus(
   input: LinkPrToProjectInput,
   issueNumbers: number[],
@@ -370,6 +395,37 @@ async function syncLinkedIssueReviewStatus(
     if (!issueItem || issueItem.statusName === input.statusInReviewValue) continue;
     await projects.setSingleSelect(projectId, issueItem.id, statusFieldId, inReviewOptionId);
     logger.info(`All ${linked.length} open linked PR(s) are in review; set issue #${issueNumber} status to ${input.statusInReviewValue}.`);
+  }
+}
+
+async function moveReviewBackToTodo(
+  input: LinkPrToProjectInput,
+  issueNumbers: number[],
+  issues: IssueGateway,
+  projects: ProjectGateway,
+  projectId: string,
+  statusFieldId: string,
+  todoOption: { id: string; name: string },
+  logger: Logger,
+): Promise<void> {
+  const pullRequestItem = await projects.getContentProjectItem(input.pullRequestNodeId, projectId, input.statusFieldName);
+  if (pullRequestItem && pullRequestItem.statusOptionId !== todoOption.id) {
+    await projects.setSingleSelect(projectId, pullRequestItem.id, statusFieldId, todoOption.id);
+    logger.info(`Changes were requested; set PR #${input.pullRequestNumber} status to ${todoOption.name}.`);
+  }
+
+  for (const issueNumber of [...new Set(issueNumbers)]) {
+    const issue = await issues.getIssue(input.backlogRepository, issueNumber);
+    if (issue.isOpen === false) continue;
+    const linked = await issues.listOpenClosingPullRequests(input.backlogRepository, issueNumber);
+    if (!linked.some((pullRequest) => pullRequest.nodeId === input.pullRequestNodeId)) {
+      logger.info(`PR #${input.pullRequestNumber} is not yet listed among closing PRs of issue #${issueNumber}; leaving its status unchanged.`);
+      continue;
+    }
+    const issueItem = await projects.getContentProjectItem(issue.nodeId, projectId, input.statusFieldName);
+    if (!issueItem || issueItem.statusOptionId === todoOption.id) continue;
+    await projects.setSingleSelect(projectId, issueItem.id, statusFieldId, todoOption.id);
+    logger.info(`Changes were requested on PR #${input.pullRequestNumber}; set issue #${issueNumber} status to ${todoOption.name}.`);
   }
 }
 
@@ -439,6 +495,13 @@ function selectPrimaryIssueNumber(
 
 function canPromoteToInProgress(statusName: string | null): boolean {
   return statusName === null || statusName.toLowerCase().replace(/[\s_-]+/g, '') === 'todo';
+}
+
+function findTodoStatusOption(options: ReadonlyMap<string, string>): { id: string; name: string } | null {
+  for (const [name, id] of options) {
+    if (name.toLowerCase().replace(/[\s_-]+/g, '') === 'todo') return { id, name };
+  }
+  return null;
 }
 
 function escapeRegExp(value: string): string {
