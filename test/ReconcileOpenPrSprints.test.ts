@@ -34,4 +34,32 @@ describe('ReconcileOpenPrSprints', () => {
     expect(projects.setIteration).not.toHaveBeenCalled();
     expect(pullRequests.listClosingIssues).not.toHaveBeenCalled();
   });
+
+  it('limits an on-demand reconciliation to the selected PR number', async () => {
+    const issues = {} as IssueReader & IssueManagedCommentGateway;
+    const pullRequests = {
+      listPullRequests: vi.fn().mockResolvedValue([
+        { nodeId: 'PR_7', number: 7, updatedAt: '2026-09-23T00:00:00Z', authorLogin: 'author' },
+        { nodeId: 'PR_8', number: 8, updatedAt: '2026-09-23T00:00:00Z', authorLogin: 'author' },
+      ]),
+      listClosingIssues: vi.fn().mockResolvedValue([]),
+      getPullRequestBody: vi.fn().mockResolvedValue(''),
+    } as PullRequestListGateway & PullRequestClosingIssuesGateway & Pick<PullRequestMutationGateway, 'getPullRequestBody'>;
+    const projects = {
+      getProjectMetadata: vi.fn().mockResolvedValue({ projectId: 'PROJECT', iterationFieldId: 'SPRINT_FIELD' }),
+      getIssueProjectItem: vi.fn().mockResolvedValue(null),
+      addIssueToProject: vi.fn(),
+      setIteration: vi.fn(),
+      getIterationMetadata: vi.fn(),
+    } as ProjectV2Gateway & Pick<ProjectIterationGateway, 'getIterationMetadata'>;
+    const logger: Logger = { info: vi.fn(), warning: vi.fn() };
+
+    await reconcileOpenPrSprints({
+      projectOwner: 'owner', projectNumber: 4, backlogRepository: { owner: 'owner', repo: 'backlog' },
+      iterationFieldName: 'Sprint', repositories: 'owner/client', pullRequestNumber: 8,
+    }, issues, pullRequests, projects, logger);
+
+    expect(projects.getIssueProjectItem).toHaveBeenCalledOnce();
+    expect(projects.getIssueProjectItem).toHaveBeenCalledWith('PR_8', 'PROJECT', 'Sprint');
+  });
 });

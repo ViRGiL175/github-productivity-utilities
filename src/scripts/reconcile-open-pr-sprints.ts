@@ -12,5 +12,6 @@ export async function run(github: Octokit): Promise<void> {
     backlogRepository: { owner: required('BACKLOG_REPO_OWNER'), repo: required('BACKLOG_REPO') },
     iterationFieldName: required('ITERATION_FIELD_NAME'),
     repositories: required('REPOSITORIES'),
+    pullRequestNumber: Number(process.env.RECONCILE_PULL_REQUEST_NUMBER || '0'),
   }, new IssueRepository(github), new PullRequestRepository(github), new ProjectV2Repository(github), logger);
 }
