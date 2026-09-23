@@ -145,7 +145,7 @@ now: () => Date = () => new Date(),
   const currentStatus = wasJustAdded
     ? null
     : await projects.getContentProjectItem(input.pullRequestNodeId, statusMetadata.projectId, input.statusFieldName);
-  if (inProgressOptionId && (wasJustAdded || (hasLinkedIssue && canPromoteToInProgress(currentStatus?.statusName ?? null)))) {
+  if (inProgressOptionId && (wasJustAdded || !currentStatus?.statusName || (hasLinkedIssue && canPromoteToInProgress(currentStatus.statusName)))) {
     await projects.setSingleSelect(statusMetadata.projectId, itemId, statusMetadata.statusFieldId, inProgressOptionId);
     logger.info(`Set status ${input.statusFieldName}=${input.statusInProgressValue} for PR #${input.pullRequestNumber}.`);
   } else if (hasLinkedIssue && currentStatus?.statusName) {
@@ -196,6 +196,45 @@ now: () => Date = () => new Date(),
   );
 }
 
+export async function reconcilePrSprint(
+  input: LinkPrToProjectInput,
+  issues: IssueReader & IssueManagedCommentGateway,
+  pullRequests: PullRequestClosingIssuesGateway & Pick<PullRequestMutationGateway, 'getPullRequestBody'>,
+  projects: ProjectV2Gateway & Pick<ProjectIterationGateway, 'getIterationMetadata'>,
+  logger: Logger,
+  now: () => Date = () => new Date(),
+): Promise<void> {
+  validateInput(input);
+  const project = await projects.getProjectMetadata(input.projectOwner, input.projectNumber, input.iterationFieldName);
+  const pullRequestItem = await projects.getIssueProjectItem(
+    input.pullRequestNodeId, project.projectId, input.iterationFieldName,
+  );
+  if (!pullRequestItem) {
+    logger.info(`PR #${input.pullRequestNumber} is not in project ${input.projectOwner}#${input.projectNumber}; skipping Sprint reconciliation.`);
+    return;
+  }
+
+  const closingIssueNumbers = await resolveClosingIssueNumbers(input, pullRequests, logger);
+  const branchIssueNumber = extractIssueNumber(input.headRef);
+  const linkedIssueNumbers = closingIssueNumbers.length > 0
+    ? closingIssueNumbers
+    : branchIssueNumber ? [branchIssueNumber] : [];
+  const openIssues: Array<Awaited<ReturnType<IssueReader['getIssue']>>> = [];
+  for (const issueNumber of linkedIssueNumbers) {
+    const issue = await issues.getIssue(input.backlogRepository, issueNumber);
+    if (issue.isOpen !== false) openIssues.push(issue);
+  }
+  if (openIssues.length === 0) {
+    logger.info(`PR #${input.pullRequestNumber} has no open linked backlog issue; skipping Sprint reconciliation.`);
+    return;
+  }
+
+  await syncLinkedIssueSprints(
+    input, openIssues, pullRequestItem, pullRequestItem.id, project.projectId,
+    project.iterationFieldId, issues, projects, logger, now,
+  );
+}
+
 async function syncLinkedIssueSprints(
   input: LinkPrToProjectInput,
   openIssues: Array<Awaited<ReturnType<IssueReader['getIssue']>>>,
@@ -204,7 +243,7 @@ async function syncLinkedIssueSprints(
   projectId: string,
   iterationFieldId: string,
   issues: IssueManagedCommentGateway,
-  projects: ProjectGateway,
+  projects: ProjectV2Gateway & Pick<ProjectIterationGateway, 'getIterationMetadata'>,
   logger: Logger,
   now: () => Date,
 ): Promise<void> {
@@ -506,7 +545,7 @@ async function appendClosingReference(input: LinkPrToProjectInput, issueNumber: 
 
 async function resolveClosingIssueNumbers(
   input: LinkPrToProjectInput,
-  pullRequests: PullRequestGateway,
+  pullRequests: PullRequestClosingIssuesGateway & Pick<PullRequestMutationGateway, 'getPullRequestBody'>,
   logger: Logger,
 ): Promise<number[]> {
   const references = await pullRequests.listClosingIssues(input.pullRequestRepository, input.pullRequestNumber);

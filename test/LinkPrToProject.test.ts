@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { linkPrToProject, NO_ACTIVE_SPRINT_COMMENT_MARKER } from '../src/automations/link-pr-to-project/LinkPrToProject.js';
+import { linkPrToProject, reconcilePrSprint, NO_ACTIVE_SPRINT_COMMENT_MARKER } from '../src/automations/link-pr-to-project/LinkPrToProject.js';
 import type { IssueClosingPullRequestsGateway, IssueManagedCommentGateway, IssueReader } from '../src/github/IssueRepository.js';
 import type { ProjectIterationGateway, ProjectStatusGateway, ProjectV2Gateway } from '../src/github/ProjectV2Repository.js';
 import type { PullRequestClosingIssuesGateway, PullRequestMutationGateway } from '../src/github/PullRequestRepository.js';
@@ -66,6 +66,32 @@ function createDependencies() {
 }
 
 describe('LinkPrToProject', () => {
+  it('reconciles a changed issue Sprint without changing PR status or body', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.pullRequests.listClosingIssues).mockResolvedValue([
+      { nodeId: 'ISSUE_NODE', number: 42, repositoryNameWithOwner: 'owner/backlog' },
+    ]);
+    vi.mocked(dependencies.projects.getIssueProjectItem).mockReset()
+      .mockResolvedValueOnce({ id: 'PR_ITEM', iterationId: 'OLD', iterationTitle: 'Old sprint' })
+      .mockResolvedValueOnce({ id: 'ISSUE_ITEM', iterationId: 'NEW', iterationTitle: 'New sprint' });
+
+    await reconcilePrSprint(input, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+
+    expect(dependencies.projects.setIteration).toHaveBeenCalledWith('PROJECT', 'PR_ITEM', 'ITERATION_FIELD', 'NEW');
+    expect(dependencies.projects.setSingleSelect).not.toHaveBeenCalled();
+    expect(dependencies.pullRequests.updatePullRequestBody).not.toHaveBeenCalled();
+    expect(dependencies.pullRequests.setAssignees).not.toHaveBeenCalled();
+  });
+
+  it('does not add unrelated PRs to the project during Sprint reconciliation', async () => {
+    const dependencies = createDependencies();
+
+    await reconcilePrSprint(input, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+
+    expect(dependencies.projects.addIssueToProject).not.toHaveBeenCalled();
+    expect(dependencies.pullRequests.listClosingIssues).not.toHaveBeenCalled();
+  });
+
   it('adds an opened PR, copies the sprint and appends the closing reference', async () => {
     const dependencies = createDependencies();
     await linkPrToProject(input, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
@@ -76,6 +102,32 @@ describe('LinkPrToProject', () => {
     expect(dependencies.pullRequests.updatePullRequestBody).toHaveBeenCalledWith(
       input.pullRequestRepository, 7, expect.stringContaining('Closes owner/backlog#42'),
     );
+  });
+
+  it('sets the initial status when auto-add put an unlinked PR in the project first', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.projects.getIssueProjectItem).mockReset()
+      .mockResolvedValue({ id: 'PR_ITEM', iterationId: null, iterationTitle: '' });
+
+    await linkPrToProject({ ...input, headRef: 'unlinked-feature' },
+      dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+
+    expect(dependencies.projects.addIssueToProject).not.toHaveBeenCalled();
+    expect(dependencies.projects.setSingleSelect).toHaveBeenCalledWith('PROJECT', 'PR_ITEM', 'STATUS_FIELD', 'PROGRESS');
+  });
+
+  it('preserves the status of an unlinked PR already in the project', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.projects.getIssueProjectItem).mockReset()
+      .mockResolvedValue({ id: 'PR_ITEM', iterationId: null, iterationTitle: '' });
+    vi.mocked(dependencies.projects.getContentProjectItem).mockResolvedValue({
+      id: 'PR_ITEM', statusName: 'To do', statusOptionId: 'TODO',
+    });
+
+    await linkPrToProject({ ...input, headRef: 'unlinked-feature' },
+      dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+
+    expect(dependencies.projects.setSingleSelect).not.toHaveBeenCalled();
   });
 
   it('marks an existing project item done when the PR closes', async () => {

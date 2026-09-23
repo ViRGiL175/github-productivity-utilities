@@ -474,6 +474,15 @@ jobs:
             });
             const pullRequest = pullResponse.data;
 
+            const pullItemId = await addIssueToProject(project.projectId, pullRequest.node_id);
+            await github.graphql(`
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!) {
+                clearProjectV2ItemFieldValue(input: { projectId: $projectId, itemId: $itemId, fieldId: $fieldId }) {
+                  projectV2Item { id }
+                }
+              }
+            `, { projectId: project.projectId, itemId: pullItemId, fieldId: project.statusFieldId });
+
             core.setOutput('project_id', project.projectId);
             core.setOutput('iteration_field_id', project.iterationFieldId);
             core.setOutput('status_field_id', project.statusFieldId);
@@ -494,12 +503,97 @@ jobs:
             core.setOutput('pull_request_repo_name', pullRequestRepoName);
             core.info(`Selected sandbox statuses: in-progress="${project.statusInProgressValue}", in-review="${project.statusInReviewValue}", done="${statusDoneValue}". Issue assignee: @${issueAssigneeLogin}.`);
 
+  run-preadded-unlinked-scenario:
+    name: Set status on a pre-added unlinked PR
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs:
+      - prepare-link-scenario
+    uses: ./.github/workflows/link-pr-to-project.yml
+    with:
+      project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+      project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
+      backlog_repo: ${{ needs.prepare-link-scenario.outputs.backlog_repo_name }}
+      backlog_repo_owner: ${{ needs.prepare-link-scenario.outputs.backlog_repo_owner }}
+      iteration_field_name: Iteration
+      status_field_name: Status
+      status_done_value: Done
+      status_in_progress_value: ${{ needs.prepare-link-scenario.outputs.status_in_progress_value }}
+      pull_request_node_id: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
+      pull_request_number: ${{ needs.prepare-link-scenario.outputs.pull_number }}
+      pull_request_repo_owner: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_owner }}
+      pull_request_repo_name: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_name }}
+      head_ref: unlinked-itest-${{ github.run_id }}
+      action: opened
+      auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
+      installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+    secrets:
+      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
+      app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+      app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+
+  assert-preadded-unlinked-scenario:
+    name: Assert pre-added unlinked PR starts in progress
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs:
+      - prepare-link-scenario
+      - run-preadded-unlinked-scenario
+    runs-on: ubuntu-latest
+    steps:
+      - name: Normalize GitHub App private key
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: normalize-key
+        shell: bash
+        env:
+          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+        run: |
+          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
+          while IFS= read -r line; do
+            printf '::add-mask::%s\n' "$line"
+          done <<< "$NORMALIZED_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub App installation token
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          owner: ${{ env.INSTALLATION_OWNER }}
+          skip-token-revoke: true
+
+      - name: Assert status was initialized
+        uses: actions/github-script@v8
+        env:
+          PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
+          STATUS_FIELD_NAME: ${{ env.STATUS_FIELD_NAME }}
+          STATUS_IN_PROGRESS_VALUE: ${{ needs.prepare-link-scenario.outputs.status_in_progress_value }}
+          PULL_NODE_ID: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
+        with:
+          github-token: ${{ env.AUTH_MODE == 'app' && steps.app-token.outputs.token || secrets.ORG_PROJECT_TOKEN }}
+          script: |
+            const data = await github.graphql(`
+              query($pullId: ID!, $fieldName: String!) {
+                node(id: $pullId) {
+                  ... on PullRequest { projectItems(first: 100) { nodes {
+                    project { id }
+                    status: fieldValueByName(name: $fieldName) { ... on ProjectV2ItemFieldSingleSelectValue { name } }
+                  } } }
+                }
+              }
+            `, { pullId: process.env.PULL_NODE_ID, fieldName: process.env.STATUS_FIELD_NAME });
+            const item = data.node?.projectItems?.nodes?.find((candidate) => candidate.project?.id === process.env.PROJECT_ID);
+            if (item?.status?.name !== process.env.STATUS_IN_PROGRESS_VALUE) {
+              throw new Error(`Expected initial PR status ${process.env.STATUS_IN_PROGRESS_VALUE}, got ${item?.status?.name || 'none'}.`);
+            }
+
   run-link-open-scenario:
     name: Run link PR open scenario
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     needs:
       - resolve-auth
       - prepare-link-scenario
+      - assert-preadded-unlinked-scenario
     uses: ./.github/workflows/link-pr-to-project.yml
     with:
       project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
@@ -1292,13 +1386,187 @@ jobs:
             if (occurrences !== 1) throw new Error(`Expected one closing reference, got ${occurrences}.`);
             core.info(`PR selected latest linked Sprint ${process.env.LATEST_ITERATION_ID}; existing issue Sprints stayed unchanged and the unsprinted issue inherited it.`);
 
+      - name: Change linked issue Sprint without touching the PR
+        uses: actions/github-script@v8
+        env:
+          PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
+          ITERATION_FIELD_ID: ${{ needs.prepare-link-scenario.outputs.iteration_field_id }}
+          STATUS_FIELD_ID: ${{ needs.prepare-link-scenario.outputs.status_field_id }}
+          STATUS_IN_REVIEW_VALUE: ${{ needs.prepare-link-scenario.outputs.status_in_review_value }}
+          PULL_NODE_ID: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
+          SECONDARY_ISSUE_NODE_ID: ${{ needs.prepare-link-edited-scenario.outputs.secondary_issue_node_id }}
+          UNSPRINTED_ISSUE_NODE_ID: ${{ needs.prepare-link-edited-scenario.outputs.unsprinted_issue_node_id }}
+        with:
+          github-token: ${{ steps.auth.outputs.token }}
+          script: |
+            const projectId = process.env.PROJECT_ID;
+            const data = await github.graphql(`
+              query($pullNodeId: ID!, $secondaryNodeId: ID!, $unsprintedNodeId: ID!, $statusFieldId: ID!) {
+                pull: node(id: $pullNodeId) {
+                  ... on PullRequest { projectItems(first: 100) { nodes { id project { id } } } }
+                }
+                secondary: node(id: $secondaryNodeId) {
+                  ... on Issue { projectItems(first: 100) { nodes { id project { id } } } }
+                }
+                unsprinted: node(id: $unsprintedNodeId) {
+                  ... on Issue { projectItems(first: 100) { nodes { id project { id } } } }
+                }
+                statusField: node(id: $statusFieldId) {
+                  ... on ProjectV2SingleSelectField { options { id name } }
+                }
+              }
+            `, {
+              pullNodeId: process.env.PULL_NODE_ID,
+              secondaryNodeId: process.env.SECONDARY_ISSUE_NODE_ID,
+              unsprintedNodeId: process.env.UNSPRINTED_ISSUE_NODE_ID,
+              statusFieldId: process.env.STATUS_FIELD_ID,
+            });
+            const item = (node) => node?.projectItems?.nodes?.find((candidate) => candidate.project?.id === projectId);
+            const pullItem = item(data.pull);
+            const secondaryItem = item(data.secondary);
+            const unsprintedItem = item(data.unsprinted);
+            const reviewOption = data.statusField?.options?.find((option) => option.name === process.env.STATUS_IN_REVIEW_VALUE);
+            if (!pullItem || !secondaryItem || !unsprintedItem || !reviewOption) {
+              throw new Error('Sprint reconciliation test fixture is incomplete.');
+            }
+            const clearSprint = (itemId) => github.graphql(`
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!) {
+                clearProjectV2ItemFieldValue(input: { projectId: $projectId, itemId: $itemId, fieldId: $fieldId }) {
+                  projectV2Item { id }
+                }
+              }
+            `, { projectId, itemId, fieldId: process.env.ITERATION_FIELD_ID });
+            await clearSprint(secondaryItem.id);
+            await clearSprint(unsprintedItem.id);
+            await github.graphql(`
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $projectId, itemId: $itemId, fieldId: $fieldId,
+                  value: { singleSelectOptionId: $optionId }
+                }) { projectV2Item { id } }
+              }
+            `, {
+              projectId, itemId: pullItem.id, fieldId: process.env.STATUS_FIELD_ID, optionId: reviewOption.id,
+            });
+
+  run-reconcile-sprint-scenario:
+    name: Reconcile changed linked issue Sprint
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs:
+      - prepare-link-scenario
+      - assert-link-edited-scenario
+    uses: ./.github/workflows/link-pr-to-project.yml
+    with:
+      project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+      project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
+      backlog_repo: ${{ needs.prepare-link-scenario.outputs.backlog_repo_name }}
+      backlog_repo_owner: ${{ needs.prepare-link-scenario.outputs.backlog_repo_owner }}
+      iteration_field_name: Iteration
+      status_field_name: Status
+      status_done_value: Done
+      action: reconcile_sprints
+      repositories: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_owner }}/${{ needs.prepare-link-scenario.outputs.pull_request_repo_name }}
+      reconcile_pull_request_number: ${{ fromJSON(needs.prepare-link-scenario.outputs.pull_number) }}
+      auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
+      installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+    secrets:
+      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
+      app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+      app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+
+  assert-reconcile-sprint-scenario:
+    name: Assert PR Sprint changed without changing Status
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs:
+      - prepare-link-scenario
+      - prepare-link-edited-scenario
+      - run-reconcile-sprint-scenario
+    runs-on: ubuntu-latest
+    steps:
+      - name: Normalize GitHub App private key
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: normalize-key
+        shell: bash
+        env:
+          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+        run: |
+          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
+          while IFS= read -r line; do
+            printf '::add-mask::%s\n' "$line"
+          done <<< "$NORMALIZED_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub App installation token
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          owner: ${{ env.INSTALLATION_OWNER }}
+          skip-token-revoke: true
+
+      - name: Assert reconciled Sprint and preserved PR Status
+        uses: actions/github-script@v8
+        env:
+          PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
+          ITERATION_FIELD_NAME: ${{ env.ITERATION_FIELD_NAME }}
+          STATUS_FIELD_NAME: ${{ env.STATUS_FIELD_NAME }}
+          TARGET_ITERATION_ID: ${{ needs.prepare-link-scenario.outputs.target_iteration_id }}
+          STATUS_IN_REVIEW_VALUE: ${{ needs.prepare-link-scenario.outputs.status_in_review_value }}
+          PULL_NODE_ID: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
+          SECONDARY_ISSUE_NODE_ID: ${{ needs.prepare-link-edited-scenario.outputs.secondary_issue_node_id }}
+          UNSPRINTED_ISSUE_NODE_ID: ${{ needs.prepare-link-edited-scenario.outputs.unsprinted_issue_node_id }}
+        with:
+          github-token: ${{ env.AUTH_MODE == 'app' && steps.app-token.outputs.token || secrets.ORG_PROJECT_TOKEN }}
+          script: |
+            const data = await github.graphql(`
+              query($pullId: ID!, $secondaryId: ID!, $unsprintedId: ID!, $sprintName: String!, $statusName: String!) {
+                pull: node(id: $pullId) {
+                  ... on PullRequest { projectItems(first: 100) { nodes {
+                    project { id }
+                    sprint: fieldValueByName(name: $sprintName) { ... on ProjectV2ItemFieldIterationValue { iterationId } }
+                    status: fieldValueByName(name: $statusName) { ... on ProjectV2ItemFieldSingleSelectValue { name } }
+                  } } }
+                }
+                secondary: node(id: $secondaryId) {
+                  ... on Issue { projectItems(first: 100) { nodes {
+                    project { id }
+                    sprint: fieldValueByName(name: $sprintName) { ... on ProjectV2ItemFieldIterationValue { iterationId } }
+                  } } }
+                }
+                unsprinted: node(id: $unsprintedId) {
+                  ... on Issue { projectItems(first: 100) { nodes {
+                    project { id }
+                    sprint: fieldValueByName(name: $sprintName) { ... on ProjectV2ItemFieldIterationValue { iterationId } }
+                  } } }
+                }
+              }
+            `, {
+              pullId: process.env.PULL_NODE_ID,
+              secondaryId: process.env.SECONDARY_ISSUE_NODE_ID,
+              unsprintedId: process.env.UNSPRINTED_ISSUE_NODE_ID,
+              sprintName: process.env.ITERATION_FIELD_NAME,
+              statusName: process.env.STATUS_FIELD_NAME,
+            });
+            const item = (node) => node?.projectItems?.nodes?.find((candidate) => candidate.project?.id === process.env.PROJECT_ID);
+            const expectedSprint = process.env.TARGET_ITERATION_ID;
+            for (const node of [data.pull, data.secondary, data.unsprinted]) {
+              const actual = item(node)?.sprint?.iterationId;
+              if (actual !== expectedSprint) throw new Error(`Expected reconciled Sprint ${expectedSprint}, got ${actual || 'none'}.`);
+            }
+            const actualStatus = item(data.pull)?.status?.name;
+            if (actualStatus !== process.env.STATUS_IN_REVIEW_VALUE) {
+              throw new Error(`PR Status changed during Sprint reconciliation: ${actualStatus || 'none'}.`);
+            }
+
   run-link-review-requested-scenario:
     name: Run link PR review requested scenario
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     needs:
       - resolve-auth
       - prepare-link-scenario
-      - assert-link-edited-scenario
+      - assert-reconcile-sprint-scenario
     uses: ./.github/workflows/link-pr-to-project.yml
     with:
       project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
@@ -1774,6 +2042,8 @@ jobs:
     needs:
       - resolve-auth
       - prepare-link-scenario
+      - run-preadded-unlinked-scenario
+      - assert-preadded-unlinked-scenario
       - run-link-open-scenario
       - assert-link-open-scenario
       - rerun-link-open-scenario
