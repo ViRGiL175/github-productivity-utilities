@@ -104,6 +104,32 @@ describe('LinkPrToProject', () => {
     );
   });
 
+  it('sets the initial status when auto-add put an unlinked PR in the project first', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.projects.getIssueProjectItem).mockReset()
+      .mockResolvedValue({ id: 'PR_ITEM', iterationId: null, iterationTitle: '' });
+
+    await linkPrToProject({ ...input, headRef: 'unlinked-feature' },
+      dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+
+    expect(dependencies.projects.addIssueToProject).not.toHaveBeenCalled();
+    expect(dependencies.projects.setSingleSelect).toHaveBeenCalledWith('PROJECT', 'PR_ITEM', 'STATUS_FIELD', 'PROGRESS');
+  });
+
+  it('preserves the status of an unlinked PR already in the project', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.projects.getIssueProjectItem).mockReset()
+      .mockResolvedValue({ id: 'PR_ITEM', iterationId: null, iterationTitle: '' });
+    vi.mocked(dependencies.projects.getContentProjectItem).mockResolvedValue({
+      id: 'PR_ITEM', statusName: 'To do', statusOptionId: 'TODO',
+    });
+
+    await linkPrToProject({ ...input, headRef: 'unlinked-feature' },
+      dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+
+    expect(dependencies.projects.setSingleSelect).not.toHaveBeenCalled();
+  });
+
   it('marks an existing project item done when the PR closes', async () => {
     const dependencies = createDependencies();
     await linkPrToProject({
