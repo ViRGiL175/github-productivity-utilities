@@ -76,6 +76,11 @@ on:
         description: Newline-delimited PR repositories to scan when action=reconcile_sprints
         required: false
         type: string
+      reconcile_pull_request_number:
+        description: Optional PR number to limit a Sprint reconciliation run to one PR
+        required: false
+        default: 0
+        type: number
       action:
         description: Action override; falls back to github.event.action when omitted
         required: false
@@ -283,6 +288,7 @@ jobs:
           PULL_REQUEST_BODY: ${{ inputs.pull_request_body || github.event.pull_request.body || '' }}
           HEAD_REF: ${{ inputs.head_ref || github.event.pull_request.head.ref || '' }}
           REPOSITORIES: ${{ inputs.repositories }}
+          RECONCILE_PULL_REQUEST_NUMBER: ${{ inputs.reconcile_pull_request_number }}
           ACTION: ${{ inputs.action || github.event.action || 'opened' }}
           REVIEW_STATE: ${{ inputs.review_state || github.event.review.state || '' }}
           REVIEW_ACTOR_LOGIN: ${{ inputs.review_actor_login || github.event.requested_reviewer.login || github.event.review.user.login || '' }}

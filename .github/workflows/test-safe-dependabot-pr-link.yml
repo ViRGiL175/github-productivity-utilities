@@ -17,6 +17,9 @@ on:
     paths:
       - '.github/workflows/safe-dependabot-pr-link.yml'
       - '.github/workflows/test-safe-dependabot-pr-link.yml'
+      - 'src/automations/safe-dependabot-pr-link/**'
+      - 'src/github/ProjectV2Repository.ts'
+      - 'src/github/PullRequestRepository.ts'
 
 concurrency:
   group: ${{ github.workflow }}
@@ -369,6 +372,41 @@ jobs:
             await assertStatus(openPullNodeId, statusStartValue);
             await assertStatus(closedPullNodeId, statusFinalValue);
 
+            const metadata = await github.graphql(`
+              query($projectId: ID!) {
+                node(id: $projectId) {
+                  ... on ProjectV2 {
+                    fields(first: 100) {
+                      nodes {
+                        ... on ProjectV2SingleSelectField {
+                          id
+                          name
+                          options { id name }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `, { projectId });
+            const statusField = metadata.node?.fields?.nodes?.find((field) => field?.name === statusFieldName);
+            const finalOption = statusField?.options?.find((option) => option.name === statusFinalValue);
+            if (!statusField || !finalOption) throw new Error('Final status option is missing.');
+            const openItem = (await github.graphql(QUERY, { nodeId: openPullNodeId, statusFieldName }))
+              .node?.projectItems?.nodes?.find((item) => item.project?.id === projectId);
+            if (!openItem) throw new Error('Open PR project item is missing.');
+            await github.graphql(`
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $projectId
+                  itemId: $itemId
+                  fieldId: $fieldId
+                  value: { singleSelectOptionId: $optionId }
+                }) { projectV2Item { id } }
+              }
+            `, { projectId, itemId: openItem.id, fieldId: statusField.id, optionId: finalOption.id });
+            core.info(`Changed open test PR status to ${statusFinalValue} before the rerun.`);
+
   rerun-safe-scenario:
     name: Rerun safe Dependabot link scenario for idempotency
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
@@ -459,6 +497,7 @@ jobs:
           STATUS_FIELD_NAME: ${{ env.STATUS_FIELD_NAME }}
           OPEN_PULL_NODE_ID: ${{ needs.prepare-safe-scenario.outputs.open_pull_node_id }}
           CLOSED_PULL_NODE_ID: ${{ needs.prepare-safe-scenario.outputs.closed_pull_node_id }}
+          STATUS_FINAL_VALUE: ${{ env.STATUS_FINAL_VALUE }}
         with:
           github-token: ${{ steps.auth.outputs.token }}
           script: |
@@ -495,6 +534,11 @@ jobs:
 
             await assertSingleItem(openPullNodeId);
             await assertSingleItem(closedPullNodeId);
+            const openStatus = (await github.graphql(QUERY, { nodeId: openPullNodeId, statusFieldName }))
+              .node?.projectItems?.nodes?.find((item) => item.project?.id === projectId)?.fieldValueByName?.name;
+            if (openStatus !== process.env.STATUS_FINAL_VALUE) {
+              throw new Error(`Open PR status was reset to ${openStatus || 'none'} after the rerun.`);
+            }
 
   cleanup-safe-scenario:
     name: Cleanup safe Dependabot link scenario

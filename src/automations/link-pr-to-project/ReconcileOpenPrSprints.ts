@@ -11,6 +11,7 @@ export interface ReconcileOpenPrSprintsInput {
   backlogRepository: RepositoryCoordinates;
   iterationFieldName: string;
   repositories: string;
+  pullRequestNumber?: number;
 }
 
 export async function reconcileOpenPrSprints(
@@ -29,6 +30,7 @@ export async function reconcileOpenPrSprints(
     for (let page = 1; ; page += 1) {
       const openPullRequests = await pullRequests.listPullRequests(repository, 'open', page, 100);
       for (const pullRequest of openPullRequests) {
+        if (input.pullRequestNumber && pullRequest.number !== input.pullRequestNumber) continue;
         checked += 1;
         try {
           await reconcilePrSprint({
