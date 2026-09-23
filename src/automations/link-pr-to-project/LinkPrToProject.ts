@@ -145,7 +145,7 @@ now: () => Date = () => new Date(),
   const currentStatus = wasJustAdded
     ? null
     : await projects.getContentProjectItem(input.pullRequestNodeId, statusMetadata.projectId, input.statusFieldName);
-  if (inProgressOptionId && (wasJustAdded || (hasLinkedIssue && canPromoteToInProgress(currentStatus?.statusName ?? null)))) {
+  if (inProgressOptionId && (wasJustAdded || !currentStatus?.statusName || (hasLinkedIssue && canPromoteToInProgress(currentStatus.statusName)))) {
     await projects.setSingleSelect(statusMetadata.projectId, itemId, statusMetadata.statusFieldId, inProgressOptionId);
     logger.info(`Set status ${input.statusFieldName}=${input.statusInProgressValue} for PR #${input.pullRequestNumber}.`);
   } else if (hasLinkedIssue && currentStatus?.statusName) {

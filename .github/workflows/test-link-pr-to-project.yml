@@ -474,6 +474,15 @@ jobs:
             });
             const pullRequest = pullResponse.data;
 
+            const pullItemId = await addIssueToProject(project.projectId, pullRequest.node_id);
+            await github.graphql(`
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!) {
+                clearProjectV2ItemFieldValue(input: { projectId: $projectId, itemId: $itemId, fieldId: $fieldId }) {
+                  projectV2Item { id }
+                }
+              }
+            `, { projectId: project.projectId, itemId: pullItemId, fieldId: project.statusFieldId });
+
             core.setOutput('project_id', project.projectId);
             core.setOutput('iteration_field_id', project.iterationFieldId);
             core.setOutput('status_field_id', project.statusFieldId);
@@ -494,12 +503,97 @@ jobs:
             core.setOutput('pull_request_repo_name', pullRequestRepoName);
             core.info(`Selected sandbox statuses: in-progress="${project.statusInProgressValue}", in-review="${project.statusInReviewValue}", done="${statusDoneValue}". Issue assignee: @${issueAssigneeLogin}.`);
 
+  run-preadded-unlinked-scenario:
+    name: Set status on a pre-added unlinked PR
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs:
+      - prepare-link-scenario
+    uses: ./.github/workflows/link-pr-to-project.yml
+    with:
+      project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+      project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
+      backlog_repo: ${{ needs.prepare-link-scenario.outputs.backlog_repo_name }}
+      backlog_repo_owner: ${{ needs.prepare-link-scenario.outputs.backlog_repo_owner }}
+      iteration_field_name: Iteration
+      status_field_name: Status
+      status_done_value: Done
+      status_in_progress_value: ${{ needs.prepare-link-scenario.outputs.status_in_progress_value }}
+      pull_request_node_id: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
+      pull_request_number: ${{ needs.prepare-link-scenario.outputs.pull_number }}
+      pull_request_repo_owner: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_owner }}
+      pull_request_repo_name: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_name }}
+      head_ref: unlinked-itest-${{ github.run_id }}
+      action: opened
+      auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
+      installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+    secrets:
+      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
+      app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+      app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+
+  assert-preadded-unlinked-scenario:
+    name: Assert pre-added unlinked PR starts in progress
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs:
+      - prepare-link-scenario
+      - run-preadded-unlinked-scenario
+    runs-on: ubuntu-latest
+    steps:
+      - name: Normalize GitHub App private key
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: normalize-key
+        shell: bash
+        env:
+          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+        run: |
+          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
+          while IFS= read -r line; do
+            printf '::add-mask::%s\n' "$line"
+          done <<< "$NORMALIZED_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub App installation token
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          owner: ${{ env.INSTALLATION_OWNER }}
+          skip-token-revoke: true
+
+      - name: Assert status was initialized
+        uses: actions/github-script@v8
+        env:
+          PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
+          STATUS_FIELD_NAME: ${{ env.STATUS_FIELD_NAME }}
+          STATUS_IN_PROGRESS_VALUE: ${{ needs.prepare-link-scenario.outputs.status_in_progress_value }}
+          PULL_NODE_ID: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
+        with:
+          github-token: ${{ env.AUTH_MODE == 'app' && steps.app-token.outputs.token || secrets.ORG_PROJECT_TOKEN }}
+          script: |
+            const data = await github.graphql(`
+              query($pullId: ID!, $fieldName: String!) {
+                node(id: $pullId) {
+                  ... on PullRequest { projectItems(first: 100) { nodes {
+                    project { id }
+                    status: fieldValueByName(name: $fieldName) { ... on ProjectV2ItemFieldSingleSelectValue { name } }
+                  } } }
+                }
+              }
+            `, { pullId: process.env.PULL_NODE_ID, fieldName: process.env.STATUS_FIELD_NAME });
+            const item = data.node?.projectItems?.nodes?.find((candidate) => candidate.project?.id === process.env.PROJECT_ID);
+            if (item?.status?.name !== process.env.STATUS_IN_PROGRESS_VALUE) {
+              throw new Error(`Expected initial PR status ${process.env.STATUS_IN_PROGRESS_VALUE}, got ${item?.status?.name || 'none'}.`);
+            }
+
   run-link-open-scenario:
     name: Run link PR open scenario
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     needs:
       - resolve-auth
       - prepare-link-scenario
+      - assert-preadded-unlinked-scenario
     uses: ./.github/workflows/link-pr-to-project.yml
     with:
       project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
@@ -1948,6 +2042,8 @@ jobs:
     needs:
       - resolve-auth
       - prepare-link-scenario
+      - run-preadded-unlinked-scenario
+      - assert-preadded-unlinked-scenario
       - run-link-open-scenario
       - assert-link-open-scenario
       - rerun-link-open-scenario
