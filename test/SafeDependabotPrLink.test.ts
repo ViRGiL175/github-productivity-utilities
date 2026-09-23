@@ -72,6 +72,36 @@ describe('SafeDependabotPrLink', () => {
     expect(counters.unchanged).toBe(1);
   });
 
+  it('preserves a non-empty status on an open Dependabot PR', async () => {
+    const dependencies = createDependencies('In progress');
+    const counters = await safeDependabotPrLink(input, dependencies.pullRequests, dependencies.projects, logger);
+
+    expect(dependencies.projects.setSingleSelect).not.toHaveBeenCalled();
+    expect(counters.unchanged).toBe(1);
+  });
+
+  it('sets the start status when an existing open PR has no status', async () => {
+    const dependencies = createDependencies('');
+    await safeDependabotPrLink(input, dependencies.pullRequests, dependencies.projects, logger);
+
+    expect(dependencies.projects.setSingleSelect).toHaveBeenCalledWith('PROJECT', 'ITEM', 'FIELD', 'TODO');
+  });
+
+  it('still marks a closed Dependabot PR as done', async () => {
+    const dependencies = createDependencies('In progress');
+    vi.mocked(dependencies.pullRequests.listPullRequests).mockImplementation(async (_repository, state, page) =>
+      state === 'closed' && page === 1
+        ? [{ nodeId: 'PR', number: 12, updatedAt: '2026-09-14T00:00:00Z', authorLogin: 'dependabot[bot]' }]
+        : [],
+    );
+
+    await safeDependabotPrLink(
+      input, dependencies.pullRequests, dependencies.projects, logger, () => new Date('2026-09-15T00:00:00Z'),
+    );
+
+    expect(dependencies.projects.setSingleSelect).toHaveBeenCalledWith('PROJECT', 'ITEM', 'FIELD', 'DONE');
+  });
+
   it('ignores pull requests from other authors', async () => {
     const dependencies = createDependencies();
     vi.mocked(dependencies.pullRequests.listPullRequests).mockResolvedValueOnce([
