@@ -62,13 +62,13 @@ now: () => Date = () => new Date(),
     const openPullRequests = await listDependabotPullRequests(repository, 'open', null, input, pullRequests);
     counters.openSeen += openPullRequests.length;
     for (const pullRequest of openPullRequests) {
-      await reconcile(repository, pullRequest, input.statusStartValue, startOptionId, project, input, counters, projects, logger);
+      await reconcile(repository, pullRequest, input.statusStartValue, startOptionId, project, input, counters, projects, logger, true);
     }
 
     const closedPullRequests = await listDependabotPullRequests(repository, 'closed', cutoff, input, pullRequests);
     counters.closedSeen += closedPullRequests.length;
     for (const pullRequest of closedPullRequests) {
-      await reconcile(repository, pullRequest, input.statusFinalValue, finalOptionId, project, input, counters, projects, logger);
+      await reconcile(repository, pullRequest, input.statusFinalValue, finalOptionId, project, input, counters, projects, logger, false);
     }
   }
 
@@ -116,6 +116,7 @@ async function reconcile(
     counters: Counters,
     projects: ProjectStatusGateway,
     logger: Logger,
+    preserveExistingStatus: boolean,
   ): Promise<void> {
     let projectItem = await projects.getContentProjectItem(
       pullRequest.nodeId,
@@ -133,6 +134,10 @@ async function reconcile(
       );
     }
 
+    if (preserveExistingStatus && currentStatus) {
+      counters.unchanged += 1;
+      return;
+    }
     if (currentStatus === targetStatusName) {
       counters.unchanged += 1;
       return;

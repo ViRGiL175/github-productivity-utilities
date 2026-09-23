@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { linkPrToProject, NO_ACTIVE_SPRINT_COMMENT_MARKER } from '../src/automations/link-pr-to-project/LinkPrToProject.js';
+import { linkPrToProject, reconcilePrSprint, NO_ACTIVE_SPRINT_COMMENT_MARKER } from '../src/automations/link-pr-to-project/LinkPrToProject.js';
 import type { IssueClosingPullRequestsGateway, IssueManagedCommentGateway, IssueReader } from '../src/github/IssueRepository.js';
 import type { ProjectIterationGateway, ProjectStatusGateway, ProjectV2Gateway } from '../src/github/ProjectV2Repository.js';
 import type { PullRequestClosingIssuesGateway, PullRequestMutationGateway } from '../src/github/PullRequestRepository.js';
@@ -66,6 +66,32 @@ function createDependencies() {
 }
 
 describe('LinkPrToProject', () => {
+  it('reconciles a changed issue Sprint without changing PR status or body', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.pullRequests.listClosingIssues).mockResolvedValue([
+      { nodeId: 'ISSUE_NODE', number: 42, repositoryNameWithOwner: 'owner/backlog' },
+    ]);
+    vi.mocked(dependencies.projects.getIssueProjectItem).mockReset()
+      .mockResolvedValueOnce({ id: 'PR_ITEM', iterationId: 'OLD', iterationTitle: 'Old sprint' })
+      .mockResolvedValueOnce({ id: 'ISSUE_ITEM', iterationId: 'NEW', iterationTitle: 'New sprint' });
+
+    await reconcilePrSprint(input, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+
+    expect(dependencies.projects.setIteration).toHaveBeenCalledWith('PROJECT', 'PR_ITEM', 'ITERATION_FIELD', 'NEW');
+    expect(dependencies.projects.setSingleSelect).not.toHaveBeenCalled();
+    expect(dependencies.pullRequests.updatePullRequestBody).not.toHaveBeenCalled();
+    expect(dependencies.pullRequests.setAssignees).not.toHaveBeenCalled();
+  });
+
+  it('does not add unrelated PRs to the project during Sprint reconciliation', async () => {
+    const dependencies = createDependencies();
+
+    await reconcilePrSprint(input, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+
+    expect(dependencies.projects.addIssueToProject).not.toHaveBeenCalled();
+    expect(dependencies.pullRequests.listClosingIssues).not.toHaveBeenCalled();
+  });
+
   it('adds an opened PR, copies the sprint and appends the closing reference', async () => {
     const dependencies = createDependencies();
     await linkPrToProject(input, dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);

@@ -72,6 +72,10 @@ on:
         description: Head ref override; falls back to github.event.pull_request.head.ref when omitted
         required: false
         type: string
+      repositories:
+        description: Newline-delimited PR repositories to scan when action=reconcile_sprints
+        required: false
+        type: string
       action:
         description: Action override; falls back to github.event.action when omitted
         required: false
@@ -278,6 +282,7 @@ jobs:
           PULL_REQUEST_REPO_NAME: ${{ inputs.pull_request_repo_name || github.event.pull_request.base.repo.name || github.repository }}
           PULL_REQUEST_BODY: ${{ inputs.pull_request_body || github.event.pull_request.body || '' }}
           HEAD_REF: ${{ inputs.head_ref || github.event.pull_request.head.ref || '' }}
+          REPOSITORIES: ${{ inputs.repositories }}
           ACTION: ${{ inputs.action || github.event.action || 'opened' }}
           REVIEW_STATE: ${{ inputs.review_state || github.event.review.state || '' }}
           REVIEW_ACTOR_LOGIN: ${{ inputs.review_actor_login || github.event.requested_reviewer.login || github.event.review.user.login || '' }}
@@ -286,5 +291,8 @@ jobs:
         with:
           github-token: ${{ steps.auth.outputs.token }}
           script: |
-            const { run } = await import(`${process.env.GITHUB_WORKSPACE}/.github-productivity-utilities-runtime/src/scripts/link-pr-to-project.ts`)
+            const scriptName = process.env.ACTION === 'reconcile_sprints'
+              ? 'reconcile-open-pr-sprints.ts'
+              : 'link-pr-to-project.ts'
+            const { run } = await import(`${process.env.GITHUB_WORKSPACE}/.github-productivity-utilities-runtime/src/scripts/${scriptName}`)
             await run(github)

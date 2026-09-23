@@ -11,6 +11,8 @@ export interface PullRequestRecord {
   number: number;
   updatedAt: string;
   authorLogin: string;
+  body?: string;
+  headRef?: string;
 }
 
 export interface ClosingIssueReference {
@@ -100,6 +102,8 @@ export class PullRequestRepository implements PullRequestListGateway, PullReques
       number: pullRequest.number,
       updatedAt: pullRequest.updated_at,
       authorLogin: pullRequest.user?.login ?? '',
+      body: pullRequest.body ?? '',
+      headRef: pullRequest.head.ref,
     }));
   }
 
