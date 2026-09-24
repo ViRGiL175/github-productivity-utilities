@@ -145,7 +145,8 @@ now: () => Date = () => new Date(),
   const currentStatus = wasJustAdded
     ? null
     : await projects.getContentProjectItem(input.pullRequestNodeId, statusMetadata.projectId, input.statusFieldName);
-  if (inProgressOptionId && (wasJustAdded || !currentStatus?.statusName || (hasLinkedIssue && canPromoteToInProgress(currentStatus.statusName)))) {
+  if (inProgressOptionId && (wasJustAdded || !currentStatus?.statusName ||
+    ((hasLinkedIssue || input.action === 'synchronize') && canPromoteToInProgress(currentStatus.statusName)))) {
     await projects.setSingleSelect(statusMetadata.projectId, itemId, statusMetadata.statusFieldId, inProgressOptionId);
     logger.info(`Set status ${input.statusFieldName}=${input.statusInProgressValue} for PR #${input.pullRequestNumber}.`);
   } else if (hasLinkedIssue && currentStatus?.statusName) {
@@ -183,6 +184,15 @@ now: () => Date = () => new Date(),
   );
   if (openIssueNumbers.length === 1 && !closingIssueNumbers.includes(openIssueNumbers[0]!)) {
     await appendClosingReference(input, openIssueNumbers[0]!, pullRequests);
+  }
+  if (input.action === 'synchronize' && inProgressOptionId) {
+    for (const issue of openIssues) {
+      const item = await projects.getContentProjectItem(issue.nodeId, statusMetadata.projectId, input.statusFieldName);
+      if (item && canPromoteToInProgress(item.statusName)) {
+        await projects.setSingleSelect(statusMetadata.projectId, item.id, statusMetadata.statusFieldId, inProgressOptionId);
+        logger.info(`Set status ${input.statusFieldName}=${input.statusInProgressValue} for linked issue #${issue.number}.`);
+      }
+    }
   }
   await syncLinkedIssueReviewStatus(
     input,
