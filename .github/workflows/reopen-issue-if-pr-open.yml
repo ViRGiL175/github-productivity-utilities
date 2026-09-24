@@ -135,7 +135,7 @@ jobs:
           path: .github-productivity-utilities-runtime
 
       - name: Check linked open PRs and reopen if needed
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_OWNER: ${{ inputs.project_owner }}
           BACKLOG_REPO: ${{ inputs.backlog_repo }}
