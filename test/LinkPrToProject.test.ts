@@ -540,12 +540,33 @@ describe('LinkPrToProject', () => {
     expect(dependencies.projects.setSingleSelect).not.toHaveBeenCalledWith('PROJECT', 'ISSUE_ITEM', 'STATUS_FIELD', 'PROGRESS');
   });
 
-  it('promotes an unlinked Todo PR on a new commit', async () => {
+  it('promotes a Todo issue while preserving the linked PR in review on a new commit', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.pullRequests.listClosingIssues).mockResolvedValue([
+      { nodeId: 'ISSUE_NODE', number: 42, repositoryNameWithOwner: 'owner/backlog' },
+    ]);
+    vi.mocked(dependencies.projects.getIssueProjectItem)
+      .mockReset()
+      .mockResolvedValueOnce({ id: 'PR_ITEM', iterationId: 'SPRINT', iterationTitle: 'Sprint 1' })
+      .mockResolvedValueOnce({ id: 'ISSUE_ITEM', iterationId: 'SPRINT', iterationTitle: 'Sprint 1' });
+    vi.mocked(dependencies.projects.getContentProjectItem).mockImplementation(async (nodeId) =>
+      nodeId === 'PR_NODE'
+        ? { id: 'PR_ITEM', statusName: 'Need review', statusOptionId: 'REVIEW' }
+        : { id: 'ISSUE_ITEM', statusName: 'Todo', statusOptionId: 'TODO' });
+
+    await linkPrToProject({ ...input, action: 'synchronize', headRef: 'feature' },
+      dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+
+    expect(dependencies.projects.setSingleSelect).not.toHaveBeenCalledWith('PROJECT', 'PR_ITEM', 'STATUS_FIELD', 'PROGRESS');
+    expect(dependencies.projects.setSingleSelect).toHaveBeenCalledWith('PROJECT', 'ISSUE_ITEM', 'STATUS_FIELD', 'PROGRESS');
+  });
+
+  it.each([['Todo', 'TODO'], [null, null]])('promotes an unlinked PR with status %s on a new commit', async (statusName, statusOptionId) => {
     const dependencies = createDependencies();
     vi.mocked(dependencies.projects.getIssueProjectItem).mockReset()
       .mockResolvedValueOnce({ id: 'PR_ITEM', iterationId: null, iterationTitle: '' });
     vi.mocked(dependencies.projects.getContentProjectItem).mockResolvedValue({
-      id: 'PR_ITEM', statusName: 'Todo', statusOptionId: 'TODO',
+      id: 'PR_ITEM', statusName, statusOptionId,
     });
 
     await linkPrToProject({ ...input, action: 'synchronize', headRef: 'feature' },
