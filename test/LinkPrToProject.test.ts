@@ -488,6 +488,73 @@ describe('LinkPrToProject', () => {
     expect(dependencies.issues.getIssue).toHaveBeenCalledWith(input.backlogRepository, 42);
   });
 
+  it('promotes a Todo PR and every open closing issue on a new commit', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.pullRequests.listClosingIssues).mockResolvedValue([
+      { nodeId: 'ISSUE_42', number: 42, repositoryNameWithOwner: 'owner/backlog' },
+      { nodeId: 'ISSUE_43', number: 43, repositoryNameWithOwner: 'owner/backlog' },
+      { nodeId: 'ISSUE_44', number: 44, repositoryNameWithOwner: 'owner/backlog' },
+    ]);
+    vi.mocked(dependencies.issues.getIssue).mockImplementation(async (_repository, number) => ({
+      id: number, nodeId: `ISSUE_${number}`, number,
+      repositoryUrl: 'https://api.github.com/repos/owner/backlog', isPullRequest: false,
+      isOpen: number !== 44,
+    }));
+    vi.mocked(dependencies.projects.getIssueProjectItem)
+      .mockReset()
+      .mockResolvedValueOnce({ id: 'PR_ITEM', iterationId: 'SPRINT', iterationTitle: 'Sprint 1' })
+      .mockResolvedValueOnce({ id: 'ISSUE_ITEM_42', iterationId: 'SPRINT', iterationTitle: 'Sprint 1' })
+      .mockResolvedValueOnce({ id: 'ISSUE_ITEM_43', iterationId: 'SPRINT', iterationTitle: 'Sprint 1' });
+    vi.mocked(dependencies.projects.getContentProjectItem).mockImplementation(async (nodeId) => ({
+      id: nodeId === 'PR_NODE' ? 'PR_ITEM' : `ISSUE_ITEM_${nodeId.split('_')[1]}`,
+      statusName: nodeId === 'ISSUE_43' ? null : 'To do',
+      statusOptionId: nodeId === 'ISSUE_43' ? null : 'TODO',
+    }));
+
+    await linkPrToProject({ ...input, action: 'synchronize', headRef: 'feature' },
+      dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+
+    expect(dependencies.projects.setSingleSelect).toHaveBeenCalledWith('PROJECT', 'PR_ITEM', 'STATUS_FIELD', 'PROGRESS');
+    expect(dependencies.projects.setSingleSelect).toHaveBeenCalledWith('PROJECT', 'ISSUE_ITEM_42', 'STATUS_FIELD', 'PROGRESS');
+    expect(dependencies.projects.setSingleSelect).toHaveBeenCalledWith('PROJECT', 'ISSUE_ITEM_43', 'STATUS_FIELD', 'PROGRESS');
+    expect(dependencies.projects.setSingleSelect).not.toHaveBeenCalledWith('PROJECT', 'ISSUE_ITEM_44', 'STATUS_FIELD', 'PROGRESS');
+  });
+
+  it.each(['Need review', 'Done', 'Blocked'])('preserves later PR and issue statuses on a new commit: %s', async (statusName) => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.pullRequests.listClosingIssues).mockResolvedValue([
+      { nodeId: 'ISSUE_NODE', number: 42, repositoryNameWithOwner: 'owner/backlog' },
+    ]);
+    vi.mocked(dependencies.projects.getIssueProjectItem)
+      .mockReset()
+      .mockResolvedValueOnce({ id: 'PR_ITEM', iterationId: 'SPRINT', iterationTitle: 'Sprint 1' })
+      .mockResolvedValueOnce({ id: 'ISSUE_ITEM', iterationId: 'SPRINT', iterationTitle: 'Sprint 1' });
+    vi.mocked(dependencies.projects.getContentProjectItem).mockImplementation(async (nodeId) => ({
+      id: nodeId === 'PR_NODE' ? 'PR_ITEM' : 'ISSUE_ITEM', statusName, statusOptionId: 'CURRENT',
+    }));
+
+    await linkPrToProject({ ...input, action: 'synchronize', headRef: 'feature' },
+      dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+
+    expect(dependencies.projects.setSingleSelect).not.toHaveBeenCalledWith('PROJECT', 'PR_ITEM', 'STATUS_FIELD', 'PROGRESS');
+    expect(dependencies.projects.setSingleSelect).not.toHaveBeenCalledWith('PROJECT', 'ISSUE_ITEM', 'STATUS_FIELD', 'PROGRESS');
+  });
+
+  it('promotes an unlinked Todo PR on a new commit', async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.projects.getIssueProjectItem).mockReset()
+      .mockResolvedValueOnce({ id: 'PR_ITEM', iterationId: null, iterationTitle: '' });
+    vi.mocked(dependencies.projects.getContentProjectItem).mockResolvedValue({
+      id: 'PR_ITEM', statusName: 'Todo', statusOptionId: 'TODO',
+    });
+
+    await linkPrToProject({ ...input, action: 'synchronize', headRef: 'feature' },
+      dependencies.issues, dependencies.pullRequests, dependencies.projects, dependencies.logger);
+
+    expect(dependencies.projects.setSingleSelect).toHaveBeenCalledWith('PROJECT', 'PR_ITEM', 'STATUS_FIELD', 'PROGRESS');
+    expect(dependencies.issues.getIssue).not.toHaveBeenCalled();
+  });
+
   it('uses the PR body immediately while GitHub indexes an edited closing reference', async () => {
     const dependencies = createDependencies();
     vi.mocked(dependencies.pullRequests.listClosingIssues).mockResolvedValue([]);
