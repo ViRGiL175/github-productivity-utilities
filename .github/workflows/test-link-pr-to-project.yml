@@ -1560,13 +1560,167 @@ jobs:
               throw new Error(`PR Status changed during Sprint reconciliation: ${actualStatus || 'none'}.`);
             }
 
+      - name: Reset PR and closing issues to Todo before synchronize
+        uses: actions/github-script@v8
+        env:
+          PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
+          STATUS_FIELD_ID: ${{ needs.prepare-link-scenario.outputs.status_field_id }}
+          PULL_NODE_ID: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
+          PRIMARY_ISSUE_NODE_ID: ${{ needs.prepare-link-scenario.outputs.issue_node_id }}
+          SECONDARY_ISSUE_NODE_ID: ${{ needs.prepare-link-edited-scenario.outputs.secondary_issue_node_id }}
+          UNSPRINTED_ISSUE_NODE_ID: ${{ needs.prepare-link-edited-scenario.outputs.unsprinted_issue_node_id }}
+        with:
+          github-token: ${{ env.AUTH_MODE == 'app' && steps.app-token.outputs.token || secrets.ORG_PROJECT_TOKEN }}
+          script: |
+            const projectId = process.env.PROJECT_ID;
+            const data = await github.graphql(`
+              query($pullId: ID!, $primaryId: ID!, $secondaryId: ID!, $unsprintedId: ID!, $statusFieldId: ID!) {
+                pull: node(id: $pullId) { ... on PullRequest { projectItems(first: 100) { nodes { id project { id } } } } }
+                primary: node(id: $primaryId) { ... on Issue { projectItems(first: 100) { nodes { id project { id } } } } }
+                secondary: node(id: $secondaryId) { ... on Issue { projectItems(first: 100) { nodes { id project { id } } } } }
+                unsprinted: node(id: $unsprintedId) { ... on Issue { projectItems(first: 100) { nodes { id project { id } } } } }
+                statusField: node(id: $statusFieldId) { ... on ProjectV2SingleSelectField { options { id name } } }
+              }
+            `, {
+              pullId: process.env.PULL_NODE_ID,
+              primaryId: process.env.PRIMARY_ISSUE_NODE_ID,
+              secondaryId: process.env.SECONDARY_ISSUE_NODE_ID,
+              unsprintedId: process.env.UNSPRINTED_ISSUE_NODE_ID,
+              statusFieldId: process.env.STATUS_FIELD_ID,
+            });
+            const todo = data.statusField?.options?.find((option) =>
+              option.name.toLowerCase().replace(/[\s_-]+/g, '') === 'todo');
+            if (!todo) throw new Error('Todo option is missing from the sandbox project.');
+            const projectItem = (node) => node?.projectItems?.nodes?.find((candidate) => candidate.project?.id === projectId);
+            for (const node of [data.pull, data.primary, data.secondary, data.unsprinted]) {
+              const item = projectItem(node);
+              if (!item) throw new Error('A synchronize fixture is missing from the sandbox project.');
+              await github.graphql(`
+                mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                  updateProjectV2ItemFieldValue(input: {
+                    projectId: $projectId, itemId: $itemId, fieldId: $fieldId,
+                    value: { singleSelectOptionId: $optionId }
+                  }) { projectV2Item { id } }
+                }
+              `, { projectId, itemId: item.id, fieldId: process.env.STATUS_FIELD_ID, optionId: todo.id });
+            }
+
+  run-link-synchronize-scenario:
+    name: Run new commit status scenario
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs:
+      - resolve-auth
+      - prepare-link-scenario
+      - assert-reconcile-sprint-scenario
+    uses: ./.github/workflows/link-pr-to-project.yml
+    with:
+      project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+      project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
+      backlog_repo: ${{ needs.prepare-link-scenario.outputs.backlog_repo_name }}
+      backlog_repo_owner: ${{ needs.prepare-link-scenario.outputs.backlog_repo_owner }}
+      iteration_field_name: Iteration
+      status_field_name: Status
+      status_done_value: Done
+      status_in_progress_value: ${{ needs.prepare-link-scenario.outputs.status_in_progress_value }}
+      status_in_review_value: ${{ needs.prepare-link-scenario.outputs.status_in_review_value }}
+      pull_request_node_id: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
+      pull_request_number: ${{ needs.prepare-link-scenario.outputs.pull_number }}
+      pull_request_repo_owner: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_owner }}
+      pull_request_repo_name: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_name }}
+      head_ref: itest-manual-link-${{ github.run_id }}
+      action: synchronize
+      auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
+      installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+    secrets:
+      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
+      app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+      app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+
+  assert-link-synchronize-scenario:
+    name: Assert PR and closing issues are in progress
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs:
+      - prepare-link-scenario
+      - prepare-link-edited-scenario
+      - run-link-synchronize-scenario
+    runs-on: ubuntu-latest
+    steps:
+      - name: Normalize GitHub App private key
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: normalize-key
+        shell: bash
+        env:
+          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+        run: |
+          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
+          while IFS= read -r line; do
+            printf '::add-mask::%s\n' "$line"
+          done <<< "$NORMALIZED_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub App installation token
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          owner: ${{ env.INSTALLATION_OWNER }}
+          skip-token-revoke: true
+
+      - name: Assert all statuses after synchronize
+        uses: actions/github-script@v8
+        env:
+          PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
+          STATUS_FIELD_NAME: ${{ env.STATUS_FIELD_NAME }}
+          STATUS_IN_PROGRESS_VALUE: ${{ needs.prepare-link-scenario.outputs.status_in_progress_value }}
+          PULL_NODE_ID: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
+          PRIMARY_ISSUE_NODE_ID: ${{ needs.prepare-link-scenario.outputs.issue_node_id }}
+          SECONDARY_ISSUE_NODE_ID: ${{ needs.prepare-link-edited-scenario.outputs.secondary_issue_node_id }}
+          UNSPRINTED_ISSUE_NODE_ID: ${{ needs.prepare-link-edited-scenario.outputs.unsprinted_issue_node_id }}
+        with:
+          github-token: ${{ env.AUTH_MODE == 'app' && steps.app-token.outputs.token || secrets.ORG_PROJECT_TOKEN }}
+          script: |
+            const data = await github.graphql(`
+              query($pullId: ID!, $primaryId: ID!, $secondaryId: ID!, $unsprintedId: ID!, $statusName: String!) {
+                pull: node(id: $pullId) { ... on PullRequest { projectItems(first: 100) { nodes {
+                  project { id }
+                  status: fieldValueByName(name: $statusName) { ... on ProjectV2ItemFieldSingleSelectValue { name } }
+                } } } }
+                primary: node(id: $primaryId) { ... on Issue { projectItems(first: 100) { nodes {
+                  project { id }
+                  status: fieldValueByName(name: $statusName) { ... on ProjectV2ItemFieldSingleSelectValue { name } }
+                } } } }
+                secondary: node(id: $secondaryId) { ... on Issue { projectItems(first: 100) { nodes {
+                  project { id }
+                  status: fieldValueByName(name: $statusName) { ... on ProjectV2ItemFieldSingleSelectValue { name } }
+                } } } }
+                unsprinted: node(id: $unsprintedId) { ... on Issue { projectItems(first: 100) { nodes {
+                  project { id }
+                  status: fieldValueByName(name: $statusName) { ... on ProjectV2ItemFieldSingleSelectValue { name } }
+                } } } }
+              }
+            `, {
+              pullId: process.env.PULL_NODE_ID,
+              primaryId: process.env.PRIMARY_ISSUE_NODE_ID,
+              secondaryId: process.env.SECONDARY_ISSUE_NODE_ID,
+              unsprintedId: process.env.UNSPRINTED_ISSUE_NODE_ID,
+              statusName: process.env.STATUS_FIELD_NAME,
+            });
+            for (const [label, node] of Object.entries(data)) {
+              const item = node?.projectItems?.nodes?.find((candidate) => candidate.project?.id === process.env.PROJECT_ID);
+              if (item?.status?.name !== process.env.STATUS_IN_PROGRESS_VALUE) {
+                throw new Error(`${label} expected ${process.env.STATUS_IN_PROGRESS_VALUE}, got ${item?.status?.name || 'none'}.`);
+              }
+            }
+
   run-link-review-requested-scenario:
     name: Run link PR review requested scenario
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     needs:
       - resolve-auth
       - prepare-link-scenario
-      - assert-reconcile-sprint-scenario
+      - assert-link-synchronize-scenario
     uses: ./.github/workflows/link-pr-to-project.yml
     with:
       project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
@@ -2051,6 +2205,8 @@ jobs:
       - prepare-link-edited-scenario
       - run-link-edited-scenario
       - assert-link-edited-scenario
+      - run-link-synchronize-scenario
+      - assert-link-synchronize-scenario
       - run-link-review-requested-scenario
       - assert-link-review-requested-scenario
       - close-pr-before-status-check
