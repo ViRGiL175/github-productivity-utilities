@@ -41,67 +41,29 @@ jobs:
     name: Generate text via Gemini API
     runs-on: ubuntu-latest
     outputs:
-      text: ${{ steps.gemini.outputs.answer }}
+      text: ${{ steps.generate.outputs.text }}
     steps:
       - name: Checkout caller repository
         if: inputs.context_files != ''
         uses: actions/checkout@v6
 
-      - name: Read context files
-        id: context
-        if: inputs.context_files != ''
-        uses: actions/github-script@v8
-        env:
-          CONTEXT_FILES: ${{ inputs.context_files }}
+      - name: Checkout automation implementation
+        uses: actions/checkout@v6
         with:
-          script: |
-            const fs = require('fs');
-            const MAX_CONTEXT_BYTES = 50_000;
-            const paths = (process.env.CONTEXT_FILES || '').split('\n').map(p => p.trim()).filter(Boolean);
-            let totalBytes = 0;
-            const parts = [];
-            for (const filepath of paths) {
-              if (!fs.existsSync(filepath)) {
-                core.error(`Context file not found: ${filepath}`);
-                process.exit(1);
-              }
-              const bytes = fs.statSync(filepath).size;
-              if (totalBytes + bytes > MAX_CONTEXT_BYTES) {
-                core.error(`Combined context files exceed ${MAX_CONTEXT_BYTES} bytes. Reduce the number or size of context_files.`);
-                process.exit(1);
-              }
-              parts.push(fs.readFileSync(filepath, 'utf8'));
-              totalBytes += bytes;
-            }
-            core.setOutput('content', parts.join('\n\n'));
-
-      - name: Build effective text input
-        id: build-input
-        shell: bash
-        env:
-          INPUT_TEXT: ${{ inputs.input_text }}
-          CONTEXT_CONTENT: ${{ steps.context.outputs.content }}
-          PROMPT_TEXT: ${{ inputs.prompt_text }}
-        run: |
-          if [ -n "$INPUT_TEXT" ] && [ -n "$CONTEXT_CONTENT" ]; then
-            effective=$(printf '%s\n\n%s' "$INPUT_TEXT" "$CONTEXT_CONTENT")
-          elif [ -n "$CONTEXT_CONTENT" ]; then
-            effective="$CONTEXT_CONTENT"
-          elif [ -n "$INPUT_TEXT" ]; then
-            effective="$INPUT_TEXT"
-          else
-            # No separate input — fall back to prompt_text as the user message
-            effective="$PROMPT_TEXT"
-          fi
-          echo "text<<EOF" >> "$GITHUB_OUTPUT"
-          printf '%s\n' "$effective" >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .github-productivity-utilities-runtime
 
       - name: Generate text
-        id: gemini
-        uses: ViRGiL175/gemini-chat-action@main
+        id: generate
+        uses: actions/github-script@v8
+        env:
+          GEMINI_API_KEY: ${{ secrets.gemini_api_key }}
+          PROMPT_TEXT: ${{ inputs.prompt_text }}
+          INPUT_TEXT: ${{ inputs.input_text }}
+          CONTEXT_FILES: ${{ inputs.context_files }}
+          MODEL: ${{ inputs.model }}
         with:
-          gemini-api-key: ${{ secrets.gemini_api_key }}
-          text: ${{ steps.build-input.outputs.text }}
-          system-instruction: ${{ inputs.prompt_text }}
-          model: ${{ inputs.model }}
+          script: |
+            const { run } = await import(`${process.env.GITHUB_WORKSPACE}/.github-productivity-utilities-runtime/src/scripts/gemini-generate-text.ts`)
+            await run(core)

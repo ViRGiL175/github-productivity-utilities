@@ -1,6 +1,7 @@
+# DEPRECATED: сохранён для совместимости с Dreddbook/scrum-dreddbook-backlog и не развивается.
 # Назначение: проверяет issue через Gemini на Scrum-ready оформление с учётом templates вызывающего репозитория.
 # Когда использовать: как reusable workflow или вручную для backlog-readiness review без автолейблинга/project updates.
-name: AI Scrum review issue
+name: '[DEPRECATED] AI Scrum review issue'
 
 on:
   workflow_call:
@@ -93,6 +94,10 @@ jobs:
       APP_ID: ${{ secrets.app_id || secrets.ORG_AUTOMATION_APP_ID }}
       APP_PRIVATE_KEY: ${{ secrets.app_private_key || secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
     steps:
+      - name: Deprecation warning
+        shell: bash
+        run: echo "::warning title=Deprecated workflow::ai-scrum-review-issue is deprecated and kept only for Dreddbook/scrum-dreddbook-backlog compatibility."
+
       - name: Validate workflow auth configuration
         shell: bash
         run: |
@@ -108,11 +113,11 @@ jobs:
         id: normalize-key
         shell: bash
         run: |
-          if [[ "$APP_PRIVATE_KEY" == *'\n'* ]]; then
-            printf 'private_key<<EOF\n%b\nEOF\n' "$APP_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
-          else
-            printf 'private_key<<EOF\n%s\nEOF\n' "$APP_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
-          fi
+          NORMALIZED_KEY=$(printf '%b' "$APP_PRIVATE_KEY")
+          while IFS= read -r line; do
+            printf '::add-mask::%s\n' "$line"
+          done <<< "$NORMALIZED_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub App installation token
         if: ${{ env.DIRECT_TOKEN == '' && env.AUTH_MODE == 'app' }}
@@ -259,11 +264,11 @@ jobs:
         id: normalize-key
         shell: bash
         run: |
-          if [[ "$APP_PRIVATE_KEY" == *'\n'* ]]; then
-            printf 'private_key<<EOF\n%b\nEOF\n' "$APP_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
-          else
-            printf 'private_key<<EOF\n%s\nEOF\n' "$APP_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
-          fi
+          NORMALIZED_KEY=$(printf '%b' "$APP_PRIVATE_KEY")
+          while IFS= read -r line; do
+            printf '::add-mask::%s\n' "$line"
+          done <<< "$NORMALIZED_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub App installation token
         if: ${{ env.DIRECT_TOKEN == '' && env.AUTH_MODE == 'app' }}
