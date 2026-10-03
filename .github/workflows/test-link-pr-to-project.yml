@@ -101,7 +101,7 @@ jobs:
       - name: Create GitHub App installation token
         if: ${{ env.AUTH_MODE == 'app' }}
         id: app-token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
@@ -643,7 +643,7 @@ jobs:
       - name: Create GitHub App installation token
         if: ${{ env.AUTH_MODE == 'app' }}
         id: app-token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
@@ -879,7 +879,7 @@ jobs:
       - name: Create GitHub App installation token
         if: ${{ env.AUTH_MODE == 'app' }}
         id: app-token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
@@ -1771,7 +1771,7 @@ jobs:
       - name: Create GitHub App installation token
         if: ${{ env.AUTH_MODE == 'app' }}
         id: app-token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
@@ -1948,7 +1948,7 @@ jobs:
       - name: Create GitHub App installation token
         if: ${{ env.AUTH_MODE == 'app' }}
         id: app-token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
@@ -2063,7 +2063,7 @@ jobs:
       - name: Create GitHub App installation token
         if: ${{ env.AUTH_MODE == 'app' }}
         id: app-token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
@@ -2230,7 +2230,7 @@ jobs:
       - name: Create GitHub App installation token
         if: ${{ env.AUTH_MODE == 'app' }}
         id: app-token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
