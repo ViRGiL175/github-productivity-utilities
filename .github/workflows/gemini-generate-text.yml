@@ -1,0 +1,69 @@
+# Назначение: вызывает Gemini API через gemini-chat-action и возвращает сгенерированный текст по prompt и контексту.
+# Когда использовать: как reusable workflow для текстовой генерации в CI, включая prompt, input_text и содержимое context_files.
+# Замена для: copilot-generate-text.yml (GitHub убрал бесплатные модели из Copilot API).
+name: Gemini Generate Text
+
+on:
+  workflow_call:
+    inputs:
+      prompt_text:
+        description: Main instruction for the model (used as system instruction)
+        required: true
+        type: string
+      input_text:
+        description: Optional additional input appended after the prompt
+        required: false
+        default: ''
+        type: string
+      context_files:
+        description: Newline-separated list of file paths whose contents are appended to input_text as additional context
+        required: false
+        default: ''
+        type: string
+      model:
+        description: Gemini model ID to use (e.g. gemini-3.5-flash, gemini-2.5-flash, gemini-2.5-pro)
+        required: false
+        default: 'gemini-3.5-flash'
+        type: string
+    outputs:
+      text:
+        description: Generated text result
+        value: ${{ jobs.generate.outputs.text }}
+    secrets:
+      gemini_api_key:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    name: Generate text via Gemini API
+    runs-on: ubuntu-latest
+    outputs:
+      text: ${{ steps.generate.outputs.text }}
+    steps:
+      - name: Checkout caller repository
+        if: inputs.context_files != ''
+        uses: actions/checkout@v6
+
+      - name: Checkout automation implementation
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .github-productivity-utilities-runtime
+
+      - name: Generate text
+        id: generate
+        uses: actions/github-script@v8
+        env:
+          GEMINI_API_KEY: ${{ secrets.gemini_api_key }}
+          PROMPT_TEXT: ${{ inputs.prompt_text }}
+          INPUT_TEXT: ${{ inputs.input_text }}
+          CONTEXT_FILES: ${{ inputs.context_files }}
+          MODEL: ${{ inputs.model }}
+        with:
+          script: |
+            const { run } = await import(`${process.env.GITHUB_WORKSPACE}/.github-productivity-utilities-runtime/src/scripts/gemini-generate-text.ts`)
+            await run(core)

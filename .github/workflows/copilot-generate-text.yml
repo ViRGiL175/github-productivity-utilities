@@ -1,3 +1,6 @@
+# DEPRECATED: GitHub убрал бесплатные модели из Copilot API — этот workflow больше не работает для бесплатных аккаунтов.
+# Используйте gemini-generate-text.yml вместо этого (через ViRGiL175/gemini-chat-action с бесплатным Gemini API).
+#
 # Назначение: вызывает Copilot SDK внутри GitHub Actions и возвращает сгенерированный текст по prompt и контексту.
 # Когда использовать: как reusable workflow для текстовой генерации в CI, включая prompt, input_text и содержимое context_files.
 name: Copilot Generate Text

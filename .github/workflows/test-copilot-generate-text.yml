@@ -1,21 +1,23 @@
-name: Test copilot-generate-text
+name: Test gemini-generate-text
 
 on:
   workflow_dispatch:
     inputs:
       model:
-        description: Optional Copilot model override for the integration run
+        description: Optional Gemini model override for the integration run
         required: false
-        default: 'gpt-4.1'
+        default: 'gemini-3.5-flash'
         type: string
   pull_request:
     paths:
-      - '.github/workflows/copilot-generate-text.yml'
+      - '.github/workflows/gemini-generate-text.yml'
       - '.github/workflows/test-copilot-generate-text.yml'
       - 'itest/copilot-context-fixture.txt'
       - '.secrets.example'
-      - 'README.md'
       - 'scripts/run-act-test.js'
+      - 'src/automations/gemini-generate-text/**'
+      - 'src/scripts/gemini-generate-text.ts'
+      - 'test/GeminiGenerateText.test.ts'
 
 concurrency:
   group: ${{ github.workflow }}
@@ -33,12 +35,12 @@ jobs:
   gen-prompt-only:
     name: '[1] Generate — prompt only'
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-    uses: ./.github/workflows/copilot-generate-text.yml
+    uses: ./.github/workflows/gemini-generate-text.yml
     with:
       prompt_text: 'You are a math assistant. What is 1 + 1? Return only the final numeric answer, with no explanation.'
-      model: ${{ inputs.model }}
+      model: ${{ inputs.model || 'gemini-3.5-flash' }}
     secrets:
-      copilot_token: ${{ secrets.USER_COPILOT_FGPAT }}
+      gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
 
   assert-prompt-only:
     name: '[1] Assert — prompt only'
@@ -67,14 +69,15 @@ jobs:
   # ─── Case 2: prompt_text + input_text (no context_files) ──────────────────
   gen-input-only:
     name: '[2] Generate — prompt + input_text'
+    needs: gen-prompt-only
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-    uses: ./.github/workflows/copilot-generate-text.yml
+    uses: ./.github/workflows/gemini-generate-text.yml
     with:
       prompt_text: 'You are a math assistant. Return only the final numeric answer, with no explanation.'
       input_text: 'What is 2 + 2?'
-      model: ${{ inputs.model }}
+      model: ${{ inputs.model || 'gemini-3.5-flash' }}
     secrets:
-      copilot_token: ${{ secrets.USER_COPILOT_FGPAT }}
+      gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
 
   assert-input-only:
     name: '[2] Assert — prompt + input_text'
@@ -101,17 +104,18 @@ jobs:
           fi
 
   # ─── Case 3: prompt_text + context_files (no input_text) ──────────────────
-  # The model should read the magic word from the context file and return it.
+  # The model should copy the unique sentinel from the context file.
   gen-context-only:
     name: '[3] Generate — prompt + context_files'
+    needs: gen-input-only
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-    uses: ./.github/workflows/copilot-generate-text.yml
+    uses: ./.github/workflows/gemini-generate-text.yml
     with:
-      prompt_text: 'You are a test assistant. The user will provide a context document. Extract and return only the magic word from the document, with no explanation or punctuation.'
+      prompt_text: 'Copy the complete CONTEXT_FILE_SENTINEL token from the supplied context document exactly. Return only that token, with no explanation or punctuation.'
       context_files: 'itest/copilot-context-fixture.txt'
-      model: ${{ inputs.model }}
+      model: ${{ inputs.model || 'gemini-3.5-flash' }}
     secrets:
-      copilot_token: ${{ secrets.USER_COPILOT_FGPAT }}
+      gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
 
   assert-context-only:
     name: '[3] Assert — prompt + context_files'
@@ -128,12 +132,12 @@ jobs:
             echo "Output is empty" >&2
             exit 1
           fi
-      - name: Check output contains magic word from context file
+      - name: Check output contains sentinel from context file
         shell: bash
         run: |
           actual="$(printf '%s' "$ACTUAL_OUTPUT" | tr -d '\r\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-          if ! echo "$actual" | grep -qiF 'strawberry'; then
-            echo "Expected output to contain 'strawberry' (magic word from itest/copilot-context-fixture.txt), got: '$ACTUAL_OUTPUT'" >&2
+          if ! echo "$actual" | grep -qF 'CONTEXT_FILE_SENTINEL_7F3A_STRAWBERRY'; then
+            echo "Expected output to contain the sentinel from itest/copilot-context-fixture.txt, got: '$ACTUAL_OUTPUT'" >&2
             exit 1
           fi
 
@@ -141,15 +145,16 @@ jobs:
   # Verifies that input_text and context_files are both passed through without conflict.
   gen-all-inputs:
     name: '[4] Generate — prompt + input_text + context_files'
+    needs: gen-context-only
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-    uses: ./.github/workflows/copilot-generate-text.yml
+    uses: ./.github/workflows/gemini-generate-text.yml
     with:
       prompt_text: 'You are a math assistant. Ignore any non-numeric context. Return only the final numeric answer to the math question, with no explanation.'
       input_text: 'What is 3 + 3?'
       context_files: 'itest/copilot-context-fixture.txt'
-      model: ${{ inputs.model }}
+      model: ${{ inputs.model || 'gemini-3.5-flash' }}
     secrets:
-      copilot_token: ${{ secrets.USER_COPILOT_FGPAT }}
+      gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
 
   assert-all-inputs:
     name: '[4] Assert — prompt + input_text + context_files'

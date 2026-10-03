@@ -13,19 +13,10 @@ on:
           - pat
           - app
       model:
-        description: Optional Copilot model override for the integration run
+        description: Optional Gemini model override for the integration run
         required: false
-        default: gpt-4.1
+        default: gemini-3.5-flash
         type: string
-  pull_request:
-    paths:
-      - '.github/workflows/ai-label-issue.yml'
-      - '.github/workflows/test-ai-label-issue.yml'
-      - '.github/workflows/copilot-generate-text.yml'
-      - '.secrets.example'
-      - 'README.md'
-      - 'scripts/run-act-test.js'
-
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: false
@@ -67,11 +58,11 @@ jobs:
         env:
           RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
         run: |
-          if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
-            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
-          else
-            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
-          fi
+          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
+          while IFS= read -r line; do
+            printf '::add-mask::%s\n' "$line"
+          done <<< "$NORMALIZED_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub App installation token
         if: ${{ env.AUTH_MODE == 'app' }}
@@ -179,14 +170,14 @@ jobs:
       allowed_fields: |
         labels
         Status
-      model: ${{ github.event_name == 'workflow_dispatch' && inputs.model || 'gpt-4.1' }}
+      model: ${{ github.event_name == 'workflow_dispatch' && inputs.model || 'gemini-3.5-flash' }}
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
       installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
     secrets:
       pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
       app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
       app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
-      copilot_token: ${{ secrets.USER_COPILOT_FGPAT }}
+      gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
 
   assert-label-success-scenario:
     name: Assert label success scenario
@@ -203,11 +194,11 @@ jobs:
         env:
           RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
         run: |
-          if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
-            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
-          else
-            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
-          fi
+          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
+          while IFS= read -r line; do
+            printf '::add-mask::%s\n' "$line"
+          done <<< "$NORMALIZED_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub App installation token
         if: ${{ env.AUTH_MODE == 'app' }}
@@ -269,14 +260,14 @@ jobs:
       allowed_fields: |
         labels
         Status
-      model: ${{ github.event_name == 'workflow_dispatch' && inputs.model || 'gpt-4.1' }}
+      model: ${{ github.event_name == 'workflow_dispatch' && inputs.model || 'gemini-3.5-flash' }}
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
       installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
     secrets:
       pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
       app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
       app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
-      copilot_token: ${{ secrets.USER_COPILOT_FGPAT }}
+      gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
 
   assert-label-rejected-scenario:
     name: Assert label rejected scenario
@@ -293,11 +284,11 @@ jobs:
         env:
           RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
         run: |
-          if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
-            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
-          else
-            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
-          fi
+          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
+          while IFS= read -r line; do
+            printf '::add-mask::%s\n' "$line"
+          done <<< "$NORMALIZED_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub App installation token
         if: ${{ env.AUTH_MODE == 'app' }}
@@ -345,11 +336,11 @@ jobs:
         env:
           RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
         run: |
-          if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
-            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
-          else
-            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
-          fi
+          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
+          while IFS= read -r line; do
+            printf '::add-mask::%s\n' "$line"
+          done <<< "$NORMALIZED_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub App installation token
         if: ${{ env.AUTH_MODE == 'app' }}
@@ -409,11 +400,11 @@ jobs:
         env:
           RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
         run: |
-          if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
-            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
-          else
-            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
-          fi
+          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
+          while IFS= read -r line; do
+            printf '::add-mask::%s\n' "$line"
+          done <<< "$NORMALIZED_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub App installation token
         id: app-token
@@ -485,13 +476,13 @@ jobs:
       allowed_fields: |
         labels
         type
-      model: ${{ github.event_name == 'workflow_dispatch' && inputs.model || 'gpt-4.1' }}
+      model: ${{ github.event_name == 'workflow_dispatch' && inputs.model || 'gemini-3.5-flash' }}
       auth_mode: app
       installation_owner: ViRGiL-GH-Productivity
     secrets:
       app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
       app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
-      copilot_token: ${{ secrets.USER_COPILOT_FGPAT }}
+      gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
 
   assert-label-type-scenario:
     name: Assert native issue type scenario
@@ -507,11 +498,11 @@ jobs:
         env:
           RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
         run: |
-          if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
-            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
-          else
-            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
-          fi
+          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
+          while IFS= read -r line; do
+            printf '::add-mask::%s\n' "$line"
+          done <<< "$NORMALIZED_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub App installation token
         id: app-token
@@ -568,11 +559,11 @@ jobs:
         env:
           RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
         run: |
-          if [[ "$RAW_PRIVATE_KEY" == *'\n'* ]]; then
-            printf 'private_key<<EOF\n%b\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
-          else
-            printf 'private_key<<EOF\n%s\nEOF\n' "$RAW_PRIVATE_KEY" >> "$GITHUB_OUTPUT"
-          fi
+          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
+          while IFS= read -r line; do
+            printf '::add-mask::%s\n' "$line"
+          done <<< "$NORMALIZED_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub App installation token
         id: app-token
