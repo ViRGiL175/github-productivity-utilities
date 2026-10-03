@@ -58,7 +58,7 @@ jobs:
       - name: Read context files
         id: context
         if: inputs.context_files != ''
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           CONTEXT_FILES: ${{ inputs.context_files }}
         with:
@@ -85,7 +85,7 @@ jobs:
 
       - name: Generate text
         id: generate
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           COPILOT_GITHUB_TOKEN: ${{ secrets.copilot_token }}
           PROMPT_TEXT: ${{ inputs.prompt_text }}

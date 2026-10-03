@@ -137,7 +137,7 @@ jobs:
 
       - name: Create issue, project item, branch, and PR
         id: prepare
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_OWNER: ${{ env.PROJECT_OWNER }}
           PROJECT_NUMBER: ${{ env.PROJECT_NUMBER }}
@@ -678,7 +678,7 @@ jobs:
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Assert PR was linked to project and issue sprint
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
           ITERATION_FIELD_NAME: ${{ env.ITERATION_FIELD_NAME }}
@@ -914,7 +914,7 @@ jobs:
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Assert rerun did not duplicate project item or closes line
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
           ITERATION_FIELD_NAME: ${{ env.ITERATION_FIELD_NAME }}
@@ -1806,7 +1806,7 @@ jobs:
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Assert PR status is Need Review in project
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
           STATUS_FIELD_NAME: ${{ env.STATUS_FIELD_NAME }}
@@ -1983,7 +1983,7 @@ jobs:
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Close temporary PR
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PULL_REQUEST_REPO_OWNER: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_owner }}
           PULL_REQUEST_REPO_NAME: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_name }}
@@ -2098,7 +2098,7 @@ jobs:
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Assert PR status is Done in project
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
           STATUS_FIELD_NAME: ${{ env.STATUS_FIELD_NAME }}
@@ -2265,7 +2265,7 @@ jobs:
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Remove project items, close issue, and delete branch
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
           ITERATION_FIELD_NAME: ${{ env.ITERATION_FIELD_NAME }}
