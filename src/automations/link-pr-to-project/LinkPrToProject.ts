@@ -1,4 +1,4 @@
-import type { IssueClosingPullRequestsGateway, IssueManagedCommentGateway, IssueReader, RepositoryCoordinates } from '../../github/IssueRepository.ts';
+import type { IssueClosingReferenceGateway, IssueClosingPullRequestsGateway, IssueManagedCommentGateway, IssueReader, RepositoryCoordinates } from '../../github/IssueRepository.ts';
 import type { ProjectIterationGateway, ProjectStatusGateway, ProjectV2Gateway } from '../../github/ProjectV2Repository.ts';
 import type { PullRequestClosingIssuesGateway, PullRequestMutationGateway } from '../../github/PullRequestRepository.ts';
 import type { Logger } from '../../runtime/Logger.ts';
@@ -33,7 +33,7 @@ export interface LinkPrToProjectInput {
 
 type ProjectGateway = ProjectV2Gateway & ProjectStatusGateway & Pick<ProjectIterationGateway, 'getIterationMetadata'>;
 type PullRequestGateway = PullRequestMutationGateway & PullRequestClosingIssuesGateway;
-type IssueGateway = IssueReader & IssueClosingPullRequestsGateway & IssueManagedCommentGateway;
+type IssueGateway = IssueReader & IssueClosingPullRequestsGateway & IssueClosingReferenceGateway & IssueManagedCommentGateway;
 
 export const NO_ACTIVE_SPRINT_COMMENT_MARKER = '<!-- github-productivity-utilities:no-active-sprint -->';
 
@@ -77,6 +77,7 @@ now: () => Date = () => new Date(),
   if (input.action === 'review_requested') {
     const closingIssueNumbers = await resolveClosingIssueNumbers(input, pullRequests, logger);
     const branchIssueNumber = extractIssueNumber(input.headRef);
+    await ensureClosingIssueReferences(input, closingIssueNumbers.length > 0 ? closingIssueNumbers : branchIssueNumber ? [branchIssueNumber] : [], issues);
     await handleReviewRequested(input, statusMetadata.projectId, statusMetadata.statusFieldId, inReviewOptionId, pullRequests, projects, logger);
     await syncReviewAssignees(input, pullRequests, logger);
     await syncLinkedIssueReviewStatus(
@@ -107,6 +108,7 @@ now: () => Date = () => new Date(),
       }
       const closingIssueNumbers = await resolveClosingIssueNumbers(input, pullRequests, logger);
       const branchIssueNumber = extractIssueNumber(input.headRef);
+      await ensureClosingIssueReferences(input, closingIssueNumbers.length > 0 ? closingIssueNumbers : branchIssueNumber ? [branchIssueNumber] : [], issues);
       await moveReviewBackToTodo(
         input,
         closingIssueNumbers.length > 0 ? closingIssueNumbers : branchIssueNumber ? [branchIssueNumber] : [],
@@ -165,6 +167,8 @@ now: () => Date = () => new Date(),
       logger.info(`Ignoring closed linked issue #${linkedIssueNumber} for sprint and assignee sync.`);
       continue;
     }
+    if (issue.isPullRequest) throw new Error(`Expected backlog issue #${issue.number}, got a pull request.`);
+    await issues.ensureClosingPullRequest(input.backlogRepository, issue, input.pullRequestNodeId);
     openIssues.push(issue);
   }
   const openIssueNumbers = openIssues.map((issue) => issue.number);
@@ -539,6 +543,15 @@ async function moveReviewBackToTodo(
     if (!issueItem || issueItem.statusOptionId === todoOption.id) continue;
     await projects.setSingleSelect(projectId, issueItem.id, statusFieldId, todoOption.id);
     logger.info(`Changes were requested on PR #${input.pullRequestNumber}; set issue #${issueNumber} status to ${todoOption.name}.`);
+  }
+}
+
+async function ensureClosingIssueReferences(input: LinkPrToProjectInput, issueNumbers: number[], issues: IssueGateway): Promise<void> {
+  for (const issueNumber of [...new Set(issueNumbers)]) {
+    const issue = await issues.getIssue(input.backlogRepository, issueNumber);
+    if (issue.isPullRequest) throw new Error(`Expected backlog issue #${issue.number}, got a pull request.`);
+    if (issue.isOpen === false) continue;
+    await issues.ensureClosingPullRequest(input.backlogRepository, issue, input.pullRequestNodeId);
   }
 }
 

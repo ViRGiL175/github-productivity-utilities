@@ -27,6 +27,8 @@
 
 Новые правила не включаются в репозиториях-потребителях автоматически. Для периодической сверки Sprint caller вызывает `sync-sub-issue-sprint.yml` с `action: reconcile`. Ревью-назначения в `link-pr-to-project.yml` требуют добавить в caller события `pull_request: review_request_removed` и `pull_request_review: [submitted, dismissed]`. При обычном комментарии без решения assignee не меняются.
 
+Связи issue ↔ PR создаются через `addCloseIssueReferences`, включая PR из другого репозитория в промежуточную ветку. Автоматизация сохраняет существующие связи и проверяет результат через GitHub; для записи нужны текущие права токена на целевую issue. При неопределённом ответе повторяется только чтение, а неподтверждённая связь завершает workflow с ошибкой. Проверка этого сценария использует существующий `test-link-pr-to-project.yml` в режиме `app`.
+
 Чтобы новые коммиты переводили PR и его открытые closing issues в In progress, caller должен вызывать `link-pr-to-project.yml` на `pull_request: synchronize` и передавать `status_in_progress_value` с точным названием статуса Project V2. Статусы Need review, Done и другие значения, отличные от Todo, сохраняются.
 
 Изменение Sprint связанной issue в Project V2 не вызывает событие PR. Для периодической сверки открытых PR вызывайте `link-pr-to-project.yml` по расписанию или вручную с `action: reconcile_sprints` и многострочным списком `repositories`. Режим пропускает PR вне проекта и не меняет их Status, assignee или описание.
