@@ -55,6 +55,11 @@ export interface IssueClosingPullRequestsGateway {
   listOpenClosingPullRequests(repository: RepositoryCoordinates, issueNumber: number): Promise<ClosingPullRequest[]>;
 }
 
+export interface IssueClosingReferenceGateway {
+
+  ensureClosingPullRequest(repository: RepositoryCoordinates, issue: IssueRecord, pullRequestNodeId: string): Promise<void>;
+}
+
 export interface IssueReopenGateway {
   listCrossReferencedPullRequests(
     repository: RepositoryCoordinates,
@@ -102,15 +107,23 @@ const ISSUE_TIMELINE_QUERY = `
   }
 `;
 
-const OPEN_CLOSING_PULL_REQUESTS_QUERY = `
-  query($owner: String!, $repo: String!, $number: Int!, $after: String) {
+const CLOSING_PULL_REQUESTS_QUERY = `
+  query($owner: String!, $repo: String!, $number: Int!, $after: String, $includeClosedPrs: Boolean!) {
     repository(owner: $owner, name: $repo) {
       issue(number: $number) {
-        closedByPullRequestsReferences(first: 100, after: $after) {
+        closedByPullRequestsReferences(first: 100, after: $after, includeClosedPrs: $includeClosedPrs) {
           pageInfo { hasNextPage endCursor }
           nodes { id number repository { nameWithOwner } }
         }
       }
+    }
+  }
+`;
+
+const ADD_CLOSE_ISSUE_REFERENCES_MUTATION = `
+  mutation($issueId: ID!, $pullRequestIds: [ID!]!) {
+    addCloseIssueReferences(input: { issueId: $issueId, pullRequestIds: $pullRequestIds }) {
+      issue { id }
     }
   }
 `;
@@ -145,7 +158,8 @@ interface ClosingPullRequestsQueryResult {
   } | null;
 }
 
-export class IssueRepository implements IssueReader, IssueReopenGateway, SubIssueReader, IssueClosingPullRequestsGateway, IssueManagedCommentGateway {
+export class IssueRepository implements IssueReader, IssueReopenGateway, SubIssueReader, IssueClosingPullRequestsGateway, IssueClosingReferenceGateway, IssueManagedCommentGateway {
+
   private readonly octokit: Octokit;
   constructor(octokit: Octokit) { this.octokit = octokit; }
 
@@ -221,12 +235,44 @@ export class IssueRepository implements IssueReader, IssueReopenGateway, SubIssu
     });
   }
 
+  async ensureClosingPullRequest(repository: RepositoryCoordinates, issue: IssueRecord, pullRequestNodeId: string): Promise<void> {
+    const isLinked = async () => (await this.listClosingPullRequests(repository, issue.number, true))
+      .some((pullRequest) => pullRequest.nodeId === pullRequestNodeId);
+    if (await isLinked()) return;
+
+    let mutationError: unknown;
+    try {
+      await this.octokit.graphql(ADD_CLOSE_ISSUE_REFERENCES_MUTATION, {
+        issueId: issue.nodeId, pullRequestIds: [pullRequestNodeId],
+      });
+    } catch (error) {
+      mutationError = error;
+    }
+
+    // A failed response can still mean the mutation was committed; only retry reads.
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
+      if (await isLinked()) return;
+    }
+    const detail = mutationError instanceof Error ? `: ${mutationError.message}` : '';
+    throw new Error(
+      `Could not confirm native link from ${repository.owner}/${repository.repo}#${issue.number} to ${pullRequestNodeId}${detail}. The mutation was not retried.`,
+      { cause: mutationError },
+    );
+  }
+
   async listOpenClosingPullRequests(repository: RepositoryCoordinates, issueNumber: number): Promise<ClosingPullRequest[]> {
+    return this.listClosingPullRequests(repository, issueNumber, false);
+  }
+
+  private async listClosingPullRequests(
+    repository: RepositoryCoordinates, issueNumber: number, includeClosedPrs: boolean,
+  ): Promise<ClosingPullRequest[]> {
     const result: ClosingPullRequest[] = [];
     let after: string | null = null;
     for (;;) {
       const data: ClosingPullRequestsQueryResult = await this.octokit.graphql<ClosingPullRequestsQueryResult>(
-        OPEN_CLOSING_PULL_REQUESTS_QUERY, { ...repository, number: issueNumber, after },
+        CLOSING_PULL_REQUESTS_QUERY, { ...repository, number: issueNumber, after, includeClosedPrs },
       );
       const connection = data.repository?.issue?.closedByPullRequestsReferences;
       if (!connection) throw new Error(`Could not read closing PRs for ${repository.owner}/${repository.repo}#${issueNumber}.`);
