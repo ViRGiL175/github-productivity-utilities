@@ -1,0 +1,28 @@
+services:
+  grafana:
+    environment:
+      GF_SERVER_PROTOCOL: https
+      GF_SERVER_DOMAIN: ${GRAFANA_DOMAIN:-localhost}
+      GF_SERVER_ROOT_URL: https://${GRAFANA_DOMAIN:-localhost}:${GRAFANA_PORT:-3301}/
+      GF_SERVER_CERT_FILE: /run/secrets/grafana_tls_cert
+      GF_SERVER_CERT_KEY: /run/secrets/grafana_tls_key
+      GF_SECURITY_COOKIE_SECURE: "true"
+    secrets:
+      - grafana_tls_cert
+      - grafana_tls_key
+      - grafana_tls_ca
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          curl --fail --silent --show-error --cacert /run/secrets/grafana_tls_ca
+          --resolve "$$GF_SERVER_DOMAIN:3000:127.0.0.1"
+          "https://$$GF_SERVER_DOMAIN:3000/api/health"
+
+secrets:
+  grafana_tls_cert:
+    file: ${GRAFANA_TLS_CERT_FILE:?Provide the server certificate file}
+  grafana_tls_key:
+    file: ${GRAFANA_TLS_KEY_FILE:?Provide the server private key file}
+  grafana_tls_ca:
+    file: ${GRAFANA_TLS_CA_FILE:?Provide the trusted issuer CA bundle}

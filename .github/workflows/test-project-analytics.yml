@@ -39,6 +39,9 @@ jobs:
       PGPORT: '55432'
       PGPASSWORD_FILE: .local/secrets/database-writer
       COMPOSE_PROJECT_NAME: analytics-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+      GRAFANA_TLS_CERT_FILE: ${{ github.workspace }}/.local/tls/server.crt
+      GRAFANA_TLS_KEY_FILE: ${{ github.workspace }}/.local/secrets/grafana-tls.key
+      GRAFANA_TLS_CA_FILE: ${{ github.workspace }}/.local/tls/ca.crt
     steps:
       - uses: actions/checkout@v6
         with:
@@ -70,6 +73,22 @@ jobs:
           for (const value of [sandbox.owner, ...sandbox.repositories]) console.log(`::add-mask::${value}`);
           appendFileSync(process.env.GITHUB_ENV, Object.entries(settings).map(([key, value]) => `${key}=${value}\n`).join(''));
           JS
+      - name: Create a temporary test CA and localhost certificate
+        run: |
+          umask 077
+          mkdir -p .local/tls
+          openssl req -x509 -newkey rsa:2048 -noenc -sha256 -days 1 \
+            -subj '/CN=Analytics E2E CA' -addext 'basicConstraints=critical,CA:TRUE' \
+            -addext 'keyUsage=critical,keyCertSign,cRLSign' \
+            -keyout .local/secrets/test-ca.key -out "$GRAFANA_TLS_CA_FILE"
+          openssl req -new -newkey rsa:2048 -noenc -sha256 -subj '/CN=localhost' \
+            -keyout "$GRAFANA_TLS_KEY_FILE" -out .local/tls/server.csr
+          printf '%s\n' 'basicConstraints=critical,CA:FALSE' \
+            'keyUsage=critical,digitalSignature,keyEncipherment' 'extendedKeyUsage=serverAuth' \
+            'subjectAltName=DNS:localhost,IP:127.0.0.1' > .local/tls/server.ext
+          openssl x509 -req -in .local/tls/server.csr -CA "$GRAFANA_TLS_CA_FILE" \
+            -CAkey .local/secrets/test-ca.key -CAcreateserial -days 1 -sha256 \
+            -extfile .local/tls/server.ext -out "$GRAFANA_TLS_CERT_FILE"
       - name: Create sandbox fixture token
         id: fixture-token
         uses: actions/create-github-app-token@v2
@@ -87,7 +106,8 @@ jobs:
           # Grant only the runtime UIDs access to their explicitly mounted secrets.
           setfacl -m u:70:r .local/secrets/database-admin .local/secrets/database-writer .local/secrets/database-reader
           setfacl -m u:472:r .local/secrets/database-reader .local/secrets/grafana-admin .local/secrets/grafana-encryption
-          docker compose --env-file .local/analytics.env -f analytics/compose.yaml up -d --wait --wait-timeout 180
+          setfacl -m u:472:r "$GRAFANA_TLS_CERT_FILE" "$GRAFANA_TLS_KEY_FILE" "$GRAFANA_TLS_CA_FILE"
+          docker compose --env-file .local/analytics.env -f analytics/compose.yaml -f analytics/compose.https.yaml up -d --wait --wait-timeout 180
       - name: Import, reconcile, and query the fixture
         env:
           FIXTURE_TOKEN: ${{ steps.fixture-token.outputs.token }}
@@ -101,6 +121,6 @@ jobs:
         if: always()
         run: |
           if [ -f .local/analytics.env ]; then
-            docker compose --env-file .local/analytics.env -f analytics/compose.yaml down --volumes
+            docker compose --env-file .local/analytics.env -f analytics/compose.yaml -f analytics/compose.https.yaml down --volumes
           fi
           rm -rf -- .local
