@@ -6,12 +6,25 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "check": "npm run typecheck && npm test"
+    "check": "npm run typecheck && npm test",
+    "analytics:build": "tsc -p tsconfig.analytics.json",
+    "analytics:once": "node --env-file=.local/analytics.env dist/analytics/main.js --once",
+    "analytics:start": "node --env-file=.local/analytics.env dist/analytics/main.js",
+    "local:up": "node scripts/local-analytics.mjs up",
+    "local:infra": "node scripts/local-analytics.mjs infra",
+    "local:once": "node scripts/local-analytics.mjs once",
+    "local:down": "node scripts/local-analytics.mjs down",
+    "local:status": "node scripts/local-analytics.mjs status"
   },
   "devDependencies": {
-    "@octokit/rest": "^22.0.1",
     "@types/node": "^26.5.1",
+    "@types/pg": "8.23.1",
     "typescript": "^7.0.2",
     "vitest": "^5.0.1"
+  },
+  "dependencies": {
+    "@octokit/auth-app": "8.3.1",
+    "@octokit/rest": "22.0.1",
+    "pg": "8.23.1"
   }
 }

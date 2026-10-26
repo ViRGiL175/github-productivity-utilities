@@ -1,0 +1,512 @@
+{
+  "id": null,
+  "uid": "project-overview",
+  "title": "Project overview",
+  "description": "One isolated GitHub Project V2. Native issue types, board Status and current Iteration; observation history is not event history.",
+  "tags": [
+    "local",
+    "project-analytics"
+  ],
+  "timezone": "utc",
+  "schemaVersion": 42,
+  "version": 0,
+  "editable": true,
+  "refresh": "5m",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "timepicker": {
+    "hidden": true
+  },
+  "annotations": {
+    "list": []
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "currentSprint",
+        "label": "Current Sprint",
+        "type": "query",
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "project-analytics"
+        },
+        "query": "WITH active_iteration AS (\n SELECT it->>'id' AS id, it->>'title' AS title, (it->>'startDate')::date AS start_date, (it->>'duration')::int AS duration\n FROM analytics.project_current p\n CROSS JOIN LATERAL jsonb_array_elements(p.snapshot->'fields') f\n CROSS JOIN LATERAL jsonb_array_elements(COALESCE(f->'configuration'->'iterations','[]'::jsonb) || COALESCE(f->'configuration'->'completedIterations','[]'::jsonb)) it\n WHERE f->>'name'='Sprint' AND (it->>'startDate')::date <= (now() AT TIME ZONE 'UTC')::date\n AND (now() AT TIME ZONE 'UTC')::date < (it->>'startDate')::date + (it->>'duration')::int\n) SELECT title || ' · ' || to_char(start_date,'DD.MM') || '–' || to_char(start_date+duration-1,'DD.MM.YYYY') AS __text, id AS __value FROM active_iteration ORDER BY start_date",
+        "definition": "WITH active_iteration AS (\n SELECT it->>'id' AS id, it->>'title' AS title, (it->>'startDate')::date AS start_date, (it->>'duration')::int AS duration\n FROM analytics.project_current p\n CROSS JOIN LATERAL jsonb_array_elements(p.snapshot->'fields') f\n CROSS JOIN LATERAL jsonb_array_elements(COALESCE(f->'configuration'->'iterations','[]'::jsonb) || COALESCE(f->'configuration'->'completedIterations','[]'::jsonb)) it\n WHERE f->>'name'='Sprint' AND (it->>'startDate')::date <= (now() AT TIME ZONE 'UTC')::date\n AND (now() AT TIME ZONE 'UTC')::date < (it->>'startDate')::date + (it->>'duration')::int\n) SELECT title || ' · ' || to_char(start_date,'DD.MM') || '–' || to_char(start_date+duration-1,'DD.MM.YYYY') AS __text, id AS __value FROM active_iteration ORDER BY start_date",
+        "refresh": 1,
+        "hide": 2,
+        "multi": false,
+        "includeAll": false,
+        "options": [],
+        "current": {}
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 2
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**Тип — GitHub Issue Type; Status — поле доски.** PR и черновики отдельно. Без типа ≠ история или эпик. Sprint — даты Iteration (UTC). Суточный снимок, не прогноз."
+      }
+    },
+    {
+      "id": 2,
+      "title": "Карточки по типу",
+      "type": "table",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "project-analytics"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 2,
+        "w": 24,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "custom": {
+            "align": "center",
+            "cellOptions": {
+              "type": "color-text"
+            },
+            "width": 130
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Feature"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "purple"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Debt"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Issues без типа"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "gray"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "PR"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Черновики"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "yellow"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Всего карточек"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "project-analytics"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT count(*) FILTER (WHERE item_type='ISSUE' AND issue_type='Feature')::int AS \"Feature\",\ncount(*) FILTER (WHERE item_type='ISSUE' AND issue_type='Debt')::int AS \"Debt\",\ncount(*) FILTER (WHERE item_type='ISSUE' AND issue_type IS NULL)::int AS \"Issues без типа\",\ncount(*) FILTER (WHERE item_type='PULL_REQUEST')::int AS \"PR\",\ncount(*) FILTER (WHERE item_type='DRAFT_ISSUE')::int AS \"Черновики\",\ncount(*)::int AS \"Всего карточек\"\nFROM analytics.items WHERE present AND NOT archived"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Status Issues · PR и черновики исключены",
+      "description": "Авторитетное поле — Status доски, а не OPEN/CLOSED issue. Сегменты показывают нативный Issue Type. Учитываются присутствующие неархивные карточки.",
+      "type": "barchart",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "project-analytics"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 6,
+        "w": 10,
+        "h": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "project-analytics"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT COALESCE(f.display_value,'Без Status') AS \"Status\",\n count(*) FILTER (WHERE i.issue_type='Feature')::int AS \"Feature\",\n count(*) FILTER (WHERE i.issue_type='Debt')::int AS \"Debt\",\n count(*) FILTER (WHERE i.issue_type IS NULL)::int AS \"Без Issue Type\",\n count(*) FILTER (WHERE i.issue_type IS NOT NULL AND i.issue_type NOT IN ('Feature','Debt'))::int AS \"Другой Issue Type\"\n FROM analytics.items i LEFT JOIN analytics.item_fields f ON f.item_id=i.item_id AND f.field_name='Status'\n WHERE i.present AND NOT i.archived AND i.item_type='ISSUE'\n GROUP BY 1 ORDER BY CASE COALESCE(f.display_value,'Без Status') WHEN 'Todo' THEN 1 WHEN 'In Progress' THEN 2 WHEN 'Need review' THEN 3 WHEN 'Done' THEN 4 ELSE 5 END"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisPlacement": "auto",
+            "fillOpacity": 90,
+            "lineWidth": 0
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Feature"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "purple"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Debt"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Без Issue Type"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "gray"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "orientation": "horizontal",
+        "stacking": "normal",
+        "showValue": "always",
+        "groupWidth": 0.72,
+        "barWidth": 0.9,
+        "barRadius": 0.1,
+        "xField": "Status",
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "xTickLabelRotation": 0
+      }
+    },
+    {
+      "id": 9,
+      "title": "Текущий Sprint: ${currentSprint:text}",
+      "description": "Все присутствующие неархивные карточки активной Iteration. Граница: startDate ≤ дата UTC < startDate + duration. Типы не смешиваются в показатель историй.",
+      "type": "table",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "project-analytics"
+      },
+      "gridPos": {
+        "x": 10,
+        "y": 6,
+        "w": 14,
+        "h": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "project-analytics"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "WITH active_iteration AS (\n SELECT it->>'id' AS id, it->>'title' AS title, (it->>'startDate')::date AS start_date, (it->>'duration')::int AS duration\n FROM analytics.project_current p\n CROSS JOIN LATERAL jsonb_array_elements(p.snapshot->'fields') f\n CROSS JOIN LATERAL jsonb_array_elements(COALESCE(f->'configuration'->'iterations','[]'::jsonb) || COALESCE(f->'configuration'->'completedIterations','[]'::jsonb)) it\n WHERE f->>'name'='Sprint' AND (it->>'startDate')::date <= (now() AT TIME ZONE 'UTC')::date\n AND (now() AT TIME ZONE 'UTC')::date < (it->>'startDate')::date + (it->>'duration')::int\n), rows AS (\n SELECT CASE i.item_type WHEN 'PULL_REQUEST' THEN 'PR' WHEN 'DRAFT_ISSUE' THEN 'Черновик' ELSE COALESCE(i.issue_type,'Issue без типа') END AS \"Тип\",\n i.title AS \"Карточка\", COALESCE(f.display_value,'Без Status') AS \"Status\", i.url AS \"URL\"\n FROM analytics.items i JOIN analytics.item_iterations it ON it.item_id=i.item_id AND it.field_name='Sprint'\n JOIN active_iteration a ON a.id=it.iteration_id\n LEFT JOIN analytics.item_fields f ON f.item_id=i.item_id AND f.field_name='Status'\n WHERE i.present AND NOT i.archived\n)\nSELECT * FROM rows\nUNION ALL SELECT '—',CASE WHEN EXISTS(SELECT 1 FROM active_iteration) THEN 'В активном Sprint нет карточек' ELSE 'Нет активного Sprint по датам Iteration' END,'—',NULL WHERE NOT EXISTS(SELECT 1 FROM rows)\nORDER BY \"Тип\",\"Status\",\"Карточка\""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "filterable": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Тип"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 95
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Status"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 105
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "URL"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Карточка"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Открыть в GitHub",
+                    "url": "${__data.fields.URL}",
+                    "targetBlank": true
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "id": 10,
+      "title": "Синхронизация · полный снимок раз в сутки",
+      "description": "История хранит время наблюдения, а не точное время переходов. Первая загрузка не позволяет строить прогнозы. Обновления и исчезновения фиксируются только после полной успешной выборки.",
+      "type": "table",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "project-analytics"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 24,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "project-analytics"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "WITH latest AS (SELECT * FROM analytics.sync_runs ORDER BY started_at DESC LIMIT 1),\n successful AS (SELECT * FROM analytics.sync_runs WHERE status='complete' ORDER BY completed_at DESC LIMIT 1)\n SELECT CASE latest.status WHEN 'complete' THEN 'Успешно' WHEN 'running' THEN 'В процессе' ELSE 'Ошибка' END AS \"Последняя попытка\",\n (extract(epoch FROM successful.completed_at)*1000)::double precision AS \"Последний успех · UTC\",\n successful.item_count AS \"Карточек в полном снимке\",\n round(extract(epoch FROM (now()-successful.completed_at))/60)::int AS \"Возраст, мин\"\n FROM latest FULL JOIN successful ON true"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Последний успех · UTC"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsIso"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Последняя попытка"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "Успешно": {
+                        "text": "Успешно",
+                        "color": "green"
+                      },
+                      "Ошибка": {
+                        "text": "Ошибка",
+                        "color": "red"
+                      },
+                      "В процессе": {
+                        "text": "В процессе",
+                        "color": "blue"
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
+    }
+  ]
+}
