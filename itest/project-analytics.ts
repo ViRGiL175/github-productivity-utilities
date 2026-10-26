@@ -37,21 +37,25 @@ async function collect(): Promise<void> {
   const env = { ...process.env };
   delete env.FIXTURE_TOKEN;
   delete env.RAW_PRIVATE_KEY;
-  for (let attempt = 0; attempt < 4; attempt++) {
+  for (let attempt = 0; attempt < 5; attempt++) {
     const result = spawnSync(process.execPath, ['dist/analytics/main.js', '--once'], { env, encoding: 'utf8', timeout: 180_000 });
     if (result.status === 0) {
       console.log('Collector completed a full GitHub snapshot');
       return;
     }
-    // Other existing workflows use this sandbox too; never edit or lock their fixtures.
-    if (attempt < 3 && /Project changed (during collection|while reading metadata)/.test(result.stderr)) {
-      await delay(2000);
-      continue;
-    }
     const diagnostic = result.stderr.split('\n').find(line => line.startsWith('{'));
     if (diagnostic) {
-      const failure = JSON.parse(diagnostic) as { stage?: string; httpStatus?: number; reason?: string };
-      console.error(JSON.stringify({ stage: failure.stage, httpStatus: failure.httpStatus, reason: failure.reason }));
+      const failure = JSON.parse(diagnostic) as { stage?: string; httpStatus?: number; reason?: string; details?: Record<string, unknown> };
+      const transient = new Set(['Project changed during collection; retry with a fresh observation.',
+        'Project changed while reading metadata.', 'Incomplete or changing connection.', 'Connection count or unique IDs do not match.']);
+      // GitHub connection counts can lag mutations; other workflows also use this sandbox.
+      // Every retry still requires a complete snapshot and preserves the collector's safety checks.
+      if (attempt < 4 && failure.stage === 'project_snapshot' && transient.has(failure.reason ?? '')) {
+        console.log(`Retrying inconsistent GitHub snapshot (${attempt + 1}/4)`);
+        await delay(2000 * 2 ** attempt);
+        continue;
+      }
+      console.error(JSON.stringify({ stage: failure.stage, httpStatus: failure.httpStatus, reason: failure.reason, details: failure.details }));
     }
     throw new Error(`Collector process failed with exit ${result.status ?? 'timeout'}`);
   }
