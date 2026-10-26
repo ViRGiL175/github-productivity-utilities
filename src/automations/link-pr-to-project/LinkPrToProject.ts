@@ -79,6 +79,9 @@ now: () => Date = () => new Date(),
     const branchIssueNumber = extractIssueNumber(input.headRef);
     await handleReviewRequested(input, statusMetadata.projectId, statusMetadata.statusFieldId, inReviewOptionId, pullRequests, projects, logger);
     await syncReviewAssignees(input, pullRequests, logger);
+    await assignActiveReviewSprint(
+      input, iterationMetadata.projectId, iterationMetadata.iterationFieldId, projects, logger, now,
+    );
     await syncLinkedIssueReviewStatus(
       input,
       closingIssueNumbers.length > 0 ? closingIssueNumbers : branchIssueNumber ? [branchIssueNumber] : [],
@@ -404,6 +407,30 @@ async function handleReviewRequested(
     }
     await projects.setSingleSelect(projectId, item.id, statusFieldId, inReviewOptionId);
     logger.info(`Set status ${input.statusFieldName}=${input.statusInReviewValue} for PR #${input.pullRequestNumber} (reviewers: ${humanReviewers.join(', ')}).`);
+}
+
+async function assignActiveReviewSprint(
+  input: LinkPrToProjectInput,
+  projectId: string,
+  iterationFieldId: string,
+  projects: ProjectGateway,
+  logger: Logger,
+  now: () => Date,
+): Promise<void> {
+  const metadata = await projects.getIterationMetadata(
+    input.projectOwner, input.projectNumber, input.iterationFieldName,
+  );
+  assertIterationMetadata(metadata, projectId, iterationFieldId);
+  const active = findCurrentIteration(metadata.iterations, now());
+  if (!active) {
+    logger.warning(`No active sprint was found for PR #${input.pullRequestNumber}; leaving its sprint unchanged.`);
+    return;
+  }
+  const item = await projects.getIssueProjectItem(input.pullRequestNodeId, projectId, input.iterationFieldName);
+  if (item?.iterationId === active.id) return;
+  const itemId = item?.id ?? await projects.addIssueToProject(projectId, input.pullRequestNodeId);
+  await projects.setIteration(projectId, itemId, iterationFieldId, active.id);
+  logger.info(`Assigned active sprint ${active.title} to PR #${input.pullRequestNumber} after a review request.`);
 }
 
 async function syncAssignees(input: LinkPrToProjectInput, issueNumber: number, pullRequests: PullRequestGateway, logger: Logger): Promise<void> {

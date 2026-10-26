@@ -24,7 +24,7 @@
 
 Все прежние inputs, secrets, defaults и правила обработки сохранены. В каждом reusable workflow checkout реализации использует `job.workflow_sha`: тесты выполняют исходный код из проверяемого коммита, а вызов workflow через `@tag` — код из коммита этого тега. Внешним репозиториям не нужно отдельно выбирать ref реализации.
 
-Новые правила не включаются в репозиториях-потребителях автоматически. Для периодической сверки Sprint caller вызывает `sync-sub-issue-sprint.yml` с `action: reconcile`. Ревью-назначения в `link-pr-to-project.yml` требуют добавить в caller события `pull_request: review_request_removed` и `pull_request_review: [submitted, dismissed]`. При обычном комментарии без решения assignee не меняются.
+Новые правила не включаются в репозиториях-потребителях автоматически. Для периодической сверки Sprint caller вызывает `sync-sub-issue-sprint.yml` с `action: reconcile`. Ревью-назначения в `link-pr-to-project.yml` требуют добавить в caller события `pull_request: review_request_removed` и `pull_request_review: [submitted, dismissed]`. При обычном комментарии без решения assignee не меняются. На `pull_request: review_requested` PR получает текущий Sprint указанной доски, в том числе вместо ранее назначенного Sprint и без связи с backlog issue. Если PR ещё нет на доске, он добавляется в неё. Sprint связанных issue не меняется. При отсутствии активной итерации Sprint PR сохраняется, а правила assignee продолжают работать.
 
 Чтобы новые коммиты переводили PR и его открытые closing issues в In progress, caller должен вызывать `link-pr-to-project.yml` на `pull_request: synchronize` и передавать `status_in_progress_value` с точным названием статуса Project V2. Статусы Need review, Done и другие значения, отличные от Todo, сохраняются.
 
