@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import { Agent, request } from 'node:https';
 import { readFile, writeFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Octokit } from '@octokit/rest';
@@ -20,6 +22,106 @@ assert.match(process.env.GITHUB_RUN_ATTEMPT ?? '', /^\d+$/);
 const github = new Octokit({ auth: process.env.FIXTURE_TOKEN, request: { timeout: 30_000 }, log: { debug() {}, info() {}, warn() {}, error() {} } });
 const projects = new ProjectV2Repository(github);
 let phase = 'fixture_setup';
+
+async function verifyGrafana(query: unknown): Promise<void> {
+  const origin = new URL('https://127.0.0.1:3301');
+  const trusted = new Agent({ ca: await readFile(process.env.GRAFANA_TLS_CA_FILE!) });
+  const untrusted = new Agent();
+  const adminPassword = (await readFile('.local/secrets/grafana-admin', 'utf8')).trim();
+  const credentials = (login: string, password: string) => `Basic ${Buffer.from(`${login}:${password}`).toString('base64')}`;
+  const bootstrap = credentials('localadmin', adminPassword);
+  async function api<T = Record<string, unknown>>(path: string, method = 'GET', body?: unknown, authorization?: string, agent = trusted): Promise<{ status: number; body: T }> {
+    return new Promise((resolve, reject) => {
+      const req = request(new URL(path, origin), {
+        method, agent, headers: { 'Content-Type': 'application/json', ...(authorization ? { Authorization: authorization } : {}) },
+      }, res => {
+        let data = '';
+        res.setEncoding('utf8');
+        res.on('data', chunk => { data += chunk; });
+        res.on('error', reject);
+        res.on('end', () => {
+          try { resolve({ status: res.statusCode!, body: JSON.parse(data) as T }); } catch { reject(new Error('Grafana returned non-JSON data')); }
+        });
+      });
+      req.on('error', reject);
+      req.setTimeout(30_000, () => req.destroy(new Error('Grafana request timed out')));
+      req.end(body === undefined ? undefined : JSON.stringify(body));
+    });
+  }
+  const users: number[] = [];
+  const uid = 'analytics-e2e-access';
+  let dashboardCreated = false;
+  try {
+    phase = 'grafana_tls';
+    await assert.rejects(api('/api/health', 'GET', undefined, undefined, untrusted), error =>
+      ['UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'SELF_SIGNED_CERT_IN_CHAIN', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY'].includes((error as NodeJS.ErrnoException).code ?? ''));
+    assert.equal((await api('/api/health')).status, 200);
+    console.log('HTTPS validates the test CA and localhost SAN; an untrusted client is rejected');
+
+    phase = 'grafana_settings';
+    const settings = await api<Record<string, Record<string, string>>>('/api/admin/settings', 'GET', undefined, bootstrap);
+    assert.equal(settings.status, 200);
+    assert.equal(settings.body['auth.anonymous']?.enabled, 'false');
+    assert.equal(settings.body.users?.allow_sign_up, 'false');
+    assert.equal(settings.body.server?.protocol, 'https');
+    assert.equal(settings.body.security?.cookie_secure, 'true');
+
+    phase = 'grafana_users';
+    const roles = new Map<string, string>();
+    for (const role of ['Viewer', 'Admin']) {
+      const login = `analytics-e2e-${role.toLowerCase()}`;
+      const password = randomBytes(32).toString('hex');
+      const created = await api<{ id: number }>('/api/admin/users', 'POST', { login, email: `${login}@example.invalid`, password }, bootstrap);
+      assert.equal(created.status, 200);
+      users.push(created.body.id);
+      assert.equal((await api(`/api/org/users/${created.body.id}`, 'PATCH', { role }, bootstrap)).status, 200);
+      roles.set(role, credentials(login, password));
+    }
+    const viewer = roles.get('Viewer')!;
+    const admin = roles.get('Admin')!;
+    const dashboard = { uid, title: 'Analytics E2E', schemaVersion: 39, panels: [], tags: ['e2e'] };
+    const created = await api('/api/dashboards/db', 'POST', { dashboard }, admin);
+    assert.equal(created.status, 200);
+    dashboardCreated = true;
+    phase = 'grafana_anonymous';
+    assert.equal((await api(`/api/dashboards/uid/${uid}`)).status, 401);
+    assert.equal((await api('/api/ds/query', 'POST', query)).status, 401);
+    const signup = await api('/api/user/signup', 'POST', { email: 'blocked@example.invalid' });
+    assert.equal(signup.status, 401);
+    assert.equal(signup.body.message, 'User signup is disabled');
+    phase = 'grafana_viewer';
+    assert.equal((await api(`/api/dashboards/uid/${uid}`, 'GET', undefined, viewer)).status, 200);
+    const changed = { dashboard: { ...dashboard, title: 'Analytics E2E updated' }, overwrite: true };
+    assert.equal((await api('/api/dashboards/db', 'POST', changed, viewer)).status, 403);
+    assert.equal((await api(`/api/dashboards/uid/${uid}`, 'DELETE', undefined, viewer)).status, 403);
+    assert.equal((await api('/api/admin/settings', 'GET', undefined, viewer)).status, 403);
+    phase = 'grafana_admin';
+    assert.equal((await api('/api/dashboards/db', 'POST', changed, admin)).status, 200);
+    const saved = await api<{ dashboard: { title: string } }>(`/api/dashboards/uid/${uid}`, 'GET', undefined, viewer);
+    assert.equal(saved.status, 200);
+    assert.equal(saved.body.dashboard.title, changed.dashboard.title);
+
+    phase = 'grafana_datasource';
+    const result = await api<{ results: { A: { status: number; error?: string; frames: Array<{ data: { values: unknown[][] } }> } } }>('/api/ds/query', 'POST', query, viewer);
+    assert.equal(result.status, 200);
+    assert.equal(result.body.results.A.status, 200);
+    assert.equal(result.body.results.A.error, undefined);
+    assert.deepEqual(result.body.results.A.frames[0]?.data.values, [[3]]);
+    console.log('Anonymous access and signup are denied; Viewer reads but cannot edit; Admin can edit');
+    console.log('Real Grafana PostgreSQL datasource returned all three fixture observations over verified HTTPS');
+  } finally {
+    try {
+      if (dashboardCreated) assert.equal((await api(`/api/dashboards/uid/${uid}`, 'DELETE', undefined, bootstrap)).status, 200);
+    } finally {
+      try {
+        for (const id of users) assert.equal((await api(`/api/admin/users/${id}`, 'DELETE', undefined, bootstrap)).status, 200);
+      } finally {
+        trusted.destroy();
+        untrusted.destroy();
+      }
+    }
+  }
+}
 
 interface Fixture {
 
@@ -153,20 +255,9 @@ async function scenario(): Promise<void> {
     console.log('Full reconciliation marks the removed item without deleting history');
 
     phase = 'grafana_query';
-    const password = (await readFile('.local/secrets/grafana-admin', 'utf8')).trim();
-    const response = await fetch('http://127.0.0.1:3301/api/ds/query', {
-      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Basic ${Buffer.from(`localadmin:${password}`).toString('base64')}` },
-      body: JSON.stringify({ from: 'now-1h', to: 'now', queries: [{ refId: 'A', format: 'table',
+    await verifyGrafana({ from: 'now-1h', to: 'now', queries: [{ refId: 'A', format: 'table',
         datasource: { uid: 'project-analytics', type: 'grafana-postgresql-datasource' },
-        rawSql: `SELECT count(*)::int AS revisions FROM analytics.item_history WHERE snapshot->'content'->>'title' = '${marker}'` }] }),
-      signal: AbortSignal.timeout(30_000),
-    });
-    assert.equal(response.status, 200, 'Grafana datasource query must succeed');
-    const result = await response.json() as { results: { A: { status: number; error?: string; frames: Array<{ data: { values: unknown[][] } }> } } };
-    assert.equal(result.results.A.status, 200);
-    assert.equal(result.results.A.error, undefined);
-    assert.deepEqual(result.results.A.frames[0]?.data.values, [[3]]);
-    console.log('Real Grafana PostgreSQL datasource returned all three fixture observations');
+        rawSql: `SELECT count(*)::int AS revisions FROM analytics.item_history WHERE snapshot->'content'->>'title' = '${marker}'` }] });
   } finally {
     await pool.end();
   }
