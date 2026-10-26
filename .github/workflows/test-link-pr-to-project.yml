@@ -1755,6 +1755,9 @@ jobs:
       - run-link-review-requested-scenario
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout implementation under test
+        uses: actions/checkout@v6
+
       - name: Normalize GitHub App private key
         if: ${{ env.AUTH_MODE == 'app' }}
         id: normalize-key
@@ -1922,6 +1925,79 @@ jobs:
               throw new Error('Linked issue lost its original assignee.');
             }
             core.info('Linked issue is in review and retains its assignee.');
+
+      - name: Assert review assignees with and without an active sprint
+        uses: actions/github-script@v8
+        env:
+          PULL_NODE_ID: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
+          PULL_NUMBER: ${{ needs.prepare-link-scenario.outputs.pull_number }}
+          REVIEWER_LOGIN: ${{ needs.prepare-link-scenario.outputs.issue_assignee_login }}
+          STATUS_IN_REVIEW_VALUE: ${{ needs.prepare-link-scenario.outputs.status_in_review_value }}
+        with:
+          github-token: ${{ steps.auth.outputs.token }}
+          script: |
+            const { linkPrToProject } = await import(`${process.env.GITHUB_WORKSPACE}/src/automations/link-pr-to-project/LinkPrToProject.ts`);
+            const { IssueRepository } = await import(`${process.env.GITHUB_WORKSPACE}/src/github/IssueRepository.ts`);
+            const { PullRequestRepository } = await import(`${process.env.GITHUB_WORKSPACE}/src/github/PullRequestRepository.ts`);
+            const { ProjectV2Repository } = await import(`${process.env.GITHUB_WORKSPACE}/src/github/ProjectV2Repository.ts`);
+            const issues = new IssueRepository(github);
+            const pullRequests = new PullRequestRepository(github);
+            const projects = new ProjectV2Repository(github);
+            const repository = { owner: process.env.PULL_REQUEST_REPO_OWNER, repo: process.env.PULL_REQUEST_REPO_NAME };
+            const reviewer = process.env.REVIEWER_LOGIN;
+            const input = {
+
+              projectOwner: process.env.PROJECT_OWNER,
+              projectNumber: Number(process.env.PROJECT_NUMBER),
+              backlogRepository: { owner: process.env.BACKLOG_REPO_OWNER, repo: process.env.BACKLOG_REPO_NAME },
+              iterationFieldName: process.env.ITERATION_FIELD_NAME,
+              statusFieldName: process.env.STATUS_FIELD_NAME,
+              statusDoneValue: process.env.STATUS_DONE_VALUE,
+              statusInProgressValue: '',
+              statusInReviewValue: process.env.STATUS_IN_REVIEW_VALUE,
+              pullRequestNodeId: process.env.PULL_NODE_ID,
+              pullRequestNumber: Number(process.env.PULL_NUMBER),
+              pullRequestRepository: repository,
+              pullRequestBodyHint: '',
+              headRef: '',
+              action: 'review_requested',
+              requestedReviewersJson: JSON.stringify([{ login: reviewer, type: 'User' }]),
+              reviewActorLogin: reviewer,
+              reviewActorType: 'User',
+            };
+            const metadata = await projects.getIterationMetadata(input.projectOwner, input.projectNumber, input.iterationFieldName);
+            const first = metadata.iterations[0];
+            const another = metadata.iterations.find((iteration) => iteration.id !== first?.id);
+            if (!first || !another) throw new Error('Review Sprint scenarios need two sandbox iterations.');
+            const item = await projects.getIssueProjectItem(input.pullRequestNodeId, metadata.projectId, input.iterationFieldName);
+            if (!item) throw new Error('Sandbox PR project item is missing.');
+            const activeDate = new Date(`${first.startDate}T00:00:00Z`);
+            const noActiveDate = new Date(Math.max(...metadata.iterations.map((iteration) =>
+              Date.parse(`${iteration.startDate}T00:00:00Z`) + iteration.duration * 86400000)) + 86400000);
+
+            for (const [date, expectedSprint] of [[activeDate, first.id], [noActiveDate, null]]) {
+              await pullRequests.setAssignees(repository, input.pullRequestNumber, []);
+              if (expectedSprint) {
+                await projects.setIteration(metadata.projectId, item.id, metadata.iterationFieldId, another.id);
+              } else {
+                await github.graphql(`mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!) {
+                  clearProjectV2ItemFieldValue(input: { projectId: $projectId, itemId: $itemId, fieldId: $fieldId }) {
+                    projectV2Item { id }
+                  }
+                }`, { projectId: metadata.projectId, itemId: item.id, fieldId: metadata.iterationFieldId });
+              }
+              await linkPrToProject(input, issues, pullRequests, projects, core, () => date);
+              for (let attempt = 0; ; attempt += 1) {
+                const updated = await projects.getIssueProjectItem(input.pullRequestNodeId, metadata.projectId, input.iterationFieldName);
+                const assignees = await pullRequests.getAssigneeLogins(repository, input.pullRequestNumber);
+                if (updated?.iterationId === expectedSprint && assignees.includes(reviewer)) break;
+                if (attempt === 7) {
+                  throw new Error(`Expected Sprint ${expectedSprint || 'none'} and assignee @${reviewer}; got ${updated?.iterationId || 'none'} and ${assignees.join(', ')}.`);
+                }
+                await new Promise((resolve) => setTimeout(resolve, 4000));
+              }
+              core.info(`Review request assigned @${reviewer}; Sprint is ${expectedSprint || 'empty without an active iteration'}.`);
+            }
 
   close-pr-before-status-check:
     name: Close PR before status check
