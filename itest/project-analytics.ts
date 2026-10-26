@@ -11,13 +11,15 @@ const sandbox = await analyticsSandbox();
 const { owner, backlog: repo, number: projectNumber } = sandbox;
 const journal = '.local/analytics-e2e-fixture.json';
 const marker = `ITEST-analytics-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`;
-assert.equal(process.env.PROJECT_OWNER, owner, 'E2E must target the existing sandbox');
-assert.equal(process.env.PROJECT_NUMBER, String(projectNumber));
+if (process.env.PROJECT_OWNER !== owner || process.env.PROJECT_NUMBER !== String(projectNumber)) {
+  throw new Error('E2E must target the existing sandbox');
+}
 assert.ok(process.env.GITHUB_RUN_ID && process.env.FIXTURE_TOKEN, 'Run through the sandbox workflow');
 assert.match(process.env.GITHUB_RUN_ID, /^\d+$/);
 assert.match(process.env.GITHUB_RUN_ATTEMPT ?? '', /^\d+$/);
 const github = new Octokit({ auth: process.env.FIXTURE_TOKEN, request: { timeout: 30_000 }, log: { debug() {}, info() {}, warn() {}, error() {} } });
 const projects = new ProjectV2Repository(github);
+let phase = 'fixture_setup';
 
 interface Fixture {
 
@@ -62,6 +64,7 @@ async function collect(): Promise<void> {
 }
 
 async function cleanup(): Promise<void> {
+  phase = 'cleanup';
   let fixture: Fixture;
   try {
     fixture = JSON.parse(await readFile(journal, 'utf8')) as Fixture;
@@ -120,12 +123,15 @@ async function scenario(): Promise<void> {
   try {
     await projects.setSingleSelect(fixture.projectId, itemId, status.statusFieldId, firstStatus[1]);
     await projects.setIteration(fixture.projectId, itemId, iterations.iterationFieldId, firstIteration.id);
+    phase = 'initial_import';
     await collect();
     await assertCurrent(firstStatus[1], firstIteration, 1);
+    phase = 'repeat_import';
     await collect();
     await assertCurrent(firstStatus[1], firstIteration, 1);
     console.log('Initial import and repeat import are correct and idempotent');
 
+    phase = 'changed_import';
     await projects.setSingleSelect(fixture.projectId, itemId, status.statusFieldId, nextStatus[1]);
     await projects.setIteration(fixture.projectId, itemId, iterations.iterationFieldId, nextIteration.id);
     await collect();
@@ -135,6 +141,7 @@ async function scenario(): Promise<void> {
     assert.equal(history.rows[0].fields.find((field: { field: { name: string } }) => field.field.name === 'Iteration').iterationId, firstIteration.id);
     console.log('Changed Status and Iteration preserve the previous observation');
 
+    phase = 'missing_import';
     await projects.deleteProjectItem(fixture.projectId, itemId);
     fixture.removed = true;
     await save(fixture);
@@ -145,6 +152,7 @@ async function scenario(): Promise<void> {
     assert.deepEqual(kinds.rows.map(row => row.kind), ['observed', 'observed', 'missing']);
     console.log('Full reconciliation marks the removed item without deleting history');
 
+    phase = 'grafana_query';
     const password = (await readFile('.local/secrets/grafana-admin', 'utf8')).trim();
     const response = await fetch('http://127.0.0.1:3301/api/ds/query', {
       method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Basic ${Buffer.from(`localadmin:${password}`).toString('base64')}` },
@@ -168,8 +176,8 @@ try {
   if (process.argv[2] === 'cleanup') await cleanup();
   else await scenario();
 } catch (error) {
-  if (error instanceof assert.AssertionError) console.error(`E2E assertion failed: ${error.message}`);
-  else console.error(JSON.stringify({ event: 'analytics_e2e_failed', name: error instanceof Error ? error.name : 'UnknownError',
+  if (error instanceof assert.AssertionError) console.error(JSON.stringify({ event: 'analytics_e2e_assertion_failed', phase, operator: error.operator }));
+  else console.error(JSON.stringify({ event: 'analytics_e2e_failed', phase, name: error instanceof Error ? error.name : 'UnknownError',
     httpStatus: typeof error === 'object' && error !== null && 'status' in error ? error.status : undefined }));
   process.exitCode = 1;
 }
