@@ -12,7 +12,6 @@
 | [`./.github/workflows/ai-label-issue.yml`](./.github/workflows/ai-label-issue.yml) | **Deprecated.** Сохранён только для совместимости с `Dreddbook/scrum-dreddbook-backlog`; новые подключения не поддерживаются. |
 | [`./.github/workflows/ai-scrum-review-issue.yml`](./.github/workflows/ai-scrum-review-issue.yml) | **Deprecated.** Сохранён только для совместимости с `Dreddbook/scrum-dreddbook-backlog`; новые подключения не поддерживаются. |
 | [`./.github/workflows/link-pr-to-project.yml`](./.github/workflows/link-pr-to-project.yml) | Добавляет PR в Project V2, копирует sprint и assignee из связанной issue и ставит статус Done при закрытии. При `pull_request: synchronize` переводит PR и все открытые closing issues из Todo или пустого статуса в In progress, сохраняя более поздние статусы. Когда все открытые связанные PR уже в статусе ревью, переводит и backlog issue в этот статус, не меняя её ответственных. После запроса изменений человеком возвращает PR и связанную issue в Todo. Режим `action: reconcile_sprints` сверяет Sprint открытых PR из списка `repositories`, не меняя их Status, assignee и описание. Для синхронизации assignee токену нужны права на запись в issues PR-репозитория. |
-| [`./.github/workflows/reopen-issue-if-pr-open.yml`](./.github/workflows/reopen-issue-if-pr-open.yml) | Переоткрывает issue автоматически, если связанные PR, которые должны её закрыть, всё ещё открыты. |
 | [`./.github/workflows/safe-dependabot-pr-link.yml`](./.github/workflows/safe-dependabot-pr-link.yml) | Синхронизирует PR от Dependabot по списку репозиториев: принимает многострочный `repositories`, ставит стартовый статус только новым PR или PR без статуса, закрытым — финальный. |
 | [`./.github/workflows/sync-sub-issue-sprint.yml`](./.github/workflows/sync-sub-issue-sprint.yml) | Наследует sprint/iteration-метаданные из родительской issue в её sub-issue. `action: reconcile` сверяет уже существующие sub-issues после изменения Sprint родителя; поддерживает `dry_run`. |
 | [`./.github/workflows/collect-linked-context.yml`](./.github/workflows/collect-linked-context.yml) | Собирает контекст по ссылкам на issue, PR, releases и commits. |
@@ -79,7 +78,6 @@ TypeScript используется в форме, которую Node.js 24 з�
 - `test-copilot-generate-text.yml`
 - `test-ensure-next-iteration-reminder.yml`
 - `test-link-pr-to-project.yml`
-- `test-reopen-issue-if-pr-open.yml`
 - `test-safe-dependabot-pr-link.yml`
 - `test-sync-sub-issue-sprint.yml`
 
