@@ -33,8 +33,13 @@ now: () => Date = () => new Date(),
     const duration = project.iterationDuration;
     if (!Number.isInteger(duration) || duration <= 0) throw new Error('Iteration duration must be a positive number of days.');
     const last = project.iterations.at(-1);
-    const start = toUtcDate(last?.startDate ?? project.iterationStartDate);
-    if (last) start.setUTCDate(start.getUTCDate() + last.duration);
+    const start = toUtcDate(last?.startDate ?? todayIso);
+    if (last) {
+      start.setUTCDate(start.getUTCDate() + last.duration);
+    } else {
+      const daysUntilStart = (project.iterationStartDay % 7 - start.getUTCDay() + 7) % 7 || 7;
+      start.setUTCDate(start.getUTCDate() + daysUntilStart);
+    }
     // After a gap, resume the configured cadence at the first future boundary without backfilling history.
     if (start <= today) {
       const periods = Math.floor((today.getTime() - start.getTime()) / (duration * 86_400_000)) + 1;

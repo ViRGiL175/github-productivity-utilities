@@ -246,7 +246,7 @@ describe('LinkPrToProject', () => {
       .mockResolvedValueOnce({ id: 'ISSUE_ITEM', iterationId: null, iterationTitle: '' });
     vi.mocked(dependencies.projects.getIterationMetadata).mockResolvedValue({
       projectId: 'PROJECT', projectTitle: 'Project', iterationFieldId: 'ITERATION_FIELD',
-      iterationDuration: 14, iterationStartDate: '2026-09-14',
+      iterationDuration: 14, iterationStartDay: 1,
       iterations: [{ id: 'ACTIVE', title: 'Active sprint', startDate: '2026-09-14', duration: 14 }],
     });
 
@@ -266,7 +266,7 @@ describe('LinkPrToProject', () => {
       .mockResolvedValueOnce({ id: 'ISSUE_ITEM', iterationId: null, iterationTitle: '' });
     vi.mocked(dependencies.projects.getIterationMetadata).mockResolvedValue({
       projectId: 'PROJECT', projectTitle: 'Project', iterationFieldId: 'ITERATION_FIELD',
-      iterationDuration: 14, iterationStartDate: '2026-09-14',
+      iterationDuration: 14, iterationStartDay: 1,
       iterations: [{ id: 'ACTIVE', title: 'Sprint 2', startDate: '2026-09-14', duration: 14 }],
     });
 
@@ -318,7 +318,7 @@ describe('LinkPrToProject', () => {
       projectId: 'PROJECT',
       projectTitle: 'Project',
       iterationFieldId: 'ITERATION_FIELD',
-      iterationDuration: 14, iterationStartDate: '2026-09-14',
+      iterationDuration: 14, iterationStartDay: 1,
       iterations: [
         { id: 'OLD', title: 'Old sprint', startDate: '2026-07-20', duration: 14 },
         { id: 'CURRENT', title: 'Current sprint', startDate: '2026-09-14', duration: 14 },
@@ -397,7 +397,7 @@ describe('LinkPrToProject', () => {
         : { id: `${nodeId}_ITEM`, iterationId: null, iterationTitle: '' });
     vi.mocked(dependencies.projects.getIterationMetadata).mockResolvedValue({
       projectId: 'PROJECT', projectTitle: 'Project', iterationFieldId: 'ITERATION_FIELD',
-      iterationDuration: 14, iterationStartDate: '2026-09-14',
+      iterationDuration: 14, iterationStartDay: 1,
       iterations: [{ id: 'ACTIVE', title: 'Active sprint', startDate: '2026-09-14', duration: 14 }],
     });
 
@@ -457,7 +457,7 @@ describe('LinkPrToProject', () => {
       .mockResolvedValueOnce({ id: 'PR_ITEM', iterationId: null, iterationTitle: '' });
     vi.mocked(dependencies.projects.getIterationMetadata).mockResolvedValue({
       projectId: 'PROJECT', projectTitle: 'Project', iterationFieldId: 'ITERATION_FIELD',
-      iterationDuration: 14, iterationStartDate: '2026-09-14',
+      iterationDuration: 14, iterationStartDay: 1,
       iterations: [{ id: 'ACTIVE', title: 'Active sprint', startDate: '2026-09-14', duration: 14 }],
     });
 
