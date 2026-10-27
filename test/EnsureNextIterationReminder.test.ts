@@ -22,6 +22,7 @@ function createProject(items: Awaited<ReturnType<ProjectIterationGateway['listPr
         { id: 'NEXT', title: 'Next', startDate: '2026-09-21', duration: 7 },
       ],
     }),
+    appendIteration: vi.fn(),
     listProjectItems: vi.fn().mockResolvedValue(items),
     createDraftIssue: vi.fn().mockResolvedValue('REMINDER'),
     updateDraftIssue: vi.fn().mockResolvedValue(undefined),
