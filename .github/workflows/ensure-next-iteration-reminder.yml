@@ -39,6 +39,10 @@ on:
 
 jobs:
   ensure-next-iteration-reminder:
+    # This lock is repository-scoped; use one caller repository per project field.
+    concurrency:
+      group: ensure-next-iteration-reminder-${{ inputs.project_owner }}-${{ inputs.project_number }}-${{ inputs.iteration_field_name }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     permissions:
       contents: read
