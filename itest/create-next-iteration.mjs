@@ -58,7 +58,7 @@ export async function run(github, core) {
     const after = await projects.getIterationMetadata(owner, number, fieldName);
     assert.equal(after.iterations.length, 3);
     assert.equal(after.iterationDuration, before.iterationDuration);
-    assert.equal(after.iterationStartDate, before.iterationStartDate);
+    assert.equal(after.iterationStartDay, before.iterationStartDay);
     for (const iteration of before.iterations) {
       assert.deepEqual(after.iterations.find(candidate => candidate.id === iteration.id), iteration);
     }

@@ -34,7 +34,7 @@ const PROJECT_ITERATION_CONFIGURATION_FIELDS = `
       ... on ProjectV2IterationField {
         configuration {
           duration
-          startDate
+          startDay
           completedIterations { id title startDate duration }
           iterations { id title startDate duration }
         }
@@ -255,7 +255,7 @@ interface IterationProjectNode {
       name?: string;
       configuration?: {
         duration: number;
-        startDate: string;
+        startDay: number;
         completedIterations?: IterationDefinitionNode[];
         iterations?: IterationDefinitionNode[];
       } | null;
@@ -354,7 +354,7 @@ export interface IterationProjectMetadata {
   iterationFieldId: string;
   iterations: IterationDefinition[];
   iterationDuration: number;
-  iterationStartDate: string;
+  iterationStartDay: number;
 }
 
 export interface IterationProjectItem {
@@ -486,7 +486,7 @@ export class ProjectV2Repository implements ProjectV2Gateway, ProjectStatusGatew
       iterationFieldId: field.id,
       iterations,
       iterationDuration: field.configuration.duration,
-      iterationStartDate: field.configuration.startDate,
+      iterationStartDay: field.configuration.startDay,
     };
   }
 
@@ -495,12 +495,12 @@ export class ProjectV2Repository implements ProjectV2Gateway, ProjectStatusGatew
     const readConfiguration = async () => {
       const data = await this.octokit.graphql<{
         node?: { configuration?: {
-          duration: number; startDate: string;
+          duration: number; startDay: number;
           completedIterations: IterationDefinition[]; iterations: IterationDefinition[];
         } };
       }>(`query($fieldId: ID!) {
         node(id: $fieldId) { ... on ProjectV2IterationField { configuration {
-          duration startDate
+          duration startDay
           completedIterations { id title startDate duration }
           iterations { id title startDate duration }
         } } }
@@ -508,7 +508,7 @@ export class ProjectV2Repository implements ProjectV2Gateway, ProjectStatusGatew
       const config = data.node?.configuration;
       if (!config) throw new Error(`Missing configuration for iteration field ${fieldId}.`);
       return {
-        duration: config.duration, startDate: config.startDate,
+        duration: config.duration, startDay: config.startDay,
         iterations: [...config.completedIterations, ...config.iterations]
           .sort((a, b) => a.startDate.localeCompare(b.startDate) || a.id.localeCompare(b.id)),
       };
@@ -517,12 +517,16 @@ export class ProjectV2Repository implements ProjectV2Gateway, ProjectStatusGatew
     const before = await readConfiguration();
     const existing = before.iterations.find(candidate => candidate.startDate >= iteration.startDate);
     if (existing) return existing;
+    // The API reads a weekday but accepts a date; retain that weekday in the replacement input.
+    const anchor = new Date(`${before.iterations[0]?.startDate ?? iteration.startDate}T00:00:00Z`);
+    anchor.setUTCDate(anchor.getUTCDate() - (anchor.getUTCDay() - before.startDay % 7 + 7) % 7);
     let mutationError: unknown;
     try {
       await this.octokit.graphql(`mutation($input: UpdateProjectV2FieldInput!) {
         updateProjectV2Field(input: $input) { projectV2Field { ... on ProjectV2IterationField { id } } }
       }`, { input: { fieldId, iterationConfiguration: {
-        ...before, iterations: [...before.iterations, iteration],
+        duration: before.duration, startDate: anchor.toISOString().slice(0, 10),
+        iterations: [...before.iterations, iteration],
       } } });
     } catch (error) {
       // A lost response may still mean a committed write. Check it; never blindly retry replacement.
@@ -531,7 +535,7 @@ export class ProjectV2Repository implements ProjectV2Gateway, ProjectStatusGatew
     const after = await readConfiguration();
     const sameIteration = (a: Omit<IterationDefinition, 'id'>, b: Omit<IterationDefinition, 'id'>) =>
       a.title === b.title && a.startDate === b.startDate && a.duration === b.duration;
-    if (before.duration !== after.duration || before.startDate !== after.startDate ||
+    if (before.duration !== after.duration || before.startDay !== after.startDay ||
       before.iterations.some(old => !after.iterations.some(current => current.id === old.id && sameIteration(old, current)))) {
       throw new Error(`Iteration configuration changed unexpectedly for ${fieldId}; inspect the field before retrying.`);
     }
