@@ -79,6 +79,9 @@ export async function run(github, core) {
     assert.deepEqual(repeatedItems.filter(item => itemIds.includes(item.id)), bindings);
     assert.deepEqual(repeatedItems.filter(item => item.title === reminderTitle), reminders);
     core.info(`Created ${next.id}; repeat kept all iteration IDs, both issue bindings and one reminder.`);
+  } catch (error) {
+    core.error(error);
+    throw error;
   } finally {
     // Also find the field if its creation response was lost; never touch the permanent sandbox field.
     const fields = await github.graphql(`query($id: ID!) {
@@ -94,7 +97,7 @@ export async function run(github, core) {
       ...issues.map(issue_number => github.rest.issues.update({ owner, repo, issue_number, state: 'closed' })),
     ]);
     if (fieldId) {
-      await github.graphql(`mutation($id: ID!) { deleteProjectV2Field(input: { fieldId: $id }) { deletedFieldId } }`,
+      await github.graphql(`mutation($id: ID!) { deleteProjectV2Field(input: { fieldId: $id }) { clientMutationId } }`,
         { id: fieldId });
     }
     const failed = cleanup.filter(result => result.status === 'rejected');
