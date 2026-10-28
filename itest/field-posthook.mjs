@@ -26,10 +26,6 @@ export async function run({ github, context, core }) {
     result.entities.push({ repo: 'scrum-test-backlog', number: issue.number, url: issue.html_url });
     await save();
     const itemId = await projects.addIssueToProject(projectId, issue.node_id);
-    const projectMetadata = await github.request('GET /orgs/{org}/projectsV2/{project_number}/fields', { org: owner, project_number: 1, per_page: 100, headers: { 'X-GitHub-Api-Version': '2026-03-10' } });
-    result.projectMetadata = projectMetadata.data;
-    core.info(`Project field metadata: ${JSON.stringify(projectMetadata.data)}`);
-    await save();
     const target = { repository: { owner, repo: 'scrum-test-backlog' }, issueNumber: issue.number, project: { owner, number: 1, itemId } };
     const metadata = await github.request('GET /orgs/{org}/issue-fields', { org: owner, headers: { 'X-GitHub-Api-Version': '2026-03-10' } });
     const nativeOptions = metadata.data.find(field => field?.name === 'Horizon')?.options;
