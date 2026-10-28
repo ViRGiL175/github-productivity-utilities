@@ -57,8 +57,17 @@ jobs:
               assert.equal(pr.head.label, head);
               const filtered = await github.paginate('GET /repos/{owner}/{repo}/pulls', { owner, repo, state: 'all', head, per_page: 100 });
               assert.deepEqual(filtered.map(p => p.number), [505], 'Server-side scope must contain only PR 505');
-              const existing = await projects.getContentProjectItem(pr.node_id, projectId, 'Horizon diagnostic 2026-10-28');
-              assert.equal(existing, null, 'Do not modify an existing project item');
+              // Inspect the exact item created and archived by run 40697094199 before further writes.
+              const readItem = async () => (await github.graphql('query($id:ID!){node(id:$id){... on ProjectV2Item{id isArchived project{id} content{... on PullRequest{url}} fieldValues(first:100){nodes{... on ProjectV2ItemFieldSingleSelectValue{name field{... on ProjectV2SingleSelectField{name}}}}}}}}', { id: 'PVTI_lADOD_pocM4BRshlzhEM1gE' })).node;
+              const initial = await readItem();
+              assert.equal(initial.project.id, projectId);
+              assert.equal(initial.content.url, result.target);
+              const value = async name => (await readItem()).fieldValues.nodes.find(v => v.field?.name === name)?.name;
+              result.observations.push({ phase: 'verified-first-import-before-any-new-write', archived: initial.isArchived, horizon: await value('Horizon diagnostic 2026-10-28'), priority: await value('Priority') });
+              assert.equal(await value('Horizon diagnostic 2026-10-28'), 'Inbox');
+              assert.equal(await value('Priority'), 'P0');
+              itemId = initial.id; added = true; result.itemId = itemId;
+              if (initial.isArchived) await github.graphql('mutation($project:ID!,$item:ID!){unarchiveProjectV2Item(input:{projectId:$project,itemId:$item}){item{id}}}', { project: projectId, item: itemId });
               // Official request defaults apply the head filter on the server. No mocked responses.
               const pulls = new PullRequestRepository({ request: github.request.defaults({ head }) });
               const hook = await createFieldPosthook(github, 'project:\n  Horizon diagnostic 2026-10-28: Inbox\n  Priority: P0\nforce: false', sandbox, 1);
@@ -66,12 +75,11 @@ jobs:
                 statusFieldName: 'Status', statusStartValue: 'To do', statusFinalValue: 'Done', dependabotLogin: 'dependabot[bot]', maxPullRequestsPerRepo: 1,
                 closedLookbackDays: -1, fieldPosthook: async (id, repository, number) => {
                   assert.equal(number, 505); assert.equal(repository.owner, owner); assert.equal(repository.repo, repo);
-                  itemId = id; added = true; result.itemId = id;
+                  assert.equal(id, itemId, 'Replay must use only the existing diagnostic association');
                   await hook(id, repository, number);
                 } };
               const logger = { info: m => core.info(m), warning: m => core.warning(m) };
               await safeDependabotPrLink(input, pulls, projects, logger);
-              const value = async name => (await projects.getContentProjectItem(pr.node_id, projectId, name))?.statusName;
               assert.equal(await value('Horizon diagnostic 2026-10-28'), 'Inbox');
               result.observations.push({ phase: 'after-real-bot-import', horizon: await value('Horizon diagnostic 2026-10-28'), priority: await value('Priority') });
               await new FieldController(github).apply({ project: { Priority: 'P1' }, force: true }, { repository: { owner, repo }, issueNumber: 505, project: { owner: sandbox, number: 1, itemId } });
