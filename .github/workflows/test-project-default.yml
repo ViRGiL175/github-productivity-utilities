@@ -1,0 +1,55 @@
+name: Test project single-select default with App
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [gff-horizon-default-diagnostic]
+    paths:
+      - '.github/workflows/test-project-default.yml'
+      - 'itest/project-default.mjs'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-project-default-app
+  cancel-in-progress: false
+
+jobs:
+  test-default:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Normalize existing App private key
+        id: normalize-key
+        shell: bash
+        env:
+          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+        run: |
+          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
+          while IFS= read -r line; do
+            printf '::add-mask::%s\n' "$line"
+          done <<< "$NORMALIZED_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
+      - name: Use existing sandbox App installation
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          owner: ViRGiL-GH-Productivity
+      - name: Add fresh issue and PR without setting Horizon
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const { run } = await import('${{ github.workspace }}/itest/project-default.mjs');
+            await run({ github, context, core });
+      - name: Preserve observations even when the assertion fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: project-default-${{ github.run_id }}-${{ github.run_attempt }}
+          path: project-default-result.json
+          if-no-files-found: warn
