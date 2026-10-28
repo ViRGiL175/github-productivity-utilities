@@ -75,8 +75,8 @@ export class FieldController {
       if (!project) throw new Error('project: a project and project item are required');
       projectOwnerIsOrg = (await this.github.rest.users.getByUsername({ username: project.owner })).data.type === 'Organization';
       const fields: ProjectField[] = projectOwnerIsOrg
-        ? await this.github.paginate(this.github.rest.projects.listFieldsForOrg, { org: project.owner, project_number: project.number, per_page: 100, headers })
-        : await this.github.paginate(this.github.rest.projects.listFieldsForUser, { username: project.owner, project_number: project.number, per_page: 100, headers });
+        ? await this.github.paginate<ProjectField>('GET /orgs/{org}/projectsV2/{project_number}/fields', { org: project.owner, project_number: project.number, per_page: 100, headers })
+        : await this.github.paginate<ProjectField>('GET /users/{username}/projectsV2/{project_number}/fields', { username: project.owner, project_number: project.number, per_page: 100, headers });
       const resolved = await Promise.all(Object.entries(config.project ?? {}).map(async ([name, value]) => {
         const field = unique(fields, name, 'project');
         if (field.issue_field_id) throw new Error(`project.${name}: this is a native Issue Field; use issue scope`);
@@ -94,8 +94,8 @@ export class FieldController {
       itemId = node.node.databaseId;
       const params = { project_number: project.number, item_id: itemId, fields: resolved.map(entry => String(entry.field.id)), headers };
       const item = projectOwnerIsOrg
-        ? await this.github.rest.projects.getOrgItem({ ...params, org: project.owner })
-        : await this.github.rest.projects.getUserItem({ ...params, username: project.owner });
+        ? await this.github.request('GET /orgs/{org}/projectsV2/{project_number}/items/{item_id}', { ...params, org: project.owner })
+        : await this.github.request('GET /users/{username}/projectsV2/{project_number}/items/{item_id}', { ...params, username: project.owner });
       for (const { field, value } of resolved) {
         const existing = item.data.fields?.find(entry => entry.id === field.id)?.value;
         const normalized = existing && typeof existing === 'object' && 'id' in existing ? existing.id : existing;
@@ -116,8 +116,8 @@ export class FieldController {
         } else {
           const project = target.project!;
           const params = { project_number: project.number, item_id: itemId, fields: projectUpdates, headers };
-          if (projectOwnerIsOrg) await this.github.rest.projects.updateItemForOrg({ ...params, org: project.owner });
-          else await this.github.rest.projects.updateItemForUser({ ...params, username: project.owner });
+          if (projectOwnerIsOrg) await this.github.request('PATCH /orgs/{org}/projectsV2/{project_number}/items/{item_id}', { ...params, org: project.owner });
+          else await this.github.request('PATCH /users/{username}/projectsV2/{project_number}/items/{item_id}', { ...params, username: project.owner });
         }
         report.applied.push(...names);
       } catch (cause) {
