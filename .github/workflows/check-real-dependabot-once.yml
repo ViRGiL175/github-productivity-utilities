@@ -1,0 +1,100 @@
+name: One-off real Dependabot field check
+on:
+  push:
+    branches: [gff-real-dependabot-field-check]
+    paths: ['.github/workflows/check-real-dependabot-once.yml']
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: npm ci --omit=dev --ignore-scripts
+      - name: Normalize GitHub App private key
+        id: key
+        shell: bash
+        env:
+          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+        run: |
+          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
+          while IFS= read -r line; do
+            printf '::add-mask::%s\n' "$line"
+          done <<< "$NORMALIZED_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
+      - uses: actions/create-github-app-token@v2
+        id: app
+        with:
+          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          private-key: ${{ steps.key.outputs.private_key }}
+          owner: ViRGiL-GH-Productivity
+      - uses: actions/github-script@v8
+        with:
+          github-token: ${{ steps.app.outputs.token }}
+          script: |
+            const assert = (await import('node:assert/strict')).default;
+            const { writeFile } = await import('node:fs/promises');
+            const { ProjectV2Repository } = await import('${{ github.workspace }}/src/github/ProjectV2Repository.ts');
+            const { PullRequestRepository } = await import('${{ github.workspace }}/src/github/PullRequestRepository.ts');
+            const { FieldController } = await import('${{ github.workspace }}/src/github/FieldController.ts');
+            const { createFieldPosthook } = await import('${{ github.workspace }}/src/automations/field-posthook/FieldPosthook.ts');
+            const { safeDependabotPrLink } = await import('${{ github.workspace }}/src/automations/safe-dependabot-pr-link/SafeDependabotPrLink.ts');
+            const owner = 'ViRGiL175', repo = 'github-productivity-utilities';
+            const sandbox = 'ViRGiL-GH-Productivity', projectId = 'PVT_kwDOD_pocM4BRshl';
+            const head = 'ViRGiL175:dependabot/npm_and_yarn/vitest-5.0.3';
+            const projects = new ProjectV2Repository(github);
+            const result = { target: 'https://github.com/ViRGiL175/github-productivity-utilities/pull/505', implementation: '0ad50a7216c04cb936c70284e36ab10adff3d7b3', observations: [] };
+            let itemId, added = false, failure;
+            try {
+              const pr = (await github.rest.pulls.get({ owner, repo, pull_number: 505 })).data;
+              assert.equal(pr.user.login, 'dependabot[bot]');
+              assert.equal(pr.state, 'closed');
+              assert.equal(pr.merged, false);
+              assert.equal(pr.head.label, head);
+              const filtered = await github.paginate('GET /repos/{owner}/{repo}/pulls', { owner, repo, state: 'all', head, per_page: 100 });
+              assert.deepEqual(filtered.map(p => p.number), [505], 'Server-side scope must contain only PR 505');
+              const existing = await projects.getContentProjectItem(pr.node_id, projectId, 'Horizon diagnostic 2026-10-28');
+              assert.equal(existing, null, 'Do not modify an existing project item');
+              // Official request defaults apply the head filter on the server. No mocked responses.
+              const pulls = new PullRequestRepository({ request: github.request.defaults({ head }) });
+              const hook = await createFieldPosthook(github, 'project:\n  Horizon diagnostic 2026-10-28: Inbox\n  Priority: P0\nforce: false', sandbox, 1);
+              const input = { projectOwner: sandbox, projectNumber: 1, repositories: `${owner}/${repo}`, repositoriesJson: '', defaultRepositoryOwner: owner,
+                statusFieldName: 'Status', statusStartValue: 'To do', statusFinalValue: 'Done', dependabotLogin: 'dependabot[bot]', maxPullRequestsPerRepo: 1,
+                closedLookbackDays: -1, fieldPosthook: async (id, repository, number) => {
+                  assert.equal(number, 505); assert.equal(repository.owner, owner); assert.equal(repository.repo, repo);
+                  itemId = id; added = true; result.itemId = id;
+                  await hook(id, repository, number);
+                } };
+              const logger = { info: m => core.info(m), warning: m => core.warning(m) };
+              await safeDependabotPrLink(input, pulls, projects, logger);
+              const value = async name => (await projects.getContentProjectItem(pr.node_id, projectId, name))?.statusName;
+              assert.equal(await value('Horizon diagnostic 2026-10-28'), 'Inbox');
+              result.observations.push({ phase: 'after-real-bot-import', horizon: await value('Horizon diagnostic 2026-10-28'), priority: await value('Priority') });
+              await new FieldController(github).apply({ project: { Priority: 'P1' }, force: true }, { repository: { owner, repo }, issueNumber: 505, project: { owner: sandbox, number: 1, itemId } });
+              await safeDependabotPrLink(input, pulls, projects, logger);
+              assert.equal(await value('Priority'), 'P1');
+              assert.equal(await value('Horizon diagnostic 2026-10-28'), 'Inbox');
+              result.observations.push({ phase: 'after-replay', horizon: await value('Horizon diagnostic 2026-10-28'), priority: await value('Priority') });
+            } catch (error) { failure = error; result.error = error.message; }
+            finally {
+              if (added && itemId) {
+                try {
+                  await github.graphql('mutation($project:ID!,$item:ID!){archiveProjectV2Item(input:{projectId:$project,itemId:$item}){item{id}}}', { project: projectId, item: itemId });
+                  result.archived = true;
+                } catch (error) { result.cleanupError = error.message; failure ??= error; }
+              }
+              result.passed = !failure;
+              await writeFile('real-dependabot-result.json', JSON.stringify(result, null, 2));
+              await core.summary.addHeading('Real Dependabot PR 505, sandbox Project 1').addRaw(JSON.stringify(result, null, 2)).write();
+            }
+            if (failure) throw failure;
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real-dependabot-${{ github.run_id }}
+          path: real-dependabot-result.json
+          if-no-files-found: warn
