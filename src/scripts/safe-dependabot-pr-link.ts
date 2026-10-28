@@ -3,9 +3,11 @@ import { safeDependabotPrLink } from '../automations/safe-dependabot-pr-link/Saf
 import { ProjectV2Repository } from '../github/ProjectV2Repository.ts';
 import { PullRequestRepository } from '../github/PullRequestRepository.ts';
 import { logger, required } from './environment.ts';
+import { createFieldPosthook } from '../automations/field-posthook/FieldPosthook.ts';
 
 export async function run(github: Octokit): Promise<void> {
   await safeDependabotPrLink({
+    fieldPosthook: await createFieldPosthook(github, process.env.FIELD_POSTHOOK ?? '', required('PROJECT_OWNER'), Number(required('PROJECT_NUMBER'))),
     projectOwner: required('PROJECT_OWNER'),
     projectNumber: Number(required('PROJECT_NUMBER')),
     repositories: process.env.REPOSITORIES ?? '',

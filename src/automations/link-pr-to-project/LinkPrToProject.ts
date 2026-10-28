@@ -4,6 +4,7 @@ import type { PullRequestClosingIssuesGateway, PullRequestMutationGateway } from
 import type { Logger } from '../../runtime/Logger.ts';
 import { collectClosingIssueReferences } from '../../github/ClosingReferenceParser.ts';
 import { findCurrentIteration } from '../ensure-next-iteration-reminder/EnsureNextIterationReminder.ts';
+import type { FieldPosthook } from '../field-posthook/FieldPosthook.ts';
 
 export interface RequestedReviewer {
   login?: string;
@@ -12,6 +13,7 @@ export interface RequestedReviewer {
 
 export interface LinkPrToProjectInput {
   projectOwner: string;
+  fieldPosthook?: FieldPosthook | undefined;
   projectNumber: number;
   backlogRepository: RepositoryCoordinates;
   iterationFieldName: string;
@@ -138,6 +140,7 @@ now: () => Date = () => new Date(),
   } else {
     logger.info(`PR #${input.pullRequestNumber} is already in project ${input.projectOwner}#${input.projectNumber}.`);
   }
+  await input.fieldPosthook?.(itemId, input.pullRequestRepository, input.pullRequestNumber);
 
   const closingIssueNumbers = await resolveClosingIssueNumbers(input, pullRequests, logger);
   const branchIssueNumber = extractIssueNumber(input.headRef);
@@ -429,6 +432,7 @@ async function assignActiveReviewSprint(
   const item = await projects.getIssueProjectItem(input.pullRequestNodeId, projectId, input.iterationFieldName);
   if (item?.iterationId === active.id) return;
   const itemId = item?.id ?? await projects.addIssueToProject(projectId, input.pullRequestNodeId);
+  await input.fieldPosthook?.(itemId, input.pullRequestRepository, input.pullRequestNumber);
   await projects.setIteration(projectId, itemId, iterationFieldId, active.id);
   logger.info(`Assigned active sprint ${active.title} to PR #${input.pullRequestNumber} after a review request.`);
 }
