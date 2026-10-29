@@ -17,6 +17,10 @@ on:
     paths:
       - '.github/workflows/ensure-next-iteration-reminder.yml'
       - '.github/workflows/test-ensure-next-iteration-reminder.yml'
+      - 'src/automations/ensure-next-iteration-reminder/**'
+      - 'src/github/ProjectV2Repository.ts'
+      - 'itest/create-next-iteration.ts'
+      - 'itest/runtime.ts'
 
 concurrency:
   group: ${{ github.workflow }}
@@ -46,6 +50,73 @@ jobs:
       pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
       app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
       app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+
+  create-next-iteration-scenario:
+    name: Create next iteration and preserve history
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs: resolve-auth
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tested implementation
+        uses: actions/checkout@v6
+
+      - name: Normalize GitHub App private key
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: normalize-key
+        shell: bash
+        env:
+          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+        run: |
+          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
+          while IFS= read -r line; do
+            printf '::add-mask::%s\n' "$line"
+          done <<< "$NORMALIZED_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub App installation token
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          owner: ${{ env.INSTALLATION_OWNER }}
+          skip-token-revoke: true
+
+      - name: Resolve job auth token
+        id: auth
+        shell: bash
+        env:
+          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          case "$AUTH_MODE" in
+            pat)
+              TOKEN="$DIRECT_TOKEN"
+              ;;
+            app)
+              TOKEN="$APP_TOKEN"
+              ;;
+            *)
+              echo "Unsupported auth mode: $AUTH_MODE" >&2
+              exit 1
+              ;;
+          esac
+
+          if [ -z "$TOKEN" ]; then
+            echo "Resolved token is empty for auth_mode=$AUTH_MODE" >&2
+            exit 1
+          fi
+
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Create next iteration, repeat and verify preserved bindings
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ steps.auth.outputs.token }}
+          script: |
+            const { run } = await import(`${process.env.GITHUB_WORKSPACE}/itest/create-next-iteration.ts`)
+            await run(github, core)
 
   prepare-reminder-create-scenario:
     name: Prepare reminder create scenario before current iteration starts
@@ -957,7 +1028,8 @@ jobs:
             }
 
             function findIterationWithoutIssues(iterations, items, iterationFieldId) {
-              return iterations.find((iteration) => !items.some((item) =>
+              // Link-PR and sub-issue fixtures write to the first and last iterations.
+              return iterations.slice(1, -1).find((iteration) => !items.some((item) =>
                 item.content?.__typename === 'Issue'
                 && getItemIterationId(item, iterationFieldId) === iteration.id,
               ));
@@ -1084,7 +1156,7 @@ jobs:
 
             const emptyIteration = findIterationWithoutIssues(project.iterations, items, project.iterationFieldId);
             if (!emptyIteration) {
-              throw new Error('Need at least one iteration without issues in the sandbox project to run the empty current reminder scenario.');
+              throw new Error('Need an empty interior iteration (at least three sandbox iterations); first and last are used by concurrent link-PR and sub-issue fixtures.');
             }
 
             const itemId = await createReminderDraft(project.projectId);
