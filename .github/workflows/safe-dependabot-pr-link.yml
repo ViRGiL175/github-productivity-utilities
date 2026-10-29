@@ -5,7 +5,7 @@ name: Safe Dependabot PR link
 on:
   workflow_call:
     inputs:
-      field_posthook:
+      field_updates:
         description: Optional YAML with project/issue field dictionaries and force (default false)
         type: string
         required: false
@@ -180,15 +180,15 @@ jobs:
           ref: ${{ job.workflow_sha }}
           path: .github-productivity-utilities-runtime
 
-      - name: Install optional field posthook parser
-        if: inputs.field_posthook != ''
+      - name: Install optional field updates parser
+        if: inputs.field_updates != ''
         working-directory: .github-productivity-utilities-runtime
         run: npm ci --omit=dev --ignore-scripts
 
       - name: Reconcile Dependabot PR project links
         uses: actions/github-script@v8
         env:
-          FIELD_POSTHOOK: ${{ inputs.field_posthook }}
+          FIELD_UPDATES: ${{ inputs.field_updates }}
           PROJECT_OWNER: ${{ inputs.project_owner }}
           PROJECT_NUMBER: ${{ inputs.project_number }}
           REPOSITORIES: ${{ inputs.repositories }}

@@ -19,7 +19,8 @@ on:
       - '.github/workflows/test-ensure-next-iteration-reminder.yml'
       - 'src/automations/ensure-next-iteration-reminder/**'
       - 'src/github/ProjectV2Repository.ts'
-      - 'itest/create-next-iteration.mjs'
+      - 'itest/create-next-iteration.ts'
+      - 'itest/runtime.ts'
 
 concurrency:
   group: ${{ github.workflow }}
@@ -114,7 +115,7 @@ jobs:
         with:
           github-token: ${{ steps.auth.outputs.token }}
           script: |
-            const { run } = await import(`${process.env.GITHUB_WORKSPACE}/itest/create-next-iteration.mjs`)
+            const { run } = await import(`${process.env.GITHUB_WORKSPACE}/itest/create-next-iteration.ts`)
             await run(github, core)
 
   prepare-reminder-create-scenario:
