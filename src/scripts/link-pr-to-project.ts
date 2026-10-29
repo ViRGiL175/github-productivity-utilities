@@ -4,11 +4,11 @@ import { IssueRepository } from '../github/IssueRepository.ts';
 import { ProjectV2Repository } from '../github/ProjectV2Repository.ts';
 import { PullRequestRepository } from '../github/PullRequestRepository.ts';
 import { logger, repositoryName, required } from './environment.ts';
-import { createFieldPosthook } from '../automations/field-posthook/FieldPosthook.ts';
+import { createFieldUpdates } from '../automations/field-updates/FieldUpdates.ts';
 
 export async function run(github: Octokit): Promise<void> {
   await linkPrToProject({
-    fieldPosthook: await createFieldPosthook(github, process.env.FIELD_POSTHOOK ?? '', required('PROJECT_OWNER'), Number(required('PROJECT_NUMBER'))),
+    fieldUpdates: await createFieldUpdates(github, process.env.FIELD_UPDATES ?? '', required('PROJECT_OWNER'), Number(required('PROJECT_NUMBER'))),
     projectOwner: required('PROJECT_OWNER'),
     projectNumber: Number(required('PROJECT_NUMBER')),
     backlogRepository: { owner: required('BACKLOG_REPO_OWNER'), repo: required('BACKLOG_REPO') },
