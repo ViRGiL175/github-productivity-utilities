@@ -2,7 +2,7 @@
 # перенос sprint и assignee из issue, позднюю closing reference, перевод в Need Review
 # при запросе human-reviewer и установку статуса Done при закрытии, плюс cleanup.
 # В `pat`-режиме issue и PR живут в одном репозитории.
-# В `app`-режиме issue живёт в backlog-репозитории, а PR — в отдельном client-репозитории.
+# В `app`-режиме issue живёт в backlog-репозитории, а PR — в отдельном client-репозитории с nondefault base.
 name: Test link-pr-to-project
 
 on:
@@ -78,6 +78,7 @@ jobs:
       pull_number: ${{ steps.prepare.outputs.pull_number }}
       pull_node_id: ${{ steps.prepare.outputs.pull_node_id }}
       branch_name: ${{ steps.prepare.outputs.branch_name }}
+      base_branch: ${{ steps.prepare.outputs.base_branch }}
       closes_ref: ${{ steps.prepare.outputs.closes_ref }}
       issue_assignee_login: ${{ steps.prepare.outputs.issue_assignee_login }}
       backlog_repo_owner: ${{ steps.prepare.outputs.backlog_repo_owner }}
@@ -438,12 +439,21 @@ jobs:
             await setIteration(project.projectId, issueProjectItemId, project.iterationFieldId, project.targetIterationId);
 
             const branchName = `${issue.number}-itest-${context.runId}`;
+            const baseBranch = process.env.AUTH_MODE === 'app' ? `itest-base-${context.runId}` : defaultBranch;
             const baseRef = await github.request('GET /repos/{owner}/{repo}/git/ref/{ref}', {
               owner: pullRequestRepoOwner,
               repo: pullRequestRepoName,
               ref: `heads/${defaultBranch}`,
               headers,
             });
+
+            if (baseBranch !== defaultBranch) {
+              await github.request('POST /repos/{owner}/{repo}/git/refs', {
+                owner: pullRequestRepoOwner, repo: pullRequestRepoName,
+                ref: `refs/heads/${baseBranch}`, sha: baseRef.data.object.sha, headers,
+              });
+            }
+            core.setOutput('base_branch', baseBranch);
 
             await github.request('POST /repos/{owner}/{repo}/git/refs', {
               owner: pullRequestRepoOwner,
@@ -468,7 +478,7 @@ jobs:
               repo: pullRequestRepoName,
               title: prTitle,
               head: branchName,
-              base: defaultBranch,
+              base: baseBranch,
               body: `ITEST run ${context.runId} for link-pr-to-project`,
               headers,
             });
@@ -626,6 +636,8 @@ jobs:
       - prepare-link-scenario
       - run-link-open-scenario
     runs-on: ubuntu-latest
+    outputs:
+      body_hash: ${{ steps.assert.outputs.body_hash }}
     steps:
       - name: Normalize GitHub App private key
         if: ${{ env.AUTH_MODE == 'app' }}
@@ -678,6 +690,7 @@ jobs:
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Assert PR was linked to project and issue sprint
+        id: assert
         uses: actions/github-script@v8
         env:
           PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
@@ -686,6 +699,8 @@ jobs:
           STATUS_FIELD_NAME: ${{ env.STATUS_FIELD_NAME }}
           STATUS_IN_PROGRESS_VALUE: ${{ needs.prepare-link-scenario.outputs.status_in_progress_value }}
           PULL_NODE_ID: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
+          ISSUE_NODE_ID: ${{ needs.prepare-link-scenario.outputs.issue_node_id }}
+          BASE_BRANCH: ${{ needs.prepare-link-scenario.outputs.base_branch }}
           PULL_NUMBER: ${{ needs.prepare-link-scenario.outputs.pull_number }}
           PULL_REQUEST_REPO_OWNER: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_owner }}
           PULL_REQUEST_REPO_NAME: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_name }}
@@ -773,6 +788,29 @@ jobs:
             `;
 
             await withRetry('Assert open scenario', async () => {
+              const links = await github.graphql(`
+                query($issueId: ID!, $pullId: ID!) {
+                  issue: node(id: $issueId) {
+                    ... on Issue { closedByPullRequestsReferences(first: 100) { nodes { id } } }
+                  }
+                  pull: node(id: $pullId) {
+                    ... on PullRequest {
+                      baseRefName
+                      repository { defaultBranchRef { name } }
+                      closingIssuesReferences(first: 100) { nodes { id } }
+                    }
+                  }
+                }
+              `, { issueId: process.env.ISSUE_NODE_ID, pullId: pullNodeId });
+              if (links.issue?.closedByPullRequestsReferences?.nodes?.filter((pr) => pr.id === pullNodeId).length !== 1 ||
+                  links.pull?.closingIssuesReferences?.nodes?.filter((issue) => issue.id === process.env.ISSUE_NODE_ID).length !== 1) {
+                throw new Error('Expected exactly one native issue/PR link in both directions.');
+              }
+              if (links.pull.baseRefName !== process.env.BASE_BRANCH ||
+                  (process.env.AUTH_MODE === 'app' && links.pull.baseRefName === links.pull.repository.defaultBranchRef.name)) {
+                throw new Error('PR base changed or the cross-repo scenario is not targeting a nondefault branch.');
+              }
+
               const projectData = await github.graphql(PULL_REQUEST_PROJECT_ITEMS_QUERY, {
                 nodeId: pullNodeId,
                 iterationFieldName,
@@ -801,6 +839,8 @@ jobs:
                 headers,
               });
               const body = pullResponse.data.body || '';
+              const bodyHash = require('node:crypto').createHash('sha256').update(body).digest('hex');
+              core.setOutput('body_hash', bodyHash);
 
               if (!body.includes(closesRef)) {
                 throw new Error(`Expected PR body to contain "${closesRef}".`);
@@ -861,6 +901,7 @@ jobs:
       - resolve-auth
       - prepare-link-scenario
       - rerun-link-open-scenario
+      - assert-link-open-scenario
     runs-on: ubuntu-latest
     steps:
       - name: Normalize GitHub App private key
@@ -920,10 +961,13 @@ jobs:
           ITERATION_FIELD_NAME: ${{ env.ITERATION_FIELD_NAME }}
           TARGET_ITERATION_ID: ${{ needs.prepare-link-scenario.outputs.target_iteration_id }}
           PULL_NODE_ID: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
+          ISSUE_NODE_ID: ${{ needs.prepare-link-scenario.outputs.issue_node_id }}
+          BASE_BRANCH: ${{ needs.prepare-link-scenario.outputs.base_branch }}
           PULL_NUMBER: ${{ needs.prepare-link-scenario.outputs.pull_number }}
           PULL_REQUEST_REPO_OWNER: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_owner }}
           PULL_REQUEST_REPO_NAME: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_name }}
           CLOSES_REF: ${{ needs.prepare-link-scenario.outputs.closes_ref }}
+          EXPECTED_BODY_HASH: ${{ needs.assert-link-open-scenario.outputs.body_hash }}
         with:
           github-token: ${{ steps.auth.outputs.token }}
           script: |
@@ -998,6 +1042,29 @@ jobs:
             `;
 
             await withRetry('Assert idempotency scenario', async () => {
+              const links = await github.graphql(`
+                query($issueId: ID!, $pullId: ID!) {
+                  issue: node(id: $issueId) {
+                    ... on Issue { closedByPullRequestsReferences(first: 100) { nodes { id } } }
+                  }
+                  pull: node(id: $pullId) {
+                    ... on PullRequest {
+                      baseRefName
+                      repository { defaultBranchRef { name } }
+                      closingIssuesReferences(first: 100) { nodes { id } }
+                    }
+                  }
+                }
+              `, { issueId: process.env.ISSUE_NODE_ID, pullId: pullNodeId });
+              if (links.issue?.closedByPullRequestsReferences?.nodes?.filter((pr) => pr.id === pullNodeId).length !== 1 ||
+                  links.pull?.closingIssuesReferences?.nodes?.filter((issue) => issue.id === process.env.ISSUE_NODE_ID).length !== 1) {
+                throw new Error('Expected exactly one native issue/PR link in both directions.');
+              }
+              if (links.pull.baseRefName !== process.env.BASE_BRANCH ||
+                  (process.env.AUTH_MODE === 'app' && links.pull.baseRefName === links.pull.repository.defaultBranchRef.name)) {
+                throw new Error('PR base changed or the cross-repo scenario is not targeting a nondefault branch.');
+              }
+
               const projectData = await github.graphql(PULL_REQUEST_PROJECT_ITEMS_QUERY, {
                 nodeId: pullNodeId,
                 fieldName: iterationFieldName,
@@ -1020,6 +1087,8 @@ jobs:
                 headers,
               });
               const body = pullResponse.data.body || '';
+              const bodyHash = require('node:crypto').createHash('sha256').update(body).digest('hex');
+              if (bodyHash !== process.env.EXPECTED_BODY_HASH) throw new Error('PR body changed on rerun.');
               const occurrenceCount = body.split(closesRef).length - 1;
               if (occurrenceCount !== 1) {
                 throw new Error(`Expected exactly one occurrence of "${closesRef}", got ${occurrenceCount}.`);
@@ -1313,6 +1382,7 @@ jobs:
                 }
                 primaryIssue: node(id: $primaryIssueNodeId) {
                   ... on Issue {
+                    closedByPullRequestsReferences(first: 100) { nodes { id } }
                     projectItems(first: 100) {
                       nodes {
                         project { id }
@@ -1325,6 +1395,7 @@ jobs:
                 }
                 secondaryIssue: node(id: $secondaryIssueNodeId) {
                   ... on Issue {
+                    closedByPullRequestsReferences(first: 100) { nodes { id } }
                     projectItems(first: 100) {
                       nodes {
                         project { id }
@@ -1337,6 +1408,7 @@ jobs:
                 }
                 unsprintedIssue: node(id: $unsprintedIssueNodeId) {
                   ... on Issue {
+                    closedByPullRequestsReferences(first: 100) { nodes { id } }
                     projectItems(first: 100) {
                       nodes {
                         project { id }
@@ -1357,6 +1429,11 @@ jobs:
               statusFieldName: process.env.STATUS_FIELD_NAME,
               iterationFieldName: process.env.ITERATION_FIELD_NAME,
             });
+            for (const issue of [data.primaryIssue, data.secondaryIssue, data.unsprintedIssue]) {
+              if (issue?.closedByPullRequestsReferences?.nodes?.filter((pr) => pr.id === process.env.PULL_NODE_ID).length !== 1) {
+                throw new Error('Expected the original native link and both newly added links to be present exactly once.');
+              }
+            }
             const pullItem = data.pull?.projectItems?.nodes?.find((candidate) => candidate.project?.id === process.env.PROJECT_ID);
             const primaryIssueItem = data.primaryIssue?.projectItems?.nodes?.find((candidate) => candidate.project?.id === process.env.PROJECT_ID);
             const secondaryIssueItem = data.secondaryIssue?.projectItems?.nodes?.find((candidate) => candidate.project?.id === process.env.PROJECT_ID);
@@ -2358,6 +2435,7 @@ jobs:
           PULL_NUMBER: ${{ needs.prepare-link-scenario.outputs.pull_number }}
           PULL_NODE_ID: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
           BRANCH_NAME: ${{ needs.prepare-link-scenario.outputs.branch_name }}
+          BASE_BRANCH: ${{ needs.prepare-link-scenario.outputs.base_branch }}
         with:
           github-token: ${{ steps.auth.outputs.token }}
           script: |
@@ -2522,19 +2600,20 @@ jobs:
               });
             }
 
-            if (branchName) {
+            const testBranches = [branchName, process.env.BASE_BRANCH === `itest-base-${context.runId}` ? process.env.BASE_BRANCH : null];
+            for (const branch of testBranches.filter(Boolean)) {
               try {
                 await github.request('DELETE /repos/{owner}/{repo}/git/refs/{ref}', {
                   owner: pullRequestRepoOwner,
                   repo: pullRequestRepoName,
-                  ref: `heads/${branchName}`,
+                  ref: `heads/${branch}`,
                   headers,
                 });
               } catch (error) {
                 if (error.status !== 404) {
                   throw error;
                 }
-                core.info(`Branch ${branchName} is already absent.`);
+                core.info(`Branch ${branch} is already absent.`);
               }
             }
 

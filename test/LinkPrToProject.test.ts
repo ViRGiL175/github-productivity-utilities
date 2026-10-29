@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { linkPrToProject, reconcilePrSprint, NO_ACTIVE_SPRINT_COMMENT_MARKER } from '../src/automations/link-pr-to-project/LinkPrToProject.js';
-import type { IssueClosingPullRequestsGateway, IssueManagedCommentGateway, IssueReader } from '../src/github/IssueRepository.js';
+import type { IssueClosingReferenceGateway, IssueClosingPullRequestsGateway, IssueManagedCommentGateway, IssueReader } from '../src/github/IssueRepository.js';
 import type { ProjectIterationGateway, ProjectStatusGateway, ProjectV2Gateway } from '../src/github/ProjectV2Repository.js';
 import type { PullRequestClosingIssuesGateway, PullRequestMutationGateway } from '../src/github/PullRequestRepository.js';
 import type { Logger } from '../src/runtime/Logger.js';
@@ -24,12 +24,13 @@ const input = {
 };
 
 function createDependencies() {
-  const issues: IssueReader & IssueClosingPullRequestsGateway & IssueManagedCommentGateway = {
+  const issues: IssueReader & IssueClosingPullRequestsGateway & IssueClosingReferenceGateway & IssueManagedCommentGateway = {
     getIssue: vi.fn().mockResolvedValue({
       id: 42, nodeId: 'ISSUE_NODE', number: 42,
       repositoryUrl: 'https://api.github.com/repos/owner/backlog', isPullRequest: false,
     }),
     getParentIssue: vi.fn(),
+    ensureClosingPullRequest: vi.fn().mockResolvedValue(undefined),
     listOpenClosingPullRequests: vi.fn().mockResolvedValue([{ nodeId: 'PR_NODE', number: 7, repositoryNameWithOwner: 'owner/service' }]),
     upsertIssueCommentByMarker: vi.fn().mockResolvedValue('created'),
   };
