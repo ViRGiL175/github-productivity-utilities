@@ -2,9 +2,11 @@ import type { RepositoryCoordinates } from '../../github/IssueRepository.ts';
 import type { ProjectStatusGateway, ProjectStatusMetadata } from '../../github/ProjectV2Repository.ts';
 import type { PullRequestListGateway, PullRequestRecord } from '../../github/PullRequestRepository.ts';
 import type { Logger } from '../../runtime/Logger.ts';
+import type { FieldUpdates } from '../field-updates/FieldUpdates.ts';
 
 export interface SafeDependabotPrLinkInput {
   projectOwner: string;
+  fieldUpdates?: FieldUpdates | undefined;
   projectNumber: number;
   repositories: string;
   repositoriesJson: string;
@@ -134,6 +136,7 @@ async function reconcile(
       );
     }
 
+    await input.fieldUpdates?.(itemId, repository, pullRequest.number);
     if (preserveExistingStatus && currentStatus) {
       counters.unchanged += 1;
       return;
