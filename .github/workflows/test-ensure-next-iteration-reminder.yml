@@ -1028,7 +1028,8 @@ jobs:
             }
 
             function findIterationWithoutIssues(iterations, items, iterationFieldId) {
-              return iterations.find((iteration) => !items.some((item) =>
+              // Link-PR and sub-issue fixtures write to the first and last iterations.
+              return iterations.slice(1, -1).find((iteration) => !items.some((item) =>
                 item.content?.__typename === 'Issue'
                 && getItemIterationId(item, iterationFieldId) === iteration.id,
               ));
@@ -1155,7 +1156,7 @@ jobs:
 
             const emptyIteration = findIterationWithoutIssues(project.iterations, items, project.iterationFieldId);
             if (!emptyIteration) {
-              throw new Error('Need at least one iteration without issues in the sandbox project to run the empty current reminder scenario.');
+              throw new Error('Need an empty interior iteration (at least three sandbox iterations); first and last are used by concurrent link-PR and sub-issue fixtures.');
             }
 
             const itemId = await createReminderDraft(project.projectId);
