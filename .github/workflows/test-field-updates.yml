@@ -1,0 +1,58 @@
+name: Test field updates with App
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [gff-pr-field-updates]
+    paths: ['src/**', 'itest/field-updates.ts', 'itest/runtime.ts', '.github/workflows/test-field-updates.yml', 'package*.json']
+  pull_request:
+    paths: ['src/github/FieldController.ts', 'src/automations/field-updates/**', 'itest/field-updates.ts', 'itest/runtime.ts', '.github/workflows/test-field-updates.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-field-updates-app
+  cancel-in-progress: false
+
+jobs:
+  test-fields:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: npm ci
+      - name: Normalize existing App key
+        id: normalize-key
+        shell: bash
+        env:
+          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+        run: |
+          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
+          while IFS= read -r line; do
+            printf '::add-mask::%s\n' "$line"
+          done <<< "$NORMALIZED_KEY"
+          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          owner: ViRGiL-GH-Productivity
+      - name: Exercise real native and project APIs and both PR paths
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const { run } = await import('${{ github.workspace }}/itest/field-updates.ts');
+            await run({ github, context, core });
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: field-updates-${{ github.run_id }}-${{ github.run_attempt }}
+          path: field-updates-result.json
+          if-no-files-found: warn
