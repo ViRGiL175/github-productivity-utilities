@@ -299,7 +299,8 @@ jobs:
                 projectId: project.id,
                 iterationFieldId: iterationField.id,
                 targetIterationId: iterations[0].id,
-                alternativeIterationId: iterations[1].id,
+                // Keep interior iterations free for the concurrent empty-reminder scenario.
+                alternativeIterationId: iterations[iterations.length - 1].id,
               };
             }
 
