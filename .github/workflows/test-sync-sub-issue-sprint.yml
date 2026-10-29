@@ -299,17 +299,43 @@ jobs:
                 projectId: project.id,
                 iterationFieldId: iterationField.id,
                 targetIterationId: iterations[0].id,
-                alternativeIterationId: iterations[1].id,
+                // Keep interior iterations free for the concurrent empty-reminder scenario.
+                alternativeIterationId: iterations[iterations.length - 1].id,
               };
             }
 
             async function addIssueToProject(projectId, issueNodeId) {
-              const data = await github.graphql(ADD_PROJECT_ITEM_MUTATION, {
-                projectId,
-                contentId: issueNodeId,
-              });
+              async function findItem() {
+                const data = await github.graphql(`query($id: ID!) {
+                  node(id: $id) { ... on Issue {
+                    projectItems(first: 100) { nodes { id project { id } } }
+                  } }
+                }`, { id: issueNodeId });
+                return data.node.projectItems.nodes.find(item => item?.project?.id === projectId)?.id;
+              }
 
-              return data.addProjectV2ItemById.item.id;
+              const existing = await findItem();
+              if (existing) {
+                core.info(`Reusing auto-added fixture item ${existing}.`);
+                return existing;
+              }
+              try {
+                const data = await github.graphql(ADD_PROJECT_ITEM_MUTATION, {
+                  projectId,
+                  contentId: issueNodeId,
+                });
+                return data.addProjectV2ItemById.item.id;
+              } catch (error) {
+                // Auto-add can win the race between the lookup and mutation.
+                if (error.errors?.some(entry => entry.message === 'Content already exists in this project')) {
+                  const added = await findItem();
+                  if (added) {
+                    core.info(`Reusing fixture item ${added} after concurrent auto-add.`);
+                    return added;
+                  }
+                }
+                throw error;
+              }
             }
 
             async function setIteration(projectId, itemId, fieldId, iterationId) {
@@ -322,6 +348,7 @@ jobs:
             }
 
             const project = await getProjectMetadata();
+            core.setOutput('project_id', project.projectId);
 
             const parentResponse = await github.request('POST /repos/{owner}/{repo}/issues', {
               owner,
@@ -331,6 +358,8 @@ jobs:
               headers,
             });
             const parentIssue = parentResponse.data;
+            core.setOutput('parent_number', String(parentIssue.number));
+            core.setOutput('parent_node_id', parentIssue.node_id);
 
             const childResponse = await github.request('POST /repos/{owner}/{repo}/issues', {
               owner,
@@ -340,6 +369,9 @@ jobs:
               headers,
             });
             const childIssue = childResponse.data;
+            core.setOutput('child_number', String(childIssue.number));
+            core.setOutput('child_node_id', childIssue.node_id);
+            core.setOutput('child_id', String(childIssue.id));
 
             const parentProjectItemId = await addIssueToProject(project.projectId, parentIssue.node_id);
             await setIteration(project.projectId, parentProjectItemId, project.iterationFieldId, project.targetIterationId);
@@ -352,14 +384,8 @@ jobs:
               headers,
             });
 
-            core.setOutput('project_id', project.projectId);
             core.setOutput('target_iteration_id', project.targetIterationId);
             core.setOutput('alternative_iteration_id', project.alternativeIterationId);
-            core.setOutput('parent_number', String(parentIssue.number));
-            core.setOutput('parent_node_id', parentIssue.node_id);
-            core.setOutput('child_number', String(childIssue.number));
-            core.setOutput('child_node_id', childIssue.node_id);
-            core.setOutput('child_id', String(childIssue.id));
 
   run-sync-scenario:
     name: Run sub-issue sync scenario
@@ -763,7 +789,7 @@ jobs:
 
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
-      - name: Remove project items and close issues
+      - name: Archive project items and close issues
         uses: actions/github-script@v8
         env:
           PROJECT_ID: ${{ needs.prepare-sync-scenario.outputs.project_id }}
@@ -814,15 +840,15 @@ jobs:
               }
             `;
 
-            const DELETE_ITEM_MUTATION = `
-              mutation($input: DeleteProjectV2ItemInput!) {
-                deleteProjectV2Item(input: $input) {
-                  deletedItemId
+            const ARCHIVE_ITEM_MUTATION = `
+              mutation($input: ArchiveProjectV2ItemInput!) {
+                archiveProjectV2Item(input: $input) {
+                  item { id }
                 }
               }
             `;
 
-            async function deleteProjectItemForNode(nodeId) {
+            async function archiveProjectItemForNode(nodeId) {
               if (!nodeId || !projectId) {
                 return;
               }
@@ -837,7 +863,7 @@ jobs:
                 return;
               }
 
-              await github.graphql(DELETE_ITEM_MUTATION, {
+              await github.graphql(ARCHIVE_ITEM_MUTATION, {
                 input: {
                   projectId,
                   itemId: item.id,
@@ -862,8 +888,8 @@ jobs:
               }
             }
 
-            await deleteProjectItemForNode(childNodeId);
-            await deleteProjectItemForNode(parentNodeId);
+            await archiveProjectItemForNode(childNodeId);
+            await archiveProjectItemForNode(parentNodeId);
 
             if (childNumber > 0) {
               await github.request('PATCH /repos/{owner}/{repo}/issues/{issue_number}', {

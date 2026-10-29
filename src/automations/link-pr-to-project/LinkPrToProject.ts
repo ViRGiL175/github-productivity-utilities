@@ -4,6 +4,7 @@ import type { PullRequestClosingIssuesGateway, PullRequestMutationGateway } from
 import type { Logger } from '../../runtime/Logger.ts';
 import { collectClosingIssueReferences } from '../../github/ClosingReferenceParser.ts';
 import { findCurrentIteration } from '../ensure-next-iteration-reminder/EnsureNextIterationReminder.ts';
+import type { FieldUpdates } from '../field-updates/FieldUpdates.ts';
 
 export interface RequestedReviewer {
   login?: string;
@@ -12,6 +13,7 @@ export interface RequestedReviewer {
 
 export interface LinkPrToProjectInput {
   projectOwner: string;
+  fieldUpdates?: FieldUpdates | undefined;
   projectNumber: number;
   backlogRepository: RepositoryCoordinates;
   iterationFieldName: string;
@@ -80,6 +82,9 @@ now: () => Date = () => new Date(),
     await ensureClosingIssueReferences(input, closingIssueNumbers.length > 0 ? closingIssueNumbers : branchIssueNumber ? [branchIssueNumber] : [], issues);
     await handleReviewRequested(input, statusMetadata.projectId, statusMetadata.statusFieldId, inReviewOptionId, pullRequests, projects, logger);
     await syncReviewAssignees(input, pullRequests, logger);
+    await assignActiveReviewSprint(
+      input, iterationMetadata.projectId, iterationMetadata.iterationFieldId, projects, logger, now,
+    );
     await syncLinkedIssueReviewStatus(
       input,
       closingIssueNumbers.length > 0 ? closingIssueNumbers : branchIssueNumber ? [branchIssueNumber] : [],
@@ -137,6 +142,7 @@ now: () => Date = () => new Date(),
   } else {
     logger.info(`PR #${input.pullRequestNumber} is already in project ${input.projectOwner}#${input.projectNumber}.`);
   }
+  await input.fieldUpdates?.(itemId, input.pullRequestRepository, input.pullRequestNumber);
 
   const closingIssueNumbers = await resolveClosingIssueNumbers(input, pullRequests, logger);
   const branchIssueNumber = extractIssueNumber(input.headRef);
@@ -408,6 +414,31 @@ async function handleReviewRequested(
     }
     await projects.setSingleSelect(projectId, item.id, statusFieldId, inReviewOptionId);
     logger.info(`Set status ${input.statusFieldName}=${input.statusInReviewValue} for PR #${input.pullRequestNumber} (reviewers: ${humanReviewers.join(', ')}).`);
+}
+
+async function assignActiveReviewSprint(
+  input: LinkPrToProjectInput,
+  projectId: string,
+  iterationFieldId: string,
+  projects: ProjectGateway,
+  logger: Logger,
+  now: () => Date,
+): Promise<void> {
+  const metadata = await projects.getIterationMetadata(
+    input.projectOwner, input.projectNumber, input.iterationFieldName,
+  );
+  assertIterationMetadata(metadata, projectId, iterationFieldId);
+  const active = findCurrentIteration(metadata.iterations, now());
+  if (!active) {
+    logger.warning(`No active sprint was found for PR #${input.pullRequestNumber}; leaving its sprint unchanged.`);
+    return;
+  }
+  const item = await projects.getIssueProjectItem(input.pullRequestNodeId, projectId, input.iterationFieldName);
+  if (item?.iterationId === active.id) return;
+  const itemId = item?.id ?? await projects.addIssueToProject(projectId, input.pullRequestNodeId);
+  await input.fieldUpdates?.(itemId, input.pullRequestRepository, input.pullRequestNumber);
+  await projects.setIteration(projectId, itemId, iterationFieldId, active.id);
+  logger.info(`Assigned active sprint ${active.title} to PR #${input.pullRequestNumber} after a review request.`);
 }
 
 async function syncAssignees(input: LinkPrToProjectInput, issueNumber: number, pullRequests: PullRequestGateway, logger: Logger): Promise<void> {

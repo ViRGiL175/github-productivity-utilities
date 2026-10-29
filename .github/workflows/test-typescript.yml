@@ -6,6 +6,7 @@ on:
       - '.github/workflows/test-typescript.yml'
       - 'src/**'
       - 'test/**'
+      - 'itest/**'
       - 'package.json'
       - 'package-lock.json'
       - 'tsconfig.json'
@@ -39,4 +40,5 @@ jobs:
 
       - name: Load every script directly with Node.js
         run: |
-          node --input-type=module -e "for (const name of ['sync-sub-issue-sprint', 'link-pr-to-project', 'ensure-next-iteration-reminder', 'safe-dependabot-pr-link', 'reopen-issue-if-pr-open', 'collect-linked-context', 'gemini-generate-text']) { const script = await import('./src/scripts/' + name + '.ts'); if (typeof script.run !== 'function') throw new Error(name + ' has no run function') }"
+          node --input-type=module -e "for (const name of ['sync-sub-issue-sprint', 'link-pr-to-project', 'ensure-next-iteration-reminder', 'safe-dependabot-pr-link', 'collect-linked-context', 'gemini-generate-text']) { const script = await import('./src/scripts/' + name + '.ts'); if (typeof script.run !== 'function') throw new Error(name + ' has no run function') }"
+          node --input-type=module -e "for (const name of ['create-next-iteration', 'field-updates']) { const scenario = await import('./itest/' + name + '.ts'); if (typeof scenario.run !== 'function') throw new Error(name + ' has no run function') }"

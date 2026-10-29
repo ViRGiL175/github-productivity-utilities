@@ -8,11 +8,10 @@
 
 | Workflow-файл | Описание |
 | --- | --- |
-| [`./.github/workflows/ensure-next-iteration-reminder.yml`](./.github/workflows/ensure-next-iteration-reminder.yml) | Гарантирует, что в целевой итерации есть reminder draft, чтобы lane следующего спринта оставался видимым. |
+| [`./.github/workflows/ensure-next-iteration-reminder.yml`](./.github/workflows/ensure-next-iteration-reminder.yml) | Создаёт следующую итерацию, если её ещё нет, и поддерживает reminder draft в целевой итерации. |
 | [`./.github/workflows/ai-label-issue.yml`](./.github/workflows/ai-label-issue.yml) | **Deprecated.** Сохранён только для совместимости с `Dreddbook/scrum-dreddbook-backlog`; новые подключения не поддерживаются. |
 | [`./.github/workflows/ai-scrum-review-issue.yml`](./.github/workflows/ai-scrum-review-issue.yml) | **Deprecated.** Сохранён только для совместимости с `Dreddbook/scrum-dreddbook-backlog`; новые подключения не поддерживаются. |
 | [`./.github/workflows/link-pr-to-project.yml`](./.github/workflows/link-pr-to-project.yml) | Добавляет PR в Project V2, копирует sprint и assignee из связанной issue и ставит статус Done при закрытии. При `pull_request: synchronize` переводит PR и все открытые closing issues из Todo или пустого статуса в In progress, сохраняя более поздние статусы. Когда все открытые связанные PR уже в статусе ревью, переводит и backlog issue в этот статус, не меняя её ответственных. После запроса изменений человеком возвращает PR и связанную issue в Todo. Режим `action: reconcile_sprints` сверяет Sprint открытых PR из списка `repositories`, не меняя их Status, assignee и описание. Для синхронизации assignee токену нужны права на запись в issues PR-репозитория. |
-| [`./.github/workflows/reopen-issue-if-pr-open.yml`](./.github/workflows/reopen-issue-if-pr-open.yml) | Переоткрывает issue автоматически, если связанные PR, которые должны её закрыть, всё ещё открыты. |
 | [`./.github/workflows/safe-dependabot-pr-link.yml`](./.github/workflows/safe-dependabot-pr-link.yml) | Синхронизирует PR от Dependabot по списку репозиториев: принимает многострочный `repositories`, ставит стартовый статус только новым PR или PR без статуса, закрытым — финальный. |
 | [`./.github/workflows/sync-sub-issue-sprint.yml`](./.github/workflows/sync-sub-issue-sprint.yml) | Наследует sprint/iteration-метаданные из родительской issue в её sub-issue. `action: reconcile` сверяет уже существующие sub-issues после изменения Sprint родителя; поддерживает `dry_run`. |
 | [`./.github/workflows/collect-linked-context.yml`](./.github/workflows/collect-linked-context.yml) | Собирает контекст по ссылкам на issue, PR, releases и commits. |
@@ -21,11 +20,11 @@
 
 ## TypeScript-реализации
 
-Публичным интерфейсом автоматизаций остаются reusable workflow в `.github/workflows`. Каждый workflow загружает исходный TypeScript из `src/scripts` и запускает его через `actions/github-script@v8` с авторизованным GitHub-клиентом. Сборки `dist` и установки npm-зависимостей при запуске нет. В YAML остаются события, permissions, secrets, авторизация и оркестрация jobs.
+Публичным интерфейсом автоматизаций остаются reusable workflow в `.github/workflows`. Каждый workflow загружает исходный TypeScript из `src/scripts` и запускает его через `actions/github-script@v8` с авторизованным GitHub-клиентом. Сборки `dist` нет. Без `field_updates` установка npm-зависимостей при запуске не нужна; при непустой настройке устанавливается runtime YAML-парсер. В YAML остаются события, permissions, secrets, авторизация и оркестрация jobs.
 
 Все прежние inputs, secrets, defaults и правила обработки сохранены. В каждом reusable workflow checkout реализации использует `job.workflow_sha`: тесты выполняют исходный код из проверяемого коммита, а вызов workflow через `@tag` — код из коммита этого тега. Внешним репозиториям не нужно отдельно выбирать ref реализации.
 
-Новые правила не включаются в репозиториях-потребителях автоматически. Для периодической сверки Sprint caller вызывает `sync-sub-issue-sprint.yml` с `action: reconcile`. Ревью-назначения в `link-pr-to-project.yml` требуют добавить в caller события `pull_request: review_request_removed` и `pull_request_review: [submitted, dismissed]`. При обычном комментарии без решения assignee не меняются.
+Новые правила не включаются в репозиториях-потребителях автоматически. Для периодической сверки Sprint caller вызывает `sync-sub-issue-sprint.yml` с `action: reconcile`. Ревью-назначения в `link-pr-to-project.yml` требуют добавить в caller события `pull_request: review_request_removed` и `pull_request_review: [submitted, dismissed]`. При обычном комментарии без решения assignee не меняются. На `pull_request: review_requested` PR получает текущий Sprint указанной доски, в том числе вместо ранее назначенного Sprint и без связи с backlog issue. Если PR ещё нет на доске, он добавляется в неё. Sprint связанных issue не меняется. При отсутствии активной итерации Sprint PR сохраняется, а правила assignee продолжают работать.
 
 Связи issue ↔ PR создаются через `addCloseIssueReferences`, включая PR из другого репозитория в промежуточную ветку. Автоматизация сохраняет существующие связи и проверяет результат через GitHub; для записи нужны текущие права токена на целевую issue. При неопределённом ответе повторяется только чтение, а неподтверждённая связь завершает workflow с ошибкой. Проверка этого сценария использует существующий `test-link-pr-to-project.yml` в режиме `app`.
 
@@ -40,7 +39,37 @@ npm ci
 npm run check
 ```
 
-TypeScript используется в форме, которую Node.js 24 запускает напрямую. `npm` нужен только для проверки типов и локальных unit-тестов, не для запуска автоматизаций.
+TypeScript используется в форме, которую Node.js 24 запускает напрямую. `npm` используется для проверки типов и unit-тестов, а также для установки YAML-парсера при подключённом `field_updates`.
+
+## Поля после добавления PR
+
+`link-pr-to-project.yml` и `safe-dependabot-pr-link.yml` принимают необязательный YAML input `field_updates`. Поля назначаются после добавления PR и повторно при обработке уже добавленного PR. Пустой input сохраняет прежнее поведение; настройку у потребителя нужно подключить отдельно.
+
+Пример для обоих reusable workflow:
+
+```yaml
+with:
+  field_updates: |
+    project:
+      Horizon: Inbox
+    force: false
+```
+
+`project` и `issue` — отдельные словари «точное имя поля: значение». По умолчанию `force: false` сохраняет заполненное, включая ноль; `force: true` заменяет указанные поля. Совпадающие значения пропускаются. Очистка не поддерживается: значения — непустые строки или конечные числа.
+
+Контроллер `FieldController.apply(config, target)` поддерживает проектные text, number, date, single_select, iteration и нативные Issue Fields типов text, number, date, single_select. Для select/iteration передаются точные названия существующих вариантов/итераций. Нативные поля указываются в `issue` (например, `issue: { Effort: 3 }`) и доступны только для issue, не PR. Issue Type, labels, assignees и multi-select не поддерживаются. Неизвестные, неоднозначные имена и неподдерживаемые типы вызывают ошибку даже с `force: true`.
+
+Обе секции проверяются перед записью. Каждый scope записывается одним запросом: Project REST PATCH, затем native REST POST; пустой POST и заменяющий все поля PUT не отправляются. Общей транзакции нет; проверка пустоты не защищена от параллельной ручной правки. При ошибке item остаётся в проекте, `FieldUpdateError.report.applied` содержит подтверждённые записи, `uncertain` — поля с неизвестным результатом. Перед их повторной записью нужно прочитать состояние.
+
+Используются существующие права Projects/Issues и доступ к Issue Fields организации. При непустом input workflow устанавливает runtime YAML-парсер. `test-field-updates.yml` проверяет оба API и оба пути добавления PR через штатный App в sandbox без моков. Регулярная проверка импортера использует App fixture с настроенным bot-login. Fixtures закрываются, items и ветки сохраняются.
+
+## Создание следующей итерации
+
+ensure-next-iteration-reminder.yml добавляет одну следующую итерацию, если после текущей нет будущей. Сохраняются все прежние итерации, включая завершённые, их ID и привязки элементов. Напоминание по-прежнему остаётся в текущей итерации без Issue; иначе выбирается следующая. Рабочие истории не переносятся.
+
+Новая итерация начинается после последней и использует длительность из настройки поля. После перерыва выбирается ближайшая будущая граница этой длительности, без создания пропущенных спринтов. Для пустого поля выбирается ближайший будущий настроенный день недели. Число в конце названия последней итерации увеличивается на один; иначе название состоит из имени поля и даты начала.
+
+Запуски для одного поля сериализуются через job concurrency без отмены выполняющегося запуска. GitHub ограничивает concurrency репозиторием, а API замены конфигурации не поддерживает условную запись: назначьте один вызывающий репозиторий на поле и не редактируйте его конфигурацию параллельно. После записи автоматизация проверяет старые ID и новую итерацию; при неопределённом ответе сначала читает результат, не повторяя запись вслепую.
 
 ## Локальный прогон test workflow через act
 
@@ -81,7 +110,6 @@ TypeScript используется в форме, которую Node.js 24 з�
 - `test-copilot-generate-text.yml`
 - `test-ensure-next-iteration-reminder.yml`
 - `test-link-pr-to-project.yml`
-- `test-reopen-issue-if-pr-open.yml`
 - `test-safe-dependabot-pr-link.yml`
 - `test-sync-sub-issue-sprint.yml`
 
