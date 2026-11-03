@@ -124,7 +124,7 @@ jobs:
 
       - name: Create parent and child issues
         id: prepare
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_OWNER: ${{ env.PROJECT_OWNER }}
           PROJECT_NUMBER: ${{ env.PROJECT_NUMBER }}
@@ -471,7 +471,7 @@ jobs:
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Assert child issue inherited sprint
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_ID: ${{ needs.prepare-sync-scenario.outputs.project_id }}
           ITERATION_FIELD_NAME: ${{ env.ITERATION_FIELD_NAME }}
@@ -528,7 +528,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Reconcile an existing child after the parent Sprint changes
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_ID: ${{ needs.prepare-sync-scenario.outputs.project_id }}
           ALTERNATIVE_ITERATION_ID: ${{ needs.prepare-sync-scenario.outputs.alternative_iteration_id }}
@@ -675,7 +675,7 @@ jobs:
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Assert child issue inherited sprint
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_ID: ${{ needs.prepare-sync-scenario.outputs.project_id }}
           ITERATION_FIELD_NAME: ${{ env.ITERATION_FIELD_NAME }}
@@ -792,7 +792,7 @@ jobs:
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Archive project items and close issues
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_ID: ${{ needs.prepare-sync-scenario.outputs.project_id }}
           ITERATION_FIELD_NAME: ${{ env.ITERATION_FIELD_NAME }}

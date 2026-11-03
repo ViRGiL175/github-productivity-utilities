@@ -68,7 +68,7 @@ jobs:
 
       - name: Create test issues
         id: prepare
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           REPO_OWNER: ${{ env.REPO_OWNER }}
           REPO_NAME: ${{ env.REPO_NAME }}
@@ -163,7 +163,7 @@ jobs:
           skip-token-revoke: true
 
       - name: Assert ready labels were set
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           ISSUE_NUMBER: ${{ needs.prepare-scrum-review-scenario.outputs.ready_issue_number }}
           REPO_OWNER: ${{ env.REPO_OWNER }}
@@ -230,7 +230,7 @@ jobs:
           skip-token-revoke: true
 
       - name: Assert rejected labels and comment were set
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           ISSUE_NUMBER: ${{ needs.prepare-scrum-review-scenario.outputs.reject_issue_number }}
           REPO_OWNER: ${{ env.REPO_OWNER }}
@@ -285,7 +285,7 @@ jobs:
           skip-token-revoke: true
 
       - name: Close issues
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           READY_ISSUE_NUMBER: ${{ needs.prepare-scrum-review-scenario.outputs.ready_issue_number }}
           REJECT_ISSUE_NUMBER: ${{ needs.prepare-scrum-review-scenario.outputs.reject_issue_number }}

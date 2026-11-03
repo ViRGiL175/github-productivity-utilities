@@ -22,7 +22,7 @@
 
 ## TypeScript-реализации
 
-Публичным интерфейсом автоматизаций остаются reusable workflow в `.github/workflows`. Каждый workflow загружает исходный TypeScript из `src/scripts` и запускает его через `actions/github-script@v8` с авторизованным GitHub-клиентом. Сборки `dist` нет. Без `field_updates` установка npm-зависимостей при запуске не нужна; при непустой настройке устанавливается runtime YAML-парсер. В YAML остаются события, permissions, secrets, авторизация и оркестрация jobs.
+Публичным интерфейсом автоматизаций остаются reusable workflow в `.github/workflows`. Каждый workflow загружает исходный TypeScript из `src/scripts` и запускает его через `actions/github-script@v9` с авторизованным GitHub-клиентом. Сборки `dist` нет. Без `field_updates` установка npm-зависимостей при запуске не нужна; при непустой настройке устанавливается runtime YAML-парсер. В YAML остаются события, permissions, secrets, авторизация и оркестрация jobs.
 
 Все прежние inputs, secrets, defaults и правила обработки сохранены. В каждом reusable workflow checkout реализации использует `job.workflow_sha`: тесты выполняют исходный код из проверяемого коммита, а вызов workflow через `@tag` — код из коммита этого тега. Внешним репозиториям не нужно отдельно выбирать ref реализации.
 
@@ -135,4 +135,4 @@ ensure-next-iteration-reminder.yml добавляет одну следующу�
 
 `node ./scripts/run-act-test.js --files test-ensure-next-iteration-reminder.yml test-link-pr-to-project.yml --auth-mode app`
 
-Для `test-copilot-generate-text.yml` нужен `USER_COPILOT_FGPAT` с permission `Copilot Requests`, потому что это живой integration test через реальный Copilot SDK.
+Для `test-copilot-generate-text.yml` нужен `GEMINI_API_KEY`: несмотря на прежнее имя файла, этот workflow проверяет реальные запросы к Gemini API.

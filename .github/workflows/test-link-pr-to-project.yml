@@ -140,7 +140,7 @@ jobs:
 
       - name: Create issue, project item, branch, and PR
         id: prepare
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_OWNER: ${{ env.PROJECT_OWNER }}
           PROJECT_NUMBER: ${{ env.PROJECT_NUMBER }}
@@ -575,7 +575,7 @@ jobs:
           skip-token-revoke: true
 
       - name: Assert status was initialized
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
           STATUS_FIELD_NAME: ${{ env.STATUS_FIELD_NAME }}
@@ -693,7 +693,7 @@ jobs:
 
       - name: Assert PR was linked to project and issue sprint
         id: assert
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
           ITERATION_FIELD_NAME: ${{ env.ITERATION_FIELD_NAME }}
@@ -957,7 +957,7 @@ jobs:
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Assert rerun did not duplicate project item or closes line
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
           ITERATION_FIELD_NAME: ${{ env.ITERATION_FIELD_NAME }}
@@ -1149,7 +1149,7 @@ jobs:
 
       - name: Add a later-sprint issue and clear PR fields before edited event
         id: prepare-secondary
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
           ITERATION_FIELD_ID: ${{ needs.prepare-link-scenario.outputs.iteration_field_id }}
@@ -1346,7 +1346,7 @@ jobs:
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Assert edited event selected the latest linked Sprint
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
           ITERATION_FIELD_NAME: ${{ env.ITERATION_FIELD_NAME }}
@@ -1475,7 +1475,7 @@ jobs:
             core.info(`PR selected latest linked Sprint ${process.env.LATEST_ITERATION_ID}; existing issue Sprints stayed unchanged and the unsprinted issue inherited it.`);
 
       - name: Change linked issue Sprint without touching the PR
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
           ITERATION_FIELD_ID: ${{ needs.prepare-link-scenario.outputs.iteration_field_id }}
@@ -1595,7 +1595,7 @@ jobs:
           skip-token-revoke: true
 
       - name: Assert reconciled Sprint and preserved PR Status
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
           ITERATION_FIELD_NAME: ${{ env.ITERATION_FIELD_NAME }}
@@ -1649,7 +1649,7 @@ jobs:
             }
 
       - name: Reset PR and closing issues to Todo before synchronize
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
           STATUS_FIELD_ID: ${{ needs.prepare-link-scenario.outputs.status_field_id }}
@@ -1757,7 +1757,7 @@ jobs:
           skip-token-revoke: true
 
       - name: Assert all statuses after synchronize
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
           STATUS_FIELD_NAME: ${{ env.STATUS_FIELD_NAME }}
@@ -1897,7 +1897,7 @@ jobs:
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Assert PR status is Need Review in project
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
           STATUS_FIELD_NAME: ${{ env.STATUS_FIELD_NAME }}
@@ -2015,7 +2015,7 @@ jobs:
             core.info('Linked issue is in review and retains its assignee.');
 
       - name: Assert review assignees with and without an active sprint
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PULL_NODE_ID: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
           PULL_NUMBER: ${{ needs.prepare-link-scenario.outputs.pull_number }}
@@ -2147,7 +2147,7 @@ jobs:
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Close temporary PR
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PULL_REQUEST_REPO_OWNER: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_owner }}
           PULL_REQUEST_REPO_NAME: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_name }}
@@ -2262,7 +2262,7 @@ jobs:
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Assert PR status is Done in project
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
           STATUS_FIELD_NAME: ${{ env.STATUS_FIELD_NAME }}
@@ -2429,7 +2429,7 @@ jobs:
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Remove project items, close issue, and delete branch
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_ID: ${{ needs.prepare-link-scenario.outputs.project_id }}
           ITERATION_FIELD_NAME: ${{ env.ITERATION_FIELD_NAME }}

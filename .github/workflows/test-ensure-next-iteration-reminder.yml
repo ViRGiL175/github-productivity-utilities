@@ -114,7 +114,7 @@ jobs:
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Create next iteration, repeat and verify preserved bindings
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           github-token: ${{ steps.auth.outputs.token }}
           script: |
@@ -184,7 +184,7 @@ jobs:
 
       - name: Prepare reminder fixtures for create scenario
         id: prepare
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_OWNER: ${{ env.PROJECT_OWNER }}
           PROJECT_NUMBER: ${{ env.PROJECT_NUMBER }}
@@ -513,7 +513,7 @@ jobs:
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Assert exactly one reminder draft exists in first future iteration
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_ID: ${{ needs.prepare-reminder-create-scenario.outputs.project_id }}
           REMINDER_TITLE: ${{ needs.prepare-reminder-create-scenario.outputs.reminder_title }}
@@ -706,7 +706,7 @@ jobs:
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Assert rerun did not create duplicates before current iteration starts
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_ID: ${{ needs.prepare-reminder-create-scenario.outputs.project_id }}
           REMINDER_TITLE: ${{ needs.prepare-reminder-create-scenario.outputs.reminder_title }}
@@ -857,7 +857,7 @@ jobs:
 
       - name: Prepare reminder fixture in empty current iteration
         id: prepare
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_OWNER: ${{ env.PROJECT_OWNER }}
           PROJECT_NUMBER: ${{ env.PROJECT_NUMBER }}
@@ -1265,7 +1265,7 @@ jobs:
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Assert reminder stayed in empty current iteration
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_ID: ${{ needs.prepare-reminder-empty-current-scenario.outputs.project_id }}
           REMINDER_TITLE: ${{ needs.prepare-reminder-empty-current-scenario.outputs.reminder_title }}
@@ -1416,7 +1416,7 @@ jobs:
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Delete reminder drafts created by this run
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_ID: ${{ needs.prepare-reminder-create-scenario.outputs.project_id }}
           REMINDER_TITLE: ${{ needs.prepare-reminder-create-scenario.outputs.reminder_title }}
@@ -1561,7 +1561,7 @@ jobs:
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Delete reminder draft created for empty current scenario
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_ID: ${{ needs.prepare-reminder-empty-current-scenario.outputs.project_id }}
           REMINDER_TITLE: ${{ needs.prepare-reminder-empty-current-scenario.outputs.reminder_title }}

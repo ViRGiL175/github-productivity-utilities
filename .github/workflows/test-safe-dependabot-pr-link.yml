@@ -113,7 +113,7 @@ jobs:
 
       - name: Create open and closed PR fixtures
         id: prepare
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_OWNER: ${{ env.PROJECT_OWNER }}
           PROJECT_NUMBER: ${{ env.PROJECT_NUMBER }}
@@ -323,7 +323,7 @@ jobs:
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Assert open and closed statuses
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_ID: ${{ needs.prepare-safe-scenario.outputs.project_id }}
           STATUS_FIELD_NAME: ${{ env.STATUS_FIELD_NAME }}
@@ -493,7 +493,7 @@ jobs:
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Assert no duplicates were created
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_ID: ${{ needs.prepare-safe-scenario.outputs.project_id }}
           STATUS_FIELD_NAME: ${{ env.STATUS_FIELD_NAME }}
@@ -604,7 +604,7 @@ jobs:
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Remove project items, close PRs, and delete branches
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           PROJECT_ID: ${{ needs.prepare-safe-scenario.outputs.project_id }}
           REPO_OWNER: ${{ needs.prepare-safe-scenario.outputs.repo_owner }}

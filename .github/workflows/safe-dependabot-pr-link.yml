@@ -186,7 +186,7 @@ jobs:
         run: npm ci --omit=dev --ignore-scripts
 
       - name: Reconcile Dependabot PR project links
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           FIELD_UPDATES: ${{ inputs.field_updates }}
           PROJECT_OWNER: ${{ inputs.project_owner }}
