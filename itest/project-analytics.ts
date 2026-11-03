@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { createInterface } from 'node:readline';
 import { randomBytes } from 'node:crypto';
 import { Agent, request } from 'node:https';
 import { readFile, writeFile } from 'node:fs/promises';
@@ -165,6 +166,87 @@ async function collect(): Promise<void> {
   }
 }
 
+async function verifyDatabaseRecovery(pool: pg.Pool, itemId: string): Promise<void> {
+  phase = 'database_restart';
+  assert.equal(process.env.GITHUB_ACTIONS, 'true', 'Database restart is restricted to the ephemeral CI stack');
+  assert.equal(process.env.COMPOSE_PROJECT_NAME, `analytics-e2e-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`);
+  const before = await pool.query("SELECT count(*)::int AS completed FROM analytics.sync_runs WHERE status='complete'");
+  const applicationName = 'analytics-e2e-recovery';
+  const env: NodeJS.ProcessEnv = { ...process.env, SYNC_INTERVAL_SECONDS: '60', PGAPPNAME: applicationName };
+  delete env.FIXTURE_TOKEN;
+  delete env.RAW_PRIVATE_KEY;
+  const collector = spawn(process.execPath, ['dist/analytics/main.js'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  let exited = false;
+  const closed = new Promise<void>(resolve => {
+    collector.once('error', () => { exited = true; resolve(); });
+    collector.once('exit', () => { exited = true; resolve(); });
+  });
+  let completed = 0;
+  let connectionFailed = false;
+  let idleConnectionFailed = false;
+  const readers = [collector.stdout, collector.stderr].map(input => {
+    const reader = createInterface({ input });
+    reader.on('line', line => {
+      if (!line.startsWith('{')) return;
+      try {
+        const entry = JSON.parse(line) as { event?: string; stage?: string };
+        if (entry.event === 'sync_complete') completed++;
+        if (entry.event === 'sync_failed' && entry.stage === 'database_connect') connectionFailed = true;
+        if (entry.event === 'database_idle_connection_failed') idleConnectionFailed = true;
+      } catch { /* Raw collector output is never forwarded to CI logs. */ }
+    });
+    return reader;
+  });
+  async function waitFor(condition: () => Promise<boolean> | boolean, timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    do {
+      assert.equal(exited, false, 'The continuous collector must survive the database restart');
+      if (await condition()) return;
+      await delay(250);
+    } while (Date.now() < deadline);
+    assert.fail('Timed out waiting for database recovery');
+  }
+  function postgres(...args: string[]): void {
+    const result = spawnSync('docker', ['compose', '--env-file', '.local/analytics.env',
+      '-f', 'analytics/compose.yaml', '-f', 'analytics/compose.https.yaml', ...args, 'postgres'],
+    { encoding: 'utf8', timeout: 120_000 });
+    assert.equal(result.status, 0, 'Ephemeral PostgreSQL lifecycle command failed');
+  }
+  let stopped = false;
+  try {
+    await waitFor(async () => {
+      const result = await pool.query("SELECT 1 FROM pg_stat_activity WHERE application_name=$1 AND state='idle'", [applicationName]);
+      return result.rowCount === 1;
+    }, 10_000);
+    console.log('Continuous collector connected; restarting only ephemeral PostgreSQL');
+    stopped = true;
+    postgres('stop', '--timeout', '1');
+    await waitFor(() => idleConnectionFailed && connectionFailed, 90_000);
+    console.log('The same collector survived an idle connection loss and a failed connection attempt');
+    phase = 'database_recovery';
+    completed = 0;
+    postgres('start', '--wait', '--wait-timeout', '90');
+    stopped = false;
+    await waitFor(() => completed > 0, 180_000);
+    const after = await pool.query("SELECT count(*)::int AS completed FROM analytics.sync_runs WHERE status='complete'");
+    assert.ok(after.rows[0].completed > before.rows[0].completed);
+    const fixture = await pool.query(`SELECT present,
+      (SELECT count(*)::int FROM analytics.item_history WHERE item_id=$1) AS revisions
+      FROM analytics.items WHERE item_id=$1`, [itemId]);
+    assert.deepEqual(fixture.rows, [{ present: false, revisions: 3 }]);
+    assert.equal(exited, false);
+    console.log('The same collector committed a fresh full snapshot after PostgreSQL restart; fixture history is unchanged');
+  } finally {
+    if (!exited) {
+      collector.kill('SIGTERM');
+      const timeout = setTimeout(() => collector.kill('SIGKILL'), 10_000);
+      try { await closed; } finally { clearTimeout(timeout); }
+    }
+    for (const reader of readers) reader.close();
+    if (stopped) postgres('start', '--wait', '--wait-timeout', '90');
+  }
+}
+
 async function cleanup(): Promise<void> {
   phase = 'cleanup';
   let fixture: Fixture;
@@ -212,6 +294,7 @@ async function scenario(): Promise<void> {
     host: process.env.PGHOST, port: Number(process.env.PGPORT), database: 'project_analytics', user: 'analytics_writer',
     password: (await readFile(process.env.PGPASSWORD_FILE!, 'utf8')).trim(), max: 1,
   });
+  pool.on('error', () => { console.log('Fixture database connection closed; the next query will reconnect'); });
   async function assertCurrent(expectedStatus: string, expectedIteration: IterationDefinition, historyCount: number): Promise<void> {
     const result = await pool.query(`SELECT i.title, i.present, s.value->>'optionId' AS status_id,
       t.iteration_id, t.start_date::text, t.duration_days,
@@ -254,6 +337,7 @@ async function scenario(): Promise<void> {
     assert.deepEqual(kinds.rows.map(row => row.kind), ['observed', 'observed', 'missing']);
     console.log('Full reconciliation marks the removed item without deleting history');
 
+    await verifyDatabaseRecovery(pool, itemId);
     phase = 'grafana_query';
     await verifyGrafana({ from: 'now-1h', to: 'now', queries: [{ refId: 'A', format: 'table',
         datasource: { uid: 'project-analytics', type: 'grafana-postgresql-datasource' },
