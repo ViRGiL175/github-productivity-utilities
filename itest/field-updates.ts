@@ -129,7 +129,7 @@ export async function run({ github, context, core }: {
     }
     result.passed = !failure;
     await save();
-    await core.summary.addHeading('Real App field updates checks').addList(result.checks)
+    await core.summary.addHeading(`Real field updates checks (${process.env.AUTH_MODE ?? 'pat'})`).addList(result.checks)
       .addRaw(`\n${result.entities.map(entity => entity.url).join('\n\n')}\n\nFixtures closed, items and branches retained. Result: ${result.passed ? 'PASS' : 'FAIL'}`).write();
   }
   if (failure) throw failure;
