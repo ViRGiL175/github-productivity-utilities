@@ -17,6 +17,7 @@
     "local:status": "node scripts/local-analytics.mjs status"
   },
   "devDependencies": {
+    "@octokit/types": "^18.0.0",
     "@types/node": "^26.5.1",
     "@types/pg": "8.23.1",
     "typescript": "^7.0.2",
@@ -25,6 +26,7 @@
   "dependencies": {
     "@octokit/auth-app": "8.3.1",
     "@octokit/rest": "22.0.1",
-    "pg": "8.23.1"
+    "pg": "8.23.1",
+    "yaml": "^2.9.1"
   }
 }
