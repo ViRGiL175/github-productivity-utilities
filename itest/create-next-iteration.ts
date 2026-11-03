@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { setTimeout as delay } from 'node:timers/promises';
 import type { Octokit } from '@octokit/rest';
 import type { IntegrationCore } from './runtime.ts';
 import { ensureNextIterationReminder } from '../src/automations/ensure-next-iteration-reminder/EnsureNextIterationReminder.ts';
@@ -52,8 +53,15 @@ export async function run(github: Octokit, core: IntegrationCore): Promise<void>
       itemIds.push(itemId);
       await projects.setIteration(sandbox.projectId, itemId, fieldId, iteration.id);
     }
-    const bindings = (await projects.listProjectItems(sandbox.projectId, fieldId))
+    let bindings = (await projects.listProjectItems(sandbox.projectId, fieldId))
       .filter(item => itemIds.includes(item.id));
+    // Project connections can lag behind successful item mutations. Retry reads only.
+    for (let attempt = 1; bindings.length !== 2 && attempt < 12; attempt++) {
+      core.info(`Waiting for both fixture items in the project (${bindings.length}/2, attempt ${attempt}/12).`);
+      await delay(2000);
+      bindings = (await projects.listProjectItems(sandbox.projectId, fieldId))
+        .filter(item => itemIds.includes(item.id));
+    }
     assert.equal(bindings.length, 2);
     const input = { projectOwner: owner, projectNumber: number, iterationFieldName: fieldName,
       reminderTitle, currentDateOverride: today };
