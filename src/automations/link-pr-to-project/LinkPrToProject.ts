@@ -1,9 +1,10 @@
-import type { IssueClosingPullRequestsGateway, IssueManagedCommentGateway, IssueReader, RepositoryCoordinates } from '../../github/IssueRepository.ts';
+import type { IssueClosingReferenceGateway, IssueClosingPullRequestsGateway, IssueManagedCommentGateway, IssueReader, RepositoryCoordinates } from '../../github/IssueRepository.ts';
 import type { ProjectIterationGateway, ProjectStatusGateway, ProjectV2Gateway } from '../../github/ProjectV2Repository.ts';
 import type { PullRequestClosingIssuesGateway, PullRequestMutationGateway } from '../../github/PullRequestRepository.ts';
 import type { Logger } from '../../runtime/Logger.ts';
 import { collectClosingIssueReferences } from '../../github/ClosingReferenceParser.ts';
 import { findCurrentIteration } from '../ensure-next-iteration-reminder/EnsureNextIterationReminder.ts';
+import type { FieldUpdates } from '../field-updates/FieldUpdates.ts';
 
 export interface RequestedReviewer {
   login?: string;
@@ -12,6 +13,7 @@ export interface RequestedReviewer {
 
 export interface LinkPrToProjectInput {
   projectOwner: string;
+  fieldUpdates?: FieldUpdates | undefined;
   projectNumber: number;
   backlogRepository: RepositoryCoordinates;
   iterationFieldName: string;
@@ -33,7 +35,7 @@ export interface LinkPrToProjectInput {
 
 type ProjectGateway = ProjectV2Gateway & ProjectStatusGateway & Pick<ProjectIterationGateway, 'getIterationMetadata'>;
 type PullRequestGateway = PullRequestMutationGateway & PullRequestClosingIssuesGateway;
-type IssueGateway = IssueReader & IssueClosingPullRequestsGateway & IssueManagedCommentGateway;
+type IssueGateway = IssueReader & IssueClosingPullRequestsGateway & IssueClosingReferenceGateway & IssueManagedCommentGateway;
 
 export const NO_ACTIVE_SPRINT_COMMENT_MARKER = '<!-- github-productivity-utilities:no-active-sprint -->';
 
@@ -77,8 +79,12 @@ now: () => Date = () => new Date(),
   if (input.action === 'review_requested') {
     const closingIssueNumbers = await resolveClosingIssueNumbers(input, pullRequests, logger);
     const branchIssueNumber = extractIssueNumber(input.headRef);
+    await ensureClosingIssueReferences(input, closingIssueNumbers.length > 0 ? closingIssueNumbers : branchIssueNumber ? [branchIssueNumber] : [], issues);
     await handleReviewRequested(input, statusMetadata.projectId, statusMetadata.statusFieldId, inReviewOptionId, pullRequests, projects, logger);
     await syncReviewAssignees(input, pullRequests, logger);
+    await assignActiveReviewSprint(
+      input, iterationMetadata.projectId, iterationMetadata.iterationFieldId, projects, logger, now,
+    );
     await syncLinkedIssueReviewStatus(
       input,
       closingIssueNumbers.length > 0 ? closingIssueNumbers : branchIssueNumber ? [branchIssueNumber] : [],
@@ -107,6 +113,7 @@ now: () => Date = () => new Date(),
       }
       const closingIssueNumbers = await resolveClosingIssueNumbers(input, pullRequests, logger);
       const branchIssueNumber = extractIssueNumber(input.headRef);
+      await ensureClosingIssueReferences(input, closingIssueNumbers.length > 0 ? closingIssueNumbers : branchIssueNumber ? [branchIssueNumber] : [], issues);
       await moveReviewBackToTodo(
         input,
         closingIssueNumbers.length > 0 ? closingIssueNumbers : branchIssueNumber ? [branchIssueNumber] : [],
@@ -135,6 +142,7 @@ now: () => Date = () => new Date(),
   } else {
     logger.info(`PR #${input.pullRequestNumber} is already in project ${input.projectOwner}#${input.projectNumber}.`);
   }
+  await input.fieldUpdates?.(itemId, input.pullRequestRepository, input.pullRequestNumber);
 
   const closingIssueNumbers = await resolveClosingIssueNumbers(input, pullRequests, logger);
   const branchIssueNumber = extractIssueNumber(input.headRef);
@@ -165,6 +173,8 @@ now: () => Date = () => new Date(),
       logger.info(`Ignoring closed linked issue #${linkedIssueNumber} for sprint and assignee sync.`);
       continue;
     }
+    if (issue.isPullRequest) throw new Error(`Expected backlog issue #${issue.number}, got a pull request.`);
+    await issues.ensureClosingPullRequest(input.backlogRepository, issue, input.pullRequestNodeId);
     openIssues.push(issue);
   }
   const openIssueNumbers = openIssues.map((issue) => issue.number);
@@ -406,6 +416,31 @@ async function handleReviewRequested(
     logger.info(`Set status ${input.statusFieldName}=${input.statusInReviewValue} for PR #${input.pullRequestNumber} (reviewers: ${humanReviewers.join(', ')}).`);
 }
 
+async function assignActiveReviewSprint(
+  input: LinkPrToProjectInput,
+  projectId: string,
+  iterationFieldId: string,
+  projects: ProjectGateway,
+  logger: Logger,
+  now: () => Date,
+): Promise<void> {
+  const metadata = await projects.getIterationMetadata(
+    input.projectOwner, input.projectNumber, input.iterationFieldName,
+  );
+  assertIterationMetadata(metadata, projectId, iterationFieldId);
+  const active = findCurrentIteration(metadata.iterations, now());
+  if (!active) {
+    logger.warning(`No active sprint was found for PR #${input.pullRequestNumber}; leaving its sprint unchanged.`);
+    return;
+  }
+  const item = await projects.getIssueProjectItem(input.pullRequestNodeId, projectId, input.iterationFieldName);
+  if (item?.iterationId === active.id) return;
+  const itemId = item?.id ?? await projects.addIssueToProject(projectId, input.pullRequestNodeId);
+  await input.fieldUpdates?.(itemId, input.pullRequestRepository, input.pullRequestNumber);
+  await projects.setIteration(projectId, itemId, iterationFieldId, active.id);
+  logger.info(`Assigned active sprint ${active.title} to PR #${input.pullRequestNumber} after a review request.`);
+}
+
 async function syncAssignees(input: LinkPrToProjectInput, issueNumber: number, pullRequests: PullRequestGateway, logger: Logger): Promise<void> {
     const current = await pullRequests.getAssigneeLogins(input.pullRequestRepository, input.pullRequestNumber);
     if (current.length > 0) {
@@ -539,6 +574,15 @@ async function moveReviewBackToTodo(
     if (!issueItem || issueItem.statusOptionId === todoOption.id) continue;
     await projects.setSingleSelect(projectId, issueItem.id, statusFieldId, todoOption.id);
     logger.info(`Changes were requested on PR #${input.pullRequestNumber}; set issue #${issueNumber} status to ${todoOption.name}.`);
+  }
+}
+
+async function ensureClosingIssueReferences(input: LinkPrToProjectInput, issueNumbers: number[], issues: IssueGateway): Promise<void> {
+  for (const issueNumber of [...new Set(issueNumbers)]) {
+    const issue = await issues.getIssue(input.backlogRepository, issueNumber);
+    if (issue.isPullRequest) throw new Error(`Expected backlog issue #${issue.number}, got a pull request.`);
+    if (issue.isOpen === false) continue;
+    await issues.ensureClosingPullRequest(input.backlogRepository, issue, input.pullRequestNodeId);
   }
 }
 
