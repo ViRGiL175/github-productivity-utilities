@@ -6,8 +6,6 @@ import { appCredentials, configuration } from './configuration.ts';
 import { PostgresSnapshotStore } from './PostgresSnapshotStore.ts';
 import { ProjectSnapshotReader, SnapshotReadError } from './ProjectSnapshotReader.ts';
 
-const DAY = 24 * 60 * 60 * 1000;
-
 async function main(): Promise<void> {
   const config = await configuration();
   const migrateOnly = process.argv.includes('--migrate-only');
@@ -19,6 +17,10 @@ async function main(): Promise<void> {
   process.once('SIGINT', () => stop.abort());
   process.once('SIGTERM', () => stop.abort());
 
+  console.log(JSON.stringify({
+    event: 'collector_started', syncIntervalSeconds: config.syncIntervalMs / 1000,
+    mode: migrateOnly ? 'migrate' : once ? 'once' : 'continuous',
+  }));
   try {
     do {
       let failed = false;
@@ -29,7 +31,7 @@ async function main(): Promise<void> {
           return { due: false };
         }
         const previous = await session.lastCompletedAt();
-        if (!once && previous && Date.now() - previous.getTime() < DAY) return { due: false };
+        if (!once && previous && Date.now() - previous.getTime() < config.syncIntervalMs) return { due: false };
         const runId = await session.begin();
         let stage = 'app_key';
         try {
