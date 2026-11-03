@@ -1844,7 +1844,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout implementation under test
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Normalize GitHub App private key
         if: ${{ env.AUTH_MODE == 'app' }}
