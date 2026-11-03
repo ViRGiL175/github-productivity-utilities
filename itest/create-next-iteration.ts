@@ -22,6 +22,15 @@ export async function run(github: Octokit, core: IntegrationCore): Promise<void>
   let fieldId: string | undefined;
   const issues: number[] = [];
   const itemIds: string[] = [];
+  type Items = Awaited<ReturnType<typeof projects.listProjectItems>>;
+  async function readItemsWhen(ready: (items: Items) => boolean): Promise<Items> {
+    for (let attempt = 1; ; attempt++) {
+      const items = await projects.listProjectItems(sandbox.projectId, fieldId!);
+      if (ready(items) || attempt === 12) return items;
+      core.info(`Waiting for GitHub to expose the written fixture state (attempt ${attempt}/12).`);
+      await delay(2000);
+    }
+  }
   try {
     const created = await github.graphql<{ createProjectV2Field: { projectV2Field: { id: string } } }>(`mutation($input: CreateProjectV2FieldInput!) {
       createProjectV2Field(input: $input) { projectV2Field { ... on ProjectV2IterationField { id } } }
@@ -53,15 +62,10 @@ export async function run(github: Octokit, core: IntegrationCore): Promise<void>
       itemIds.push(itemId);
       await projects.setIteration(sandbox.projectId, itemId, fieldId, iteration.id);
     }
-    let bindings = (await projects.listProjectItems(sandbox.projectId, fieldId))
-      .filter(item => itemIds.includes(item.id));
     // Project connections can lag behind successful item mutations. Retry reads only.
-    for (let attempt = 1; bindings.length !== 2 && attempt < 12; attempt++) {
-      core.info(`Waiting for both fixture items in the project (${bindings.length}/2, attempt ${attempt}/12).`);
-      await delay(2000);
-      bindings = (await projects.listProjectItems(sandbox.projectId, fieldId))
-        .filter(item => itemIds.includes(item.id));
-    }
+    const bindings = (await readItemsWhen(items => itemIds.every((id, index) =>
+      items.some(item => item.id === id && item.iterationId === before.iterations[index]?.id))))
+      .filter(item => itemIds.includes(item.id));
     assert.equal(bindings.length, 2);
     const input = { projectOwner: owner, projectNumber: number, iterationFieldName: fieldName,
       reminderTitle, currentDateOverride: today };
@@ -80,14 +84,16 @@ export async function run(github: Octokit, core: IntegrationCore): Promise<void>
     assert.deepEqual({ ...next, id: undefined }, {
       id: undefined, title: 'Sprint 43', startDate: nextStart.toISOString().slice(0, 10), duration: 7,
     });
-    const itemsAfter = await projects.listProjectItems(sandbox.projectId, fieldId);
+    const readyAfter = (items: Items) => items.some(item => item.title === reminderTitle && item.iterationId === next.id)
+      && bindings.every(binding => items.some(item => item.id === binding.id && item.iterationId === binding.iterationId));
+    const itemsAfter = await readItemsWhen(readyAfter);
     const reminders = itemsAfter.filter(item => item.title === reminderTitle && item.contentType === 'DraftIssue');
     assert.equal(reminders.length, 1);
     assert.equal(reminders[0]?.iterationId, next.id);
     assert.deepEqual(itemsAfter.filter(item => itemIds.includes(item.id)), bindings);
     await ensureNextIterationReminder(input, projects, core);
     assert.deepEqual(await projects.getIterationMetadata(owner, number, fieldName), after);
-    const repeatedItems = await projects.listProjectItems(sandbox.projectId, fieldId);
+    const repeatedItems = await readItemsWhen(readyAfter);
     assert.deepEqual(repeatedItems.filter(item => itemIds.includes(item.id)), bindings);
     assert.deepEqual(repeatedItems.filter(item => item.title === reminderTitle), reminders);
     core.info(`Created ${next.id}; repeat kept all iteration IDs, both issue bindings and one reminder.`);
