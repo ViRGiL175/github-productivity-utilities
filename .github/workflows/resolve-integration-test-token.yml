@@ -1,6 +1,6 @@
-# Назначение: централизованно резолвит токен для интеграционных тестов из PAT или GitHub App.
-# Когда использовать: как reusable workflow в test-* сценариях, чтобы не дублировать валидацию auth_mode и выпуск app token.
-name: Resolve integration test token
+# Назначение: проверяет наличие учётных данных для PAT или GitHub App перед интеграционными тестами.
+# Токен выбирается внутри каждого job: секреты нельзя передавать через меж-job outputs.
+name: Validate integration test credentials
 
 on:
   workflow_call:
@@ -13,9 +13,6 @@ on:
         required: true
         type: string
     outputs:
-      token:
-        description: Token to use for integration test API calls
-        value: ${{ jobs.resolve-token.outputs.token }}
       auth_mode:
         description: Effective auth mode used by the test run
         value: ${{ inputs.auth_mode }}
@@ -59,60 +56,3 @@ jobs:
               exit 1
               ;;
           esac
-
-  resolve-token:
-    needs: validate
-    runs-on: ubuntu-latest
-    outputs:
-      token: ${{ steps.resolve.outputs.token }}
-    steps:
-      - name: Normalize GitHub App private key
-        if: ${{ inputs.auth_mode == 'app' }}
-        id: normalize-key
-        shell: bash
-        env:
-          RAW_PRIVATE_KEY: ${{ secrets.app_private_key }}
-        run: |
-          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
-          while IFS= read -r line; do
-            printf '::add-mask::%s\n' "$line"
-          done <<< "$NORMALIZED_KEY"
-          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
-
-      - name: Create GitHub App installation token
-        if: ${{ inputs.auth_mode == 'app' }}
-        id: app-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.app_id }}
-          private-key: ${{ steps.normalize-key.outputs.private_key }}
-          owner: ${{ inputs.installation_owner }}
-          skip-token-revoke: true
-
-      - name: Publish resolved integration token
-        id: resolve
-        shell: bash
-        env:
-          AUTH_MODE: ${{ inputs.auth_mode }}
-          PAT_TOKEN: ${{ secrets.pat_token }}
-          APP_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          case "$AUTH_MODE" in
-            pat)
-              TOKEN="$PAT_TOKEN"
-              ;;
-            app)
-              TOKEN="$APP_TOKEN"
-              ;;
-            *)
-              echo "Unsupported auth_mode: $AUTH_MODE" >&2
-              exit 1
-              ;;
-          esac
-
-          if [ -z "$TOKEN" ]; then
-            echo "Resolved token is empty for auth_mode=$AUTH_MODE" >&2
-            exit 1
-          fi
-
-          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
