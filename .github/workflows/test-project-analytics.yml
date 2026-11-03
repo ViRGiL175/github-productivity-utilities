@@ -44,7 +44,7 @@ jobs:
       GRAFANA_TLS_KEY_FILE: ${{ github.workspace }}/.local/secrets/grafana-tls.key
       GRAFANA_TLS_CA_FILE: ${{ github.workspace }}/.local/tls/ca.crt
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: actions/setup-node@v7

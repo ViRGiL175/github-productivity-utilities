@@ -525,7 +525,7 @@ jobs:
 
             core.info(`Child issue project item ${projectItem.id} inherited iteration ${targetIterationId}.`);
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Reconcile an existing child after the parent Sprint changes
         uses: actions/github-script@v8
