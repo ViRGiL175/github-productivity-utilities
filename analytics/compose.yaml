@@ -1,0 +1,83 @@
+name: single-project-analytics
+
+services:
+  postgres:
+    image: postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: project_analytics
+      POSTGRES_USER: analytics_admin
+      POSTGRES_PASSWORD_FILE: /run/secrets/database_admin_password
+    ports:
+      - "127.0.0.1:${PGPORT:-55432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres-init.sh:/docker-entrypoint-initdb.d/01-roles.sh:ro
+    secrets:
+      - database_admin_password
+      - database_writer_password
+      - database_reader_password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U analytics_admin -d project_analytics"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    security_opt: ["no-new-privileges:true"]
+
+  grafana:
+    image: grafana/grafana:13.2.4@sha256:dbbc38ea21103cefb50396340cd88afec779c7e070b0a7bf5a75b4ce46651d3f
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/etc/grafana/local-start.sh"]
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3301}:3000"
+    environment:
+      GF_SERVER_ROOT_URL: http://localhost:${GRAFANA_PORT:-3301}/
+      GF_SECURITY_ADMIN_USER: localadmin
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
+      GF_SECURITY_SECRET_KEY__FILE: /run/secrets/grafana_encryption_key
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+      GF_SECURITY_COOKIE_SAMESITE: strict
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_USERS_ALLOW_ORG_CREATE: "false"
+      GF_PUBLIC_DASHBOARDS_ENABLED: "false"
+      GF_SNAPSHOTS_ENABLED: "false"
+      GF_SNAPSHOTS_EXTERNAL_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana-start.sh:/etc/grafana/local-start.sh:ro
+      - ./grafana-datasource.yaml:/etc/grafana/provisioning/datasources/analytics.yaml:ro
+    secrets:
+      - database_reader_password
+      - grafana_admin_password
+      - grafana_encryption_key
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+
+secrets:
+  database_admin_password:
+    file: ../.local/secrets/database-admin
+  database_writer_password:
+    file: ../.local/secrets/database-writer
+  database_reader_password:
+    file: ../.local/secrets/database-reader
+  grafana_admin_password:
+    file: ../.local/secrets/grafana-admin
+  grafana_encryption_key:
+    file: ../.local/secrets/grafana-encryption
+
+volumes:
+  postgres-data:
+  grafana-data:
