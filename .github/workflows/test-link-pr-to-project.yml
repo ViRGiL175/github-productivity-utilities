@@ -25,7 +25,8 @@ on:
       - 'test/**'
 
 concurrency:
-  group: ${{ github.workflow }}
+  group: integration-org-sandbox
+  queue: max
   cancel-in-progress: false
 
 permissions:
@@ -1422,7 +1423,7 @@ jobs:
                 }
               }
             `;
-            const data = await github.graphql(query, {
+            const readLinkedIssues = () => github.graphql(query, {
               pullNodeId: process.env.PULL_NODE_ID,
               primaryIssueNodeId: process.env.PRIMARY_ISSUE_NODE_ID,
               secondaryIssueNodeId: process.env.SECONDARY_ISSUE_NODE_ID,
@@ -1430,6 +1431,15 @@ jobs:
               statusFieldName: process.env.STATUS_FIELD_NAME,
               iterationFieldName: process.env.ITERATION_FIELD_NAME,
             });
+            let data = await readLinkedIssues();
+            const linksVisible = () => [data.primaryIssue, data.secondaryIssue, data.unsprintedIssue].every(
+              issue => issue?.closedByPullRequestsReferences?.nodes?.filter(pr => pr.id === process.env.PULL_NODE_ID).length === 1,
+            );
+            for (let attempt = 1; !linksVisible() && attempt < 12; attempt++) {
+              core.info(`Waiting for GitHub closing relationship index (attempt ${attempt}/12).`);
+              await new Promise(resolve => setTimeout(resolve, 2000));
+              data = await readLinkedIssues();
+            }
             for (const issue of [data.primaryIssue, data.secondaryIssue, data.unsprintedIssue]) {
               if (issue?.closedByPullRequestsReferences?.nodes?.filter((pr) => pr.id === process.env.PULL_NODE_ID).length !== 1) {
                 throw new Error('Expected the original native link and both newly added links to be present exactly once.');

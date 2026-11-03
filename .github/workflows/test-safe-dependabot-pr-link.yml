@@ -23,7 +23,8 @@ on:
       - 'src/github/PullRequestRepository.ts'
 
 concurrency:
-  group: ${{ github.workflow }}
+  group: integration-org-sandbox
+  queue: max
   cancel-in-progress: false
 
 permissions:

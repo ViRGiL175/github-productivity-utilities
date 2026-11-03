@@ -94,6 +94,8 @@ ensure-next-iteration-reminder.yml добавляет одну следующу�
 
 В GitHub одноимённый секрет нужен в **Actions** и **Dependabot**: PR Dependabot не получает Actions secrets. У PAT есть срок действия; заменяйте его в обоих хранилищах до истечения срока. Значение токена не следует сохранять в репозитории или логах.
 
+Проверки, изменяющие общий тестовый Project, и analytics E2E используют одну concurrency-группу с `queue: max`. Они ждут друг друга без отмены ожидающих запусков, чтобы параллельные изменения не ломали снимки analytics и выбор тестовых PR. Публичные read-only проверки и unit-тесты могут работать параллельно.
+
 `test-sync-sub-issue-sprint`, `test-link-pr-to-project`, `test-safe-dependabot-pr-link`, `test-ensure-next-iteration-reminder` и `test-field-updates` работают с проектом `ViRGiL-GH-Productivity#1` в двух режимах:
 
 - `pat` — автоматический режим с `CI_SANDBOX_TOKEN`; issue создаются в backlog, PR — в client;
