@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       auth_mode:
-        description: Token source to use for integration tests (pat=user sandbox, app=org sandbox)
+        description: Token source to use for integration tests (pat=CI_SANDBOX_TOKEN, app=GitHub App; both use org sandbox)
         required: false
         default: pat
         type: choice
@@ -15,6 +15,7 @@ on:
           - app
   pull_request:
     paths:
+      - '.github/workflows/resolve-integration-test-token.yml'
       - '.github/workflows/sync-sub-issue-sprint.yml'
       - '.github/workflows/test-sync-sub-issue-sprint.yml'
       - '.github/workflows/test-typescript.yml'
@@ -25,7 +26,8 @@ on:
       - 'tsconfig.json'
 
 concurrency:
-  group: ${{ github.workflow }}
+  group: integration-org-sandbox
+  queue: max
   cancel-in-progress: false
 
 permissions:
@@ -35,25 +37,25 @@ permissions:
 
 env:
   AUTH_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
-  INSTALLATION_OWNER: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-  PROJECT_OWNER: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-  PROJECT_NUMBER: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10' }}
+  INSTALLATION_OWNER: ViRGiL-GH-Productivity
+  PROJECT_OWNER: ViRGiL-GH-Productivity
+  PROJECT_NUMBER: 1
   ITERATION_FIELD_NAME: Iteration
-  REPO_OWNER: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-  REPO_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'scrum-test-backlog' || 'github-productivity-utilities' }}
+  REPO_OWNER: ViRGiL-GH-Productivity
+  REPO_NAME: scrum-test-backlog
 
 jobs:
   resolve-auth:
-    name: Resolve integration auth token
+    name: Validate integration auth configuration
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     uses: ./.github/workflows/resolve-integration-test-token.yml
     with:
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
-      installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+      installation_owner: ViRGiL-GH-Productivity
     secrets:
-      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
-      app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
-      app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+      pat_token: ${{ secrets.CI_SANDBOX_TOKEN }}
+      app_id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
+      app_private_key: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
 
   prepare-sync-scenario:
     name: Prepare sub-issue sync scenario
@@ -75,7 +77,7 @@ jobs:
         id: normalize-key
         shell: bash
         env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
         run: |
           NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
           while IFS= read -r line; do
@@ -88,7 +90,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
@@ -97,7 +99,7 @@ jobs:
         id: auth
         shell: bash
         env:
-          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          DIRECT_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           case "$AUTH_MODE" in
@@ -299,17 +301,43 @@ jobs:
                 projectId: project.id,
                 iterationFieldId: iterationField.id,
                 targetIterationId: iterations[0].id,
-                alternativeIterationId: iterations[1].id,
+                // Keep interior iterations free for the concurrent empty-reminder scenario.
+                alternativeIterationId: iterations[iterations.length - 1].id,
               };
             }
 
             async function addIssueToProject(projectId, issueNodeId) {
-              const data = await github.graphql(ADD_PROJECT_ITEM_MUTATION, {
-                projectId,
-                contentId: issueNodeId,
-              });
+              async function findItem() {
+                const data = await github.graphql(`query($id: ID!) {
+                  node(id: $id) { ... on Issue {
+                    projectItems(first: 100) { nodes { id project { id } } }
+                  } }
+                }`, { id: issueNodeId });
+                return data.node.projectItems.nodes.find(item => item?.project?.id === projectId)?.id;
+              }
 
-              return data.addProjectV2ItemById.item.id;
+              const existing = await findItem();
+              if (existing) {
+                core.info(`Reusing auto-added fixture item ${existing}.`);
+                return existing;
+              }
+              try {
+                const data = await github.graphql(ADD_PROJECT_ITEM_MUTATION, {
+                  projectId,
+                  contentId: issueNodeId,
+                });
+                return data.addProjectV2ItemById.item.id;
+              } catch (error) {
+                // Auto-add can win the race between the lookup and mutation.
+                if (error.errors?.some(entry => entry.message === 'Content already exists in this project')) {
+                  const added = await findItem();
+                  if (added) {
+                    core.info(`Reusing fixture item ${added} after concurrent auto-add.`);
+                    return added;
+                  }
+                }
+                throw error;
+              }
             }
 
             async function setIteration(projectId, itemId, fieldId, iterationId) {
@@ -322,6 +350,7 @@ jobs:
             }
 
             const project = await getProjectMetadata();
+            core.setOutput('project_id', project.projectId);
 
             const parentResponse = await github.request('POST /repos/{owner}/{repo}/issues', {
               owner,
@@ -331,6 +360,8 @@ jobs:
               headers,
             });
             const parentIssue = parentResponse.data;
+            core.setOutput('parent_number', String(parentIssue.number));
+            core.setOutput('parent_node_id', parentIssue.node_id);
 
             const childResponse = await github.request('POST /repos/{owner}/{repo}/issues', {
               owner,
@@ -340,6 +371,9 @@ jobs:
               headers,
             });
             const childIssue = childResponse.data;
+            core.setOutput('child_number', String(childIssue.number));
+            core.setOutput('child_node_id', childIssue.node_id);
+            core.setOutput('child_id', String(childIssue.id));
 
             const parentProjectItemId = await addIssueToProject(project.projectId, parentIssue.node_id);
             await setIteration(project.projectId, parentProjectItemId, project.iterationFieldId, project.targetIterationId);
@@ -352,14 +386,8 @@ jobs:
               headers,
             });
 
-            core.setOutput('project_id', project.projectId);
             core.setOutput('target_iteration_id', project.targetIterationId);
             core.setOutput('alternative_iteration_id', project.alternativeIterationId);
-            core.setOutput('parent_number', String(parentIssue.number));
-            core.setOutput('parent_node_id', parentIssue.node_id);
-            core.setOutput('child_number', String(childIssue.number));
-            core.setOutput('child_node_id', childIssue.node_id);
-            core.setOutput('child_id', String(childIssue.id));
 
   run-sync-scenario:
     name: Run sub-issue sync scenario
@@ -369,19 +397,19 @@ jobs:
       - prepare-sync-scenario
     uses: ./.github/workflows/sync-sub-issue-sprint.yml
     with:
-      project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-      project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
+      project_owner: ViRGiL-GH-Productivity
+      project_number: 1
       iteration_field_name: Iteration
       issue_number: ${{ needs.prepare-sync-scenario.outputs.child_number }}
-      repo_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-      repo_name: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'scrum-test-backlog' || 'github-productivity-utilities' }}
+      repo_owner: ViRGiL-GH-Productivity
+      repo_name: scrum-test-backlog
       action: opened
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
-      installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+      installation_owner: ViRGiL-GH-Productivity
     secrets:
-      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
-      app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
-      app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+      pat_token: ${{ secrets.CI_SANDBOX_TOKEN }}
+      app_id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
+      app_private_key: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
 
   assert-initial-sync-scenario:
     name: Assert initial sub-issue sync scenario
@@ -397,7 +425,7 @@ jobs:
         id: normalize-key
         shell: bash
         env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
         run: |
           NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
           while IFS= read -r line; do
@@ -410,7 +438,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
@@ -419,7 +447,7 @@ jobs:
         id: auth
         shell: bash
         env:
-          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          DIRECT_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           case "$AUTH_MODE" in
@@ -573,19 +601,19 @@ jobs:
       - assert-initial-sync-scenario
     uses: ./.github/workflows/sync-sub-issue-sprint.yml
     with:
-      project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-      project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
+      project_owner: ViRGiL-GH-Productivity
+      project_number: 1
       iteration_field_name: Iteration
       issue_number: ${{ needs.prepare-sync-scenario.outputs.child_number }}
-      repo_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-      repo_name: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'scrum-test-backlog' || 'github-productivity-utilities' }}
+      repo_owner: ViRGiL-GH-Productivity
+      repo_name: scrum-test-backlog
       action: opened
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
-      installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+      installation_owner: ViRGiL-GH-Productivity
     secrets:
-      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
-      app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
-      app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+      pat_token: ${{ secrets.CI_SANDBOX_TOKEN }}
+      app_id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
+      app_private_key: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
 
   assert-sync-scenario:
     name: Assert sub-issue sync scenario
@@ -601,7 +629,7 @@ jobs:
         id: normalize-key
         shell: bash
         env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
         run: |
           NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
           while IFS= read -r line; do
@@ -614,7 +642,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
@@ -623,7 +651,7 @@ jobs:
         id: auth
         shell: bash
         env:
-          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          DIRECT_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           case "$AUTH_MODE" in
@@ -718,7 +746,7 @@ jobs:
         id: normalize-key
         shell: bash
         env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
         run: |
           NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
           while IFS= read -r line; do
@@ -731,7 +759,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
@@ -740,7 +768,7 @@ jobs:
         id: auth
         shell: bash
         env:
-          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          DIRECT_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           case "$AUTH_MODE" in
@@ -763,7 +791,7 @@ jobs:
 
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
-      - name: Remove project items and close issues
+      - name: Archive project items and close issues
         uses: actions/github-script@v8
         env:
           PROJECT_ID: ${{ needs.prepare-sync-scenario.outputs.project_id }}
@@ -814,15 +842,15 @@ jobs:
               }
             `;
 
-            const DELETE_ITEM_MUTATION = `
-              mutation($input: DeleteProjectV2ItemInput!) {
-                deleteProjectV2Item(input: $input) {
-                  deletedItemId
+            const ARCHIVE_ITEM_MUTATION = `
+              mutation($input: ArchiveProjectV2ItemInput!) {
+                archiveProjectV2Item(input: $input) {
+                  item { id }
                 }
               }
             `;
 
-            async function deleteProjectItemForNode(nodeId) {
+            async function archiveProjectItemForNode(nodeId) {
               if (!nodeId || !projectId) {
                 return;
               }
@@ -837,7 +865,7 @@ jobs:
                 return;
               }
 
-              await github.graphql(DELETE_ITEM_MUTATION, {
+              await github.graphql(ARCHIVE_ITEM_MUTATION, {
                 input: {
                   projectId,
                   itemId: item.id,
@@ -862,8 +890,8 @@ jobs:
               }
             }
 
-            await deleteProjectItemForNode(childNodeId);
-            await deleteProjectItemForNode(parentNodeId);
+            await archiveProjectItemForNode(childNodeId);
+            await archiveProjectItemForNode(parentNodeId);
 
             if (childNumber > 0) {
               await github.request('PATCH /repos/{owner}/{repo}/issues/{issue_number}', {
