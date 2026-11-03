@@ -37,7 +37,7 @@ jobs:
       text: 'No links here, just plain text.'
       auth_mode: pat
     secrets:
-      token: ${{ github.token }}
+      token: ${{ secrets.GITHUB_TOKEN }}
 
   assert-empty:
     name: '[1] Assert — output is empty for link-free text'
@@ -65,7 +65,7 @@ jobs:
       text: 'Фикс для #84 в этом репо.'
       auth_mode: pat
     secrets:
-      token: ${{ github.token }}
+      token: ${{ secrets.GITHUB_TOKEN }}
 
   assert-short-ref:
     name: '[2] Assert — short ref resolves'
@@ -103,7 +103,7 @@ jobs:
         https://redirect.github.com/ViRGiL175/github-productivity-utilities/pull/84
       auth_mode: pat
     secrets:
-      token: ${{ github.token }}
+      token: ${{ secrets.GITHUB_TOKEN }}
 
   assert-dedup:
     name: '[3] Assert — exactly one item, not two'
@@ -140,7 +140,7 @@ jobs:
         Release notes: https://github.com/actions/checkout/releases/tag/v4.0.0
       auth_mode: pat
     secrets:
-      token: ${{ github.token }}
+      token: ${{ secrets.GITHUB_TOKEN }}
 
   assert-release:
     name: '[4] Assert — release context fetched'
@@ -175,7 +175,7 @@ jobs:
       text: 'Original tracking issue: https://github.com/microsoft/vscode/issues/1'
       auth_mode: pat
     secrets:
-      token: ${{ github.token }}
+      token: ${{ secrets.GITHUB_TOKEN }}
 
   assert-stable-issue:
     name: '[5] Assert — issue title appears in output'
@@ -211,7 +211,7 @@ jobs:
       text: 'Uses https://github.com/actions/checkout/pull/1 as reference.'
       auth_mode: pat
     secrets:
-      token: ${{ github.token }}
+      token: ${{ secrets.GITHUB_TOKEN }}
 
   assert-stable-pr:
     name: '[6] Assert — PR/issue content fetched for actions/checkout#1'
@@ -247,7 +247,7 @@ jobs:
       text: 'Historic: https://github.com/torvalds/linux/commit/1da177e4c3f41524e886b7f1b8a0c1fc7321cac'
       auth_mode: pat
     secrets:
-      token: ${{ github.token }}
+      token: ${{ secrets.GITHUB_TOKEN }}
 
   assert-stable-commit:
     name: '[7] Assert — commit message fetched'
