@@ -1,19 +1,29 @@
-name: Test field updates with App
+name: Test field updates
 
 on:
   workflow_dispatch:
+    inputs:
+      auth_mode:
+        description: Token source for org sandbox (pat or app)
+        required: false
+        default: pat
+        type: choice
+        options: [pat, app]
   push:
     branches: [gff-pr-field-updates]
     paths: ['src/**', 'itest/field-updates.ts', 'itest/runtime.ts', '.github/workflows/test-field-updates.yml', 'package*.json']
   pull_request:
-    paths: ['src/github/FieldController.ts', 'src/automations/field-updates/**', 'itest/field-updates.ts', 'itest/runtime.ts', '.github/workflows/test-field-updates.yml']
+    paths: ['src/github/FieldController.ts', 'src/automations/field-updates/**', 'itest/field-updates.ts', 'itest/runtime.ts', '.github/workflows/test-field-updates.yml', 'package*.json']
 
 permissions:
   contents: read
 
 concurrency:
-  group: test-field-updates-app
+  group: test-field-updates-sandbox
   cancel-in-progress: false
+
+env:
+  AUTH_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
 
 jobs:
   test-fields:
@@ -27,6 +37,7 @@ jobs:
           node-version: 24
       - run: npm ci
       - name: Normalize existing App key
+        if: ${{ env.AUTH_MODE == 'app' }}
         id: normalize-key
         shell: bash
         env:
@@ -38,6 +49,7 @@ jobs:
           done <<< "$NORMALIZED_KEY"
           printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
       - uses: actions/create-github-app-token@v2
+        if: ${{ env.AUTH_MODE == 'app' }}
         id: app-token
         with:
           app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
@@ -46,7 +58,7 @@ jobs:
       - name: Exercise real native and project APIs and both PR paths
         uses: actions/github-script@v8
         with:
-          github-token: ${{ steps.app-token.outputs.token }}
+          github-token: ${{ env.AUTH_MODE == 'app' && steps.app-token.outputs.token || secrets.CI_SANDBOX_TOKEN }}
           script: |
             const { run } = await import('${{ github.workspace }}/itest/field-updates.ts');
             await run({ github, context, core });

@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       auth_mode:
-        description: Token source to use for integration tests (pat=user sandbox, app=org sandbox)
+        description: Token source to use for integration tests (pat=CI_SANDBOX_TOKEN, app=GitHub App; both use org sandbox)
         required: false
         default: pat
         type: choice
@@ -15,6 +15,8 @@ on:
           - app
   pull_request:
     paths:
+      - '.github/workflows/resolve-integration-test-token.yml'
+      - 'package*.json'
       - '.github/workflows/ensure-next-iteration-reminder.yml'
       - '.github/workflows/test-ensure-next-iteration-reminder.yml'
       - 'src/automations/ensure-next-iteration-reminder/**'
@@ -33,23 +35,23 @@ permissions:
 
 env:
   AUTH_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
-  INSTALLATION_OWNER: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-  PROJECT_OWNER: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-  PROJECT_NUMBER: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10' }}
+  INSTALLATION_OWNER: ViRGiL-GH-Productivity
+  PROJECT_OWNER: ViRGiL-GH-Productivity
+  PROJECT_NUMBER: 1
   ITERATION_FIELD_NAME: Iteration
 
 jobs:
   resolve-auth:
-    name: Resolve integration auth token
+    name: Validate integration auth configuration
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     uses: ./.github/workflows/resolve-integration-test-token.yml
     with:
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
-      installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+      installation_owner: ViRGiL-GH-Productivity
     secrets:
-      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
-      app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
-      app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+      pat_token: ${{ secrets.CI_SANDBOX_TOKEN }}
+      app_id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
+      app_private_key: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
 
   create-next-iteration-scenario:
     name: Create next iteration and preserve history
@@ -65,7 +67,7 @@ jobs:
         id: normalize-key
         shell: bash
         env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
         run: |
           NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
           while IFS= read -r line; do
@@ -78,7 +80,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
@@ -87,7 +89,7 @@ jobs:
         id: auth
         shell: bash
         env:
-          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          DIRECT_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           case "$AUTH_MODE" in
@@ -134,7 +136,7 @@ jobs:
         id: normalize-key
         shell: bash
         env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
         run: |
           NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
           while IFS= read -r line; do
@@ -147,7 +149,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
@@ -156,7 +158,7 @@ jobs:
         id: auth
         shell: bash
         env:
-          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          DIRECT_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           case "$AUTH_MODE" in
@@ -438,17 +440,17 @@ jobs:
       - prepare-reminder-create-scenario
     uses: ./.github/workflows/ensure-next-iteration-reminder.yml
     with:
-      project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-      project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
+      project_owner: ViRGiL-GH-Productivity
+      project_number: 1
       iteration_field_name: Iteration
       reminder_title: ${{ needs.prepare-reminder-create-scenario.outputs.reminder_title }}
       current_date_override: ${{ needs.prepare-reminder-create-scenario.outputs.current_date_override }}
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
-      installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+      installation_owner: ViRGiL-GH-Productivity
     secrets:
-      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
-      app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
-      app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+      pat_token: ${{ secrets.CI_SANDBOX_TOKEN }}
+      app_id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
+      app_private_key: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
 
   assert-reminder-create-scenario:
     name: Assert reminder create scenario
@@ -464,7 +466,7 @@ jobs:
         id: normalize-key
         shell: bash
         env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
         run: |
           NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
           while IFS= read -r line; do
@@ -477,7 +479,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
@@ -486,7 +488,7 @@ jobs:
         id: auth
         shell: bash
         env:
-          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          DIRECT_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           case "$AUTH_MODE" in
@@ -631,17 +633,17 @@ jobs:
       - assert-reminder-create-scenario
     uses: ./.github/workflows/ensure-next-iteration-reminder.yml
     with:
-      project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-      project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
+      project_owner: ViRGiL-GH-Productivity
+      project_number: 1
       iteration_field_name: Iteration
       reminder_title: ${{ needs.prepare-reminder-create-scenario.outputs.reminder_title }}
       current_date_override: ${{ needs.prepare-reminder-create-scenario.outputs.current_date_override }}
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
-      installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+      installation_owner: ViRGiL-GH-Productivity
     secrets:
-      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
-      app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
-      app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+      pat_token: ${{ secrets.CI_SANDBOX_TOKEN }}
+      app_id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
+      app_private_key: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
 
   assert-reminder-idempotency-scenario:
     name: Assert reminder idempotency scenario
@@ -657,7 +659,7 @@ jobs:
         id: normalize-key
         shell: bash
         env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
         run: |
           NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
           while IFS= read -r line; do
@@ -670,7 +672,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
@@ -679,7 +681,7 @@ jobs:
         id: auth
         shell: bash
         env:
-          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          DIRECT_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           case "$AUTH_MODE" in
@@ -807,7 +809,7 @@ jobs:
         id: normalize-key
         shell: bash
         env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
         run: |
           NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
           while IFS= read -r line; do
@@ -820,7 +822,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
@@ -829,7 +831,7 @@ jobs:
         id: auth
         shell: bash
         env:
-          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          DIRECT_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           case "$AUTH_MODE" in
@@ -1177,17 +1179,17 @@ jobs:
       - prepare-reminder-empty-current-scenario
     uses: ./.github/workflows/ensure-next-iteration-reminder.yml
     with:
-      project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-      project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
+      project_owner: ViRGiL-GH-Productivity
+      project_number: 1
       iteration_field_name: Iteration
       reminder_title: ${{ needs.prepare-reminder-empty-current-scenario.outputs.reminder_title }}
       current_date_override: ${{ needs.prepare-reminder-empty-current-scenario.outputs.current_date_override }}
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
-      installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+      installation_owner: ViRGiL-GH-Productivity
     secrets:
-      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
-      app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
-      app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+      pat_token: ${{ secrets.CI_SANDBOX_TOKEN }}
+      app_id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
+      app_private_key: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
 
   assert-reminder-empty-current-scenario:
     name: Assert reminder empty current scenario
@@ -1203,7 +1205,7 @@ jobs:
         id: normalize-key
         shell: bash
         env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
         run: |
           NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
           while IFS= read -r line; do
@@ -1216,7 +1218,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
@@ -1225,7 +1227,7 @@ jobs:
         id: auth
         shell: bash
         env:
-          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          DIRECT_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           case "$AUTH_MODE" in
@@ -1354,7 +1356,7 @@ jobs:
         id: normalize-key
         shell: bash
         env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
         run: |
           NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
           while IFS= read -r line; do
@@ -1367,7 +1369,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
@@ -1376,7 +1378,7 @@ jobs:
         id: auth
         shell: bash
         env:
-          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          DIRECT_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           case "$AUTH_MODE" in
@@ -1499,7 +1501,7 @@ jobs:
         id: normalize-key
         shell: bash
         env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
         run: |
           NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
           while IFS= read -r line; do
@@ -1512,7 +1514,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
@@ -1521,7 +1523,7 @@ jobs:
         id: auth
         shell: bash
         env:
-          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          DIRECT_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           case "$AUTH_MODE" in
