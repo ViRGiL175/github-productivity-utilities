@@ -5,6 +5,11 @@ name: Link PR to Project
 on:
   workflow_call:
     inputs:
+      field_updates:
+        description: Optional YAML with project/issue field dictionaries and force (default false)
+        type: string
+        required: false
+        default: ''
       project_owner:
         description: Login of the organization or user that owns the Project V2 board
         required: true
@@ -225,7 +230,7 @@ jobs:
       - name: Create GitHub App installation token
         if: ${{ env.DIRECT_TOKEN == '' && env.AUTH_MODE == 'app' }}
         id: app-token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.app_id }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
@@ -263,15 +268,21 @@ jobs:
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Checkout automation implementation
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
           path: .github-productivity-utilities-runtime
 
+      - name: Install optional field updates parser
+        if: inputs.field_updates != ''
+        working-directory: .github-productivity-utilities-runtime
+        run: npm ci --omit=dev --ignore-scripts
+
       - name: Sync PR metadata with project
         uses: actions/github-script@v9
         env:
+          FIELD_UPDATES: ${{ inputs.field_updates }}
           PROJECT_OWNER: ${{ inputs.project_owner }}
           PROJECT_NUMBER: ${{ inputs.project_number }}
           BACKLOG_REPO: ${{ inputs.backlog_repo }}
@@ -285,7 +296,9 @@ jobs:
           PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number || github.event.pull_request.number }}
           PULL_REQUEST_REPO_OWNER: ${{ inputs.pull_request_repo_owner || github.event.pull_request.base.repo.owner.login || github.repository_owner }}
           PULL_REQUEST_REPO_NAME: ${{ inputs.pull_request_repo_name || github.event.pull_request.base.repo.name || github.repository }}
-          PULL_REQUEST_BODY: ${{ inputs.pull_request_body || github.event.pull_request.body || '' }}
+          # The caller event can describe another PR (for example, an integration-test PR).
+          # Without an explicit body, the implementation reads the target PR from its repository.
+          PULL_REQUEST_BODY: ${{ inputs.pull_request_body || '' }}
           HEAD_REF: ${{ inputs.head_ref || github.event.pull_request.head.ref || '' }}
           REPOSITORIES: ${{ inputs.repositories }}
           RECONCILE_PULL_REQUEST_NUMBER: ${{ inputs.reconcile_pull_request_number }}

@@ -2,3 +2,5 @@
 .secrets
 .act-artifacts/
 node_modules/
+.local/
+dist/
