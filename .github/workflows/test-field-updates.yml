@@ -49,7 +49,7 @@ jobs:
             printf '::add-mask::%s\n' "$line"
           done <<< "$NORMALIZED_KEY"
           printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
-      - uses: actions/create-github-app-token@v2
+      - uses: actions/create-github-app-token@v3
         if: ${{ env.AUTH_MODE == 'app' }}
         id: app-token
         with:

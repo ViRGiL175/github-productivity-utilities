@@ -92,7 +92,7 @@ jobs:
             -extfile .local/tls/server.ext -out "$GRAFANA_TLS_CERT_FILE"
       - name: Create sandbox fixture token
         id: fixture-token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
           private-key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
