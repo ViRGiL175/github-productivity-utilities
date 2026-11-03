@@ -10,6 +10,7 @@ export interface Configuration {
   privateKeyFile: string;
   keyReadApproved: boolean;
   database: PoolConfig;
+  syncIntervalMs: number;
 }
 
 function required(name: string): string {
@@ -19,6 +20,10 @@ function required(name: string): string {
 }
 
 export async function configuration(): Promise<Configuration> {
+  const syncIntervalMs = Number(process.env.SYNC_INTERVAL_SECONDS ?? '3600') * 1000;
+  if (!Number.isSafeInteger(syncIntervalMs) || syncIntervalMs <= 0) {
+    throw new Error('SYNC_INTERVAL_SECONDS must be a positive number of seconds.');
+  }
   const number = Number(required('PROJECT_NUMBER'));
   const owner = required('PROJECT_OWNER');
   if (!Number.isSafeInteger(number) || number < 1 || !/^[A-Za-z0-9-]+$/.test(owner)) {
@@ -33,6 +38,7 @@ export async function configuration(): Promise<Configuration> {
     appId: required('GITHUB_APP_ID'),
     privateKeyFile: required('GITHUB_APP_PRIVATE_KEY_FILE'),
     keyReadApproved: process.env.ALLOW_GITHUB_APP_KEY_READ === 'true',
+    syncIntervalMs,
     database: {
       host: process.env.PGHOST ?? '127.0.0.1',
       port: Number(process.env.PGPORT ?? '55432'),
