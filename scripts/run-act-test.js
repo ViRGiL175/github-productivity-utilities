@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
-const { existsSync, readFileSync } = require('node:fs');
-const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 
-const repoRoot = path.resolve(__dirname, '..');
+const repoRoot = path.resolve(import.meta.dirname, '..');
 const workflowEntries = [
   {
     name: 'test-ai-label-issue.yml',
@@ -24,32 +24,37 @@ const workflowEntries = [
   {
     name: 'test-ensure-next-iteration-reminder.yml',
     path: '.github/workflows/test-ensure-next-iteration-reminder.yml',
-    secrets: ['ORG_PROJECT_TOKEN', 'ORG_AUTOMATION_APP_ID', 'ORG_AUTOMATION_APP_PRIVATE_KEY'],
+    secrets: ['CI_SANDBOX_TOKEN', 'ORG_AUTOMATION_APP_ID', 'ORG_AUTOMATION_APP_PRIVATE_KEY'],
   },
   {
     name: 'test-link-pr-to-project.yml',
     path: '.github/workflows/test-link-pr-to-project.yml',
-    secrets: ['ORG_PROJECT_TOKEN', 'ORG_AUTOMATION_APP_ID', 'ORG_AUTOMATION_APP_PRIVATE_KEY'],
+    secrets: ['CI_SANDBOX_TOKEN', 'ORG_AUTOMATION_APP_ID', 'ORG_AUTOMATION_APP_PRIVATE_KEY'],
   },
   {
     name: 'test-safe-dependabot-pr-link.yml',
     path: '.github/workflows/test-safe-dependabot-pr-link.yml',
-    secrets: ['ORG_PROJECT_TOKEN', 'ORG_AUTOMATION_APP_ID', 'ORG_AUTOMATION_APP_PRIVATE_KEY'],
+    secrets: ['CI_SANDBOX_TOKEN', 'ORG_AUTOMATION_APP_ID', 'ORG_AUTOMATION_APP_PRIVATE_KEY'],
   },
   {
     name: 'test-sync-sub-issue-sprint.yml',
     path: '.github/workflows/test-sync-sub-issue-sprint.yml',
-    secrets: ['ORG_PROJECT_TOKEN', 'ORG_AUTOMATION_APP_ID', 'ORG_AUTOMATION_APP_PRIVATE_KEY'],
+    secrets: ['CI_SANDBOX_TOKEN', 'ORG_AUTOMATION_APP_ID', 'ORG_AUTOMATION_APP_PRIVATE_KEY'],
   },
   {
     name: 'test-collect-linked-context.yml',
     path: '.github/workflows/test-collect-linked-context.yml',
-    secrets: ['ORG_PROJECT_TOKEN', 'ORG_AUTOMATION_APP_ID', 'ORG_AUTOMATION_APP_PRIVATE_KEY'],
+    secrets: ['CI_SANDBOX_TOKEN', 'ORG_AUTOMATION_APP_ID', 'ORG_AUTOMATION_APP_PRIVATE_KEY'],
   },
 ];
 
 // Placeholder text, required auth modes, and error messages per secret.
 const secretMeta = {
+  CI_SANDBOX_TOKEN: {
+    placeholder: 'replace-with-your-sandbox-token',
+    modes: ['pat'],
+    failMessage: 'Set CI_SANDBOX_TOKEN for the org sandbox before running integration tests in pat mode.',
+  },
   USER_COPILOT_FGPAT: {
     placeholder: 'replace-with-your-copilot-fine-grained-pat',
     modes: ['pat', 'app'],

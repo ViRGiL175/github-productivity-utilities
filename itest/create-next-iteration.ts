@@ -9,7 +9,7 @@ export async function run(github: Octokit, core: IntegrationCore): Promise<void>
   const owner = process.env.PROJECT_OWNER;
   assert(owner, 'PROJECT_OWNER is required');
   const number = Number(process.env.PROJECT_NUMBER);
-  const repo = process.env.AUTH_MODE === 'app' ? 'scrum-test-backlog' : 'github-productivity-utilities';
+  const repo = 'scrum-test-backlog';
   const suffix = `${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`;
   const fieldName = `ITEST-${suffix}-iteration`;
   const reminderTitle = `ITEST-${suffix}-new-iteration-reminder`;
