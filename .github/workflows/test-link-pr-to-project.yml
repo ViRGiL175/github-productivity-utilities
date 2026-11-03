@@ -1,15 +1,14 @@
 # Integration test: создаёт issue и PR, проверяет привязку PR к Project V2,
 # перенос sprint и assignee из issue, позднюю closing reference, перевод в Need Review
 # при запросе human-reviewer и установку статуса Done при закрытии, плюс cleanup.
-# В `pat`-режиме issue и PR живут в одном репозитории.
-# В `app`-режиме issue живёт в backlog-репозитории, а PR — в отдельном client-репозитории с nondefault base.
+# В обоих auth-режимах issue живёт в backlog-репозитории, а PR — в отдельном client-репозитории с nondefault base.
 name: Test link-pr-to-project
 
 on:
   workflow_dispatch:
     inputs:
       auth_mode:
-        description: Token source to use for integration tests (pat=user sandbox, app=org sandbox)
+        description: Token source to use for integration tests (pat=CI_SANDBOX_TOKEN, app=GitHub App; both use org sandbox)
         required: false
         default: pat
         type: choice
@@ -18,13 +17,16 @@ on:
           - app
   pull_request:
     paths:
+      - '.github/workflows/resolve-integration-test-token.yml'
+      - 'package*.json'
       - '.github/workflows/link-pr-to-project.yml'
       - '.github/workflows/test-link-pr-to-project.yml'
       - 'src/**'
       - 'test/**'
 
 concurrency:
-  group: ${{ github.workflow }}
+  group: integration-org-sandbox
+  queue: max
   cancel-in-progress: false
 
 permissions:
@@ -34,30 +36,30 @@ permissions:
 
 env:
   AUTH_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
-  INSTALLATION_OWNER: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-  PROJECT_OWNER: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-  PROJECT_NUMBER: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10' }}
+  INSTALLATION_OWNER: ViRGiL-GH-Productivity
+  PROJECT_OWNER: ViRGiL-GH-Productivity
+  PROJECT_NUMBER: 1
   ITERATION_FIELD_NAME: Iteration
   STATUS_FIELD_NAME: Status
   STATUS_DONE_VALUE: Done
-  BACKLOG_REPO_OWNER: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-  BACKLOG_REPO_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'scrum-test-backlog' || 'github-productivity-utilities' }}
-  PULL_REQUEST_REPO_OWNER: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-  PULL_REQUEST_REPO_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'test-client' || 'github-productivity-utilities' }}
+  BACKLOG_REPO_OWNER: ViRGiL-GH-Productivity
+  BACKLOG_REPO_NAME: scrum-test-backlog
+  PULL_REQUEST_REPO_OWNER: ViRGiL-GH-Productivity
+  PULL_REQUEST_REPO_NAME: test-client
   DEFAULT_BRANCH: main
 
 jobs:
   resolve-auth:
-    name: Resolve integration auth token
+    name: Validate integration auth configuration
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     uses: ./.github/workflows/resolve-integration-test-token.yml
     with:
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
-      installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+      installation_owner: ViRGiL-GH-Productivity
     secrets:
-      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
-      app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
-      app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+      pat_token: ${{ secrets.CI_SANDBOX_TOKEN }}
+      app_id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
+      app_private_key: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
 
   prepare-link-scenario:
     name: Prepare link PR scenario
@@ -91,7 +93,7 @@ jobs:
         id: normalize-key
         shell: bash
         env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
         run: |
           NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
           while IFS= read -r line; do
@@ -104,7 +106,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
@@ -113,7 +115,7 @@ jobs:
         id: auth
         shell: bash
         env:
-          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          DIRECT_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           case "$AUTH_MODE" in
@@ -439,7 +441,7 @@ jobs:
             await setIteration(project.projectId, issueProjectItemId, project.iterationFieldId, project.targetIterationId);
 
             const branchName = `${issue.number}-itest-${context.runId}`;
-            const baseBranch = process.env.AUTH_MODE === 'app' ? `itest-base-${context.runId}` : defaultBranch;
+            const baseBranch = `itest-base-${context.runId}`;
             const baseRef = await github.request('GET /repos/{owner}/{repo}/git/ref/{ref}', {
               owner: pullRequestRepoOwner,
               repo: pullRequestRepoName,
@@ -520,8 +522,8 @@ jobs:
       - prepare-link-scenario
     uses: ./.github/workflows/link-pr-to-project.yml
     with:
-      project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-      project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
+      project_owner: ViRGiL-GH-Productivity
+      project_number: 1
       backlog_repo: ${{ needs.prepare-link-scenario.outputs.backlog_repo_name }}
       backlog_repo_owner: ${{ needs.prepare-link-scenario.outputs.backlog_repo_owner }}
       iteration_field_name: Iteration
@@ -535,11 +537,11 @@ jobs:
       head_ref: unlinked-itest-${{ github.run_id }}
       action: opened
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
-      installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+      installation_owner: ViRGiL-GH-Productivity
     secrets:
-      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
-      app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
-      app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+      pat_token: ${{ secrets.CI_SANDBOX_TOKEN }}
+      app_id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
+      app_private_key: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
 
   assert-preadded-unlinked-scenario:
     name: Assert pre-added unlinked PR starts in progress
@@ -554,7 +556,7 @@ jobs:
         id: normalize-key
         shell: bash
         env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
         run: |
           NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
           while IFS= read -r line; do
@@ -567,7 +569,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
@@ -580,7 +582,7 @@ jobs:
           STATUS_IN_PROGRESS_VALUE: ${{ needs.prepare-link-scenario.outputs.status_in_progress_value }}
           PULL_NODE_ID: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
         with:
-          github-token: ${{ env.AUTH_MODE == 'app' && steps.app-token.outputs.token || secrets.ORG_PROJECT_TOKEN }}
+          github-token: ${{ env.AUTH_MODE == 'app' && steps.app-token.outputs.token || secrets.CI_SANDBOX_TOKEN }}
           script: |
             const data = await github.graphql(`
               query($pullId: ID!, $fieldName: String!) {
@@ -606,8 +608,8 @@ jobs:
       - assert-preadded-unlinked-scenario
     uses: ./.github/workflows/link-pr-to-project.yml
     with:
-      project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-      project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
+      project_owner: ViRGiL-GH-Productivity
+      project_number: 1
       backlog_repo: ${{ needs.prepare-link-scenario.outputs.backlog_repo_name }}
       backlog_repo_owner: ${{ needs.prepare-link-scenario.outputs.backlog_repo_owner }}
       iteration_field_name: Iteration
@@ -618,15 +620,15 @@ jobs:
       pull_request_node_id: ${{ needs.prepare-link-scenario.outputs.pull_node_id }}
       pull_request_number: ${{ needs.prepare-link-scenario.outputs.pull_number }}
       pull_request_repo_owner: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_owner }}
-      pull_request_repo_name: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && needs.prepare-link-scenario.outputs.pull_request_repo_name || '' }}
+      pull_request_repo_name: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_name }}
       head_ref: ${{ needs.prepare-link-scenario.outputs.branch_name }}
       action: opened
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
-      installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+      installation_owner: ViRGiL-GH-Productivity
     secrets:
-      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
-      app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
-      app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+      pat_token: ${{ secrets.CI_SANDBOX_TOKEN }}
+      app_id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
+      app_private_key: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
 
   assert-link-open-scenario:
     name: Assert link PR open scenario
@@ -644,7 +646,7 @@ jobs:
         id: normalize-key
         shell: bash
         env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
         run: |
           NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
           while IFS= read -r line; do
@@ -657,7 +659,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
@@ -666,7 +668,7 @@ jobs:
         id: auth
         shell: bash
         env:
-          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          DIRECT_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           case "$AUTH_MODE" in
@@ -807,7 +809,7 @@ jobs:
                 throw new Error('Expected exactly one native issue/PR link in both directions.');
               }
               if (links.pull.baseRefName !== process.env.BASE_BRANCH ||
-                  (process.env.AUTH_MODE === 'app' && links.pull.baseRefName === links.pull.repository.defaultBranchRef.name)) {
+                  (links.pull.baseRefName === links.pull.repository.defaultBranchRef.name)) {
                 throw new Error('PR base changed or the cross-repo scenario is not targeting a nondefault branch.');
               }
 
@@ -872,8 +874,8 @@ jobs:
       - assert-link-open-scenario
     uses: ./.github/workflows/link-pr-to-project.yml
     with:
-      project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-      project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
+      project_owner: ViRGiL-GH-Productivity
+      project_number: 1
       backlog_repo: ${{ needs.prepare-link-scenario.outputs.backlog_repo_name }}
       backlog_repo_owner: ${{ needs.prepare-link-scenario.outputs.backlog_repo_owner }}
       iteration_field_name: Iteration
@@ -888,11 +890,11 @@ jobs:
       head_ref: ${{ needs.prepare-link-scenario.outputs.branch_name }}
       action: opened
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
-      installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+      installation_owner: ViRGiL-GH-Productivity
     secrets:
-      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
-      app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
-      app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+      pat_token: ${{ secrets.CI_SANDBOX_TOKEN }}
+      app_id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
+      app_private_key: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
 
   assert-link-idempotency-scenario:
     name: Assert link PR idempotency scenario
@@ -909,7 +911,7 @@ jobs:
         id: normalize-key
         shell: bash
         env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
         run: |
           NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
           while IFS= read -r line; do
@@ -922,7 +924,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
@@ -931,7 +933,7 @@ jobs:
         id: auth
         shell: bash
         env:
-          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          DIRECT_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           case "$AUTH_MODE" in
@@ -1061,7 +1063,7 @@ jobs:
                 throw new Error('Expected exactly one native issue/PR link in both directions.');
               }
               if (links.pull.baseRefName !== process.env.BASE_BRANCH ||
-                  (process.env.AUTH_MODE === 'app' && links.pull.baseRefName === links.pull.repository.defaultBranchRef.name)) {
+                  (links.pull.baseRefName === links.pull.repository.defaultBranchRef.name)) {
                 throw new Error('PR base changed or the cross-repo scenario is not targeting a nondefault branch.');
               }
 
@@ -1116,7 +1118,7 @@ jobs:
         id: normalize-key
         shell: bash
         env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
         run: |
           NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
           while IFS= read -r line; do
@@ -1129,7 +1131,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
@@ -1138,7 +1140,7 @@ jobs:
         id: auth
         shell: bash
         env:
-          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          DIRECT_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           if [ "$AUTH_MODE" = "app" ]; then TOKEN="$APP_TOKEN"; else TOKEN="$DIRECT_TOKEN"; fi
@@ -1277,8 +1279,8 @@ jobs:
       - prepare-link-edited-scenario
     uses: ./.github/workflows/link-pr-to-project.yml
     with:
-      project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-      project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
+      project_owner: ViRGiL-GH-Productivity
+      project_number: 1
       backlog_repo: ${{ needs.prepare-link-scenario.outputs.backlog_repo_name }}
       backlog_repo_owner: ${{ needs.prepare-link-scenario.outputs.backlog_repo_owner }}
       iteration_field_name: Iteration
@@ -1293,11 +1295,11 @@ jobs:
       head_ref: itest-manual-link-${{ github.run_id }}
       action: edited
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
-      installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+      installation_owner: ViRGiL-GH-Productivity
     secrets:
-      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
-      app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
-      app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+      pat_token: ${{ secrets.CI_SANDBOX_TOKEN }}
+      app_id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
+      app_private_key: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
 
   assert-link-edited-scenario:
     name: Assert latest linked sprint scenario
@@ -1314,7 +1316,7 @@ jobs:
         id: normalize-key
         shell: bash
         env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
         run: |
           NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
           while IFS= read -r line; do
@@ -1327,7 +1329,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
@@ -1336,7 +1338,7 @@ jobs:
         id: auth
         shell: bash
         env:
-          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          DIRECT_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           if [ "$AUTH_MODE" = "app" ]; then TOKEN="$APP_TOKEN"; else TOKEN="$DIRECT_TOKEN"; fi
@@ -1421,7 +1423,7 @@ jobs:
                 }
               }
             `;
-            const data = await github.graphql(query, {
+            const readLinkedIssues = () => github.graphql(query, {
               pullNodeId: process.env.PULL_NODE_ID,
               primaryIssueNodeId: process.env.PRIMARY_ISSUE_NODE_ID,
               secondaryIssueNodeId: process.env.SECONDARY_ISSUE_NODE_ID,
@@ -1429,6 +1431,15 @@ jobs:
               statusFieldName: process.env.STATUS_FIELD_NAME,
               iterationFieldName: process.env.ITERATION_FIELD_NAME,
             });
+            let data = await readLinkedIssues();
+            const linksVisible = () => [data.primaryIssue, data.secondaryIssue, data.unsprintedIssue].every(
+              issue => issue?.closedByPullRequestsReferences?.nodes?.filter(pr => pr.id === process.env.PULL_NODE_ID).length === 1,
+            );
+            for (let attempt = 1; !linksVisible() && attempt < 12; attempt++) {
+              core.info(`Waiting for GitHub closing relationship index (attempt ${attempt}/12).`);
+              await new Promise(resolve => setTimeout(resolve, 2000));
+              data = await readLinkedIssues();
+            }
             for (const issue of [data.primaryIssue, data.secondaryIssue, data.unsprintedIssue]) {
               if (issue?.closedByPullRequestsReferences?.nodes?.filter((pr) => pr.id === process.env.PULL_NODE_ID).length !== 1) {
                 throw new Error('Expected the original native link and both newly added links to be present exactly once.');
@@ -1534,8 +1545,8 @@ jobs:
       - assert-link-edited-scenario
     uses: ./.github/workflows/link-pr-to-project.yml
     with:
-      project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-      project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
+      project_owner: ViRGiL-GH-Productivity
+      project_number: 1
       backlog_repo: ${{ needs.prepare-link-scenario.outputs.backlog_repo_name }}
       backlog_repo_owner: ${{ needs.prepare-link-scenario.outputs.backlog_repo_owner }}
       iteration_field_name: Iteration
@@ -1545,11 +1556,11 @@ jobs:
       repositories: ${{ needs.prepare-link-scenario.outputs.pull_request_repo_owner }}/${{ needs.prepare-link-scenario.outputs.pull_request_repo_name }}
       reconcile_pull_request_number: ${{ fromJSON(needs.prepare-link-scenario.outputs.pull_number) }}
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
-      installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+      installation_owner: ViRGiL-GH-Productivity
     secrets:
-      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
-      app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
-      app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+      pat_token: ${{ secrets.CI_SANDBOX_TOKEN }}
+      app_id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
+      app_private_key: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
 
   assert-reconcile-sprint-scenario:
     name: Assert PR Sprint changed without changing Status
@@ -1565,7 +1576,7 @@ jobs:
         id: normalize-key
         shell: bash
         env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
         run: |
           NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
           while IFS= read -r line; do
@@ -1578,7 +1589,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
@@ -1595,7 +1606,7 @@ jobs:
           SECONDARY_ISSUE_NODE_ID: ${{ needs.prepare-link-edited-scenario.outputs.secondary_issue_node_id }}
           UNSPRINTED_ISSUE_NODE_ID: ${{ needs.prepare-link-edited-scenario.outputs.unsprinted_issue_node_id }}
         with:
-          github-token: ${{ env.AUTH_MODE == 'app' && steps.app-token.outputs.token || secrets.ORG_PROJECT_TOKEN }}
+          github-token: ${{ env.AUTH_MODE == 'app' && steps.app-token.outputs.token || secrets.CI_SANDBOX_TOKEN }}
           script: |
             const data = await github.graphql(`
               query($pullId: ID!, $secondaryId: ID!, $unsprintedId: ID!, $sprintName: String!, $statusName: String!) {
@@ -1647,7 +1658,7 @@ jobs:
           SECONDARY_ISSUE_NODE_ID: ${{ needs.prepare-link-edited-scenario.outputs.secondary_issue_node_id }}
           UNSPRINTED_ISSUE_NODE_ID: ${{ needs.prepare-link-edited-scenario.outputs.unsprinted_issue_node_id }}
         with:
-          github-token: ${{ env.AUTH_MODE == 'app' && steps.app-token.outputs.token || secrets.ORG_PROJECT_TOKEN }}
+          github-token: ${{ env.AUTH_MODE == 'app' && steps.app-token.outputs.token || secrets.CI_SANDBOX_TOKEN }}
           script: |
             const projectId = process.env.PROJECT_ID;
             const data = await github.graphql(`
@@ -1691,8 +1702,8 @@ jobs:
       - assert-reconcile-sprint-scenario
     uses: ./.github/workflows/link-pr-to-project.yml
     with:
-      project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-      project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
+      project_owner: ViRGiL-GH-Productivity
+      project_number: 1
       backlog_repo: ${{ needs.prepare-link-scenario.outputs.backlog_repo_name }}
       backlog_repo_owner: ${{ needs.prepare-link-scenario.outputs.backlog_repo_owner }}
       iteration_field_name: Iteration
@@ -1707,11 +1718,11 @@ jobs:
       head_ref: itest-manual-link-${{ github.run_id }}
       action: synchronize
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
-      installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+      installation_owner: ViRGiL-GH-Productivity
     secrets:
-      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
-      app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
-      app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+      pat_token: ${{ secrets.CI_SANDBOX_TOKEN }}
+      app_id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
+      app_private_key: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
 
   assert-link-synchronize-scenario:
     name: Assert PR and closing issues are in progress
@@ -1727,7 +1738,7 @@ jobs:
         id: normalize-key
         shell: bash
         env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
         run: |
           NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
           while IFS= read -r line; do
@@ -1740,7 +1751,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
@@ -1756,7 +1767,7 @@ jobs:
           SECONDARY_ISSUE_NODE_ID: ${{ needs.prepare-link-edited-scenario.outputs.secondary_issue_node_id }}
           UNSPRINTED_ISSUE_NODE_ID: ${{ needs.prepare-link-edited-scenario.outputs.unsprinted_issue_node_id }}
         with:
-          github-token: ${{ env.AUTH_MODE == 'app' && steps.app-token.outputs.token || secrets.ORG_PROJECT_TOKEN }}
+          github-token: ${{ env.AUTH_MODE == 'app' && steps.app-token.outputs.token || secrets.CI_SANDBOX_TOKEN }}
           script: |
             const data = await github.graphql(`
               query($pullId: ID!, $primaryId: ID!, $secondaryId: ID!, $unsprintedId: ID!, $statusName: String!) {
@@ -1800,8 +1811,8 @@ jobs:
       - assert-link-synchronize-scenario
     uses: ./.github/workflows/link-pr-to-project.yml
     with:
-      project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-      project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
+      project_owner: ViRGiL-GH-Productivity
+      project_number: 1
       backlog_repo: ${{ needs.prepare-link-scenario.outputs.backlog_repo_name }}
       backlog_repo_owner: ${{ needs.prepare-link-scenario.outputs.backlog_repo_owner }}
       iteration_field_name: Iteration
@@ -1817,11 +1828,11 @@ jobs:
       action: review_requested
       requested_reviewers_json: '[{"login":"octocat"},{"login":"github-actions[bot]"},{"login":"Copilot"}]'
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
-      installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+      installation_owner: ViRGiL-GH-Productivity
     secrets:
-      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
-      app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
-      app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+      pat_token: ${{ secrets.CI_SANDBOX_TOKEN }}
+      app_id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
+      app_private_key: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
 
   assert-link-review-requested-scenario:
     name: Assert link PR review requested scenario
@@ -1840,7 +1851,7 @@ jobs:
         id: normalize-key
         shell: bash
         env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
         run: |
           NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
           while IFS= read -r line; do
@@ -1853,7 +1864,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
@@ -1862,7 +1873,7 @@ jobs:
         id: auth
         shell: bash
         env:
-          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          DIRECT_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           case "$AUTH_MODE" in
@@ -2090,7 +2101,7 @@ jobs:
         id: normalize-key
         shell: bash
         env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
         run: |
           NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
           while IFS= read -r line; do
@@ -2103,7 +2114,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
@@ -2112,7 +2123,7 @@ jobs:
         id: auth
         shell: bash
         env:
-          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          DIRECT_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           case "$AUTH_MODE" in
@@ -2169,8 +2180,8 @@ jobs:
       - close-pr-before-status-check
     uses: ./.github/workflows/link-pr-to-project.yml
     with:
-      project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-      project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
+      project_owner: ViRGiL-GH-Productivity
+      project_number: 1
       backlog_repo: ${{ needs.prepare-link-scenario.outputs.backlog_repo_name }}
       backlog_repo_owner: ${{ needs.prepare-link-scenario.outputs.backlog_repo_owner }}
       iteration_field_name: Iteration
@@ -2185,11 +2196,11 @@ jobs:
       head_ref: ${{ needs.prepare-link-scenario.outputs.branch_name }}
       action: closed
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
-      installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+      installation_owner: ViRGiL-GH-Productivity
     secrets:
-      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
-      app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
-      app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+      pat_token: ${{ secrets.CI_SANDBOX_TOKEN }}
+      app_id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
+      app_private_key: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
 
   assert-link-closed-scenario:
     name: Assert link PR closed scenario
@@ -2205,7 +2216,7 @@ jobs:
         id: normalize-key
         shell: bash
         env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
         run: |
           NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
           while IFS= read -r line; do
@@ -2218,7 +2229,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
@@ -2227,7 +2238,7 @@ jobs:
         id: auth
         shell: bash
         env:
-          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          DIRECT_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           case "$AUTH_MODE" in
@@ -2372,7 +2383,7 @@ jobs:
         id: normalize-key
         shell: bash
         env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
         run: |
           NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
           while IFS= read -r line; do
@@ -2385,7 +2396,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
@@ -2394,7 +2405,7 @@ jobs:
         id: auth
         shell: bash
         env:
-          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          DIRECT_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           case "$AUTH_MODE" in

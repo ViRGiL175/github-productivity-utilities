@@ -87,19 +87,23 @@ ensure-next-iteration-reminder.yml добавляет одну следующу�
 
 1. Убедиться, что запущен Docker Desktop.
 2. Скопировать `.secrets.example` в `.secrets`.
-3. Для режима `pat` заменить placeholder в `.secrets` на реальный `ORG_PROJECT_TOKEN`.
+3. Для режима `pat` заполнить `CI_SANDBOX_TOKEN`; старые AI workflow используют отдельный `ORG_PROJECT_TOKEN`.
 4. Для режима `app` заполнить `ORG_AUTOMATION_APP_ID` и `ORG_AUTOMATION_APP_PRIVATE_KEY`.
 
-`ORG_PROJECT_TOKEN` должен иметь права, достаточные для работы с sandbox Project V2 и связанными issue / PR. Для `link-pr-to-project.yml`, если включена синхронизация assignee, токену также нужны права `issues: write` на репозиторий PR.
+Автоматические интеграционные проверки используют `CI_SANDBOX_TOKEN` — fine-grained PAT владельца `ViRGiL-GH-Productivity`, ограниченный репозиториями `scrum-test-backlog` и `test-client`. Нужны repository permissions `Contents: write`, `Issues: write`, `Pull requests: write`, `Metadata: read` и organization permissions `Projects: write`, `Issue Fields: read`. Право Projects распространяется на все проекты тестовой организации, а не только на проект № 1.
 
-`USER_COPILOT_FGPAT` — отдельный FGPAT с правом `Copilot Requests`; используется только для Copilot workflow.
+В GitHub одноимённый секрет нужен в **Actions** и **Dependabot**: PR Dependabot не получает Actions secrets. У PAT есть срок действия; заменяйте его в обоих хранилищах до истечения срока. Значение токена не следует сохранять в репозитории или логах.
 
-`ORG_AUTOMATION_APP_PRIVATE_KEY` для локального `act` удобнее хранить одной строкой с литералами `\n` между строками ключа.
+Проверки, изменяющие общий тестовый Project, и analytics E2E используют одну concurrency-группу с `queue: max`. Они ждут друг друга без отмены ожидающих запусков, чтобы параллельные изменения не ломали снимки analytics и выбор тестовых PR. Публичные read-only проверки и unit-тесты могут работать параллельно.
 
-`.secrets` нужен, потому что test workflow теперь поддерживают два auth-режима:
+`test-sync-sub-issue-sprint`, `test-link-pr-to-project`, `test-safe-dependabot-pr-link`, `test-ensure-next-iteration-reminder` и `test-field-updates` работают с проектом `ViRGiL-GH-Productivity#1` в двух режимах:
 
-- `pat` — через `secrets.ORG_PROJECT_TOKEN`, с user-owned sandbox: проект `ViRGiL175#10` и репозиторий `ViRGiL175/github-productivity-utilities`
-- `app` — через `secrets.ORG_AUTOMATION_APP_ID` и `secrets.ORG_AUTOMATION_APP_PRIVATE_KEY`, с org-owned sandbox: проект `ViRGiL-GH-Productivity#1` и репозиторий `ViRGiL-GH-Productivity/scrum-test-backlog`
+- `pat` — автоматический режим с `CI_SANDBOX_TOKEN`; issue создаются в backlog, PR — в client;
+- `app` — отдельный ручной запуск с `ORG_AUTOMATION_APP_ID` и `ORG_AUTOMATION_APP_PRIVATE_KEY`. Успешный PAT-прогон не заменяет проверку App.
+
+`test-collect-linked-context` использует `GITHUB_TOKEN` для публичных примеров и `CI_SANDBOX_TOKEN` для отдельной проверки PAT на приватной issue sandbox. App-сценарий запускается вручную. Analytics E2E проверяет именно App-аутентификацию и не запускается от Dependabot; Gemini требует отдельного `GEMINI_API_KEY`. Пропущенные сценарии не считаются проверенными — перед слиянием затрагивающих их обновлений нужен отдельный прогон проверенного коммита.
+
+Устаревшие AI workflow сохраняют прежний `ORG_PROJECT_TOKEN` и `USER_COPILOT_FGPAT`; sandbox PAT не даёт доступа к личным Projects и Copilot. Для локального `act` App key можно передать с литералами `\n` между строками ключа.
 
 `act` подставляет эти значения из secret-file. `.env` для этого набора workflow не нужен.
 
