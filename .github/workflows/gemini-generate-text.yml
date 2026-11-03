@@ -45,10 +45,10 @@ jobs:
     steps:
       - name: Checkout caller repository
         if: inputs.context_files != ''
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Checkout automation implementation
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
