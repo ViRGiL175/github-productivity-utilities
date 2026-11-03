@@ -19,7 +19,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: test-field-updates-sandbox
+  group: integration-org-sandbox
+  queue: max
   cancel-in-progress: false
 
 env:

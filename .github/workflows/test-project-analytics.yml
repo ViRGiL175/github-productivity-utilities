@@ -18,7 +18,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: project-analytics-sandbox
+  group: integration-org-sandbox
+  queue: max
   cancel-in-progress: false
 
 jobs:
