@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       auth_mode:
-        description: Token source to use for cross-org auth tests (pat=ORG_PROJECT_TOKEN, app=GitHub App)
+        description: Token source to use for cross-org auth tests (pat=CI_SANDBOX_TOKEN, app=GitHub App)
         required: false
         default: pat
         type: choice
@@ -13,6 +13,8 @@ on:
           - app
   pull_request:
     paths:
+      - 'package*.json'
+      - 'src/automations/collect-linked-context/**'
       - '.github/workflows/collect-linked-context.yml'
       - '.github/workflows/test-collect-linked-context.yml'
 
@@ -35,7 +37,7 @@ jobs:
       text: 'No links here, just plain text.'
       auth_mode: pat
     secrets:
-      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
+      token: ${{ secrets.GITHUB_TOKEN }}
 
   assert-empty:
     name: '[1] Assert — output is empty for link-free text'
@@ -63,7 +65,7 @@ jobs:
       text: 'Фикс для #84 в этом репо.'
       auth_mode: pat
     secrets:
-      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
+      token: ${{ secrets.GITHUB_TOKEN }}
 
   assert-short-ref:
     name: '[2] Assert — short ref resolves'
@@ -101,7 +103,7 @@ jobs:
         https://redirect.github.com/ViRGiL175/github-productivity-utilities/pull/84
       auth_mode: pat
     secrets:
-      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
+      token: ${{ secrets.GITHUB_TOKEN }}
 
   assert-dedup:
     name: '[3] Assert — exactly one item, not two'
@@ -138,7 +140,7 @@ jobs:
         Release notes: https://github.com/actions/checkout/releases/tag/v4.0.0
       auth_mode: pat
     secrets:
-      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
+      token: ${{ secrets.GITHUB_TOKEN }}
 
   assert-release:
     name: '[4] Assert — release context fetched'
@@ -173,7 +175,7 @@ jobs:
       text: 'Original tracking issue: https://github.com/microsoft/vscode/issues/1'
       auth_mode: pat
     secrets:
-      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
+      token: ${{ secrets.GITHUB_TOKEN }}
 
   assert-stable-issue:
     name: '[5] Assert — issue title appears in output'
@@ -209,7 +211,7 @@ jobs:
       text: 'Uses https://github.com/actions/checkout/pull/1 as reference.'
       auth_mode: pat
     secrets:
-      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
+      token: ${{ secrets.GITHUB_TOKEN }}
 
   assert-stable-pr:
     name: '[6] Assert — PR/issue content fetched for actions/checkout#1'
@@ -245,7 +247,7 @@ jobs:
       text: 'Historic: https://github.com/torvalds/linux/commit/1da177e4c3f41524e886b7f1b8a0c1fc7321cac'
       auth_mode: pat
     secrets:
-      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
+      token: ${{ secrets.GITHUB_TOKEN }}
 
   assert-stable-commit:
     name: '[7] Assert — commit message fetched'
@@ -272,7 +274,7 @@ jobs:
 
   # ─── Case 8: cross-org private issue via PAT ─────────────────────────────
   # ViRGiL-GH-Productivity/scrum-test-backlog#1 is a known private sandbox issue.
-  # GITHUB_TOKEN alone can't access it — requires ORG_PROJECT_TOKEN with cross-org scope.
+  # GITHUB_TOKEN alone can't access it — requires CI_SANDBOX_TOKEN restricted to the test organization.
   collect-cross-org-pat:
     name: '[8] Collect — cross-org private issue via PAT (auth_mode=pat)'
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
@@ -281,7 +283,7 @@ jobs:
       text: 'Backlog: ViRGiL-GH-Productivity/scrum-test-backlog#1'
       auth_mode: pat
     secrets:
-      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
+      pat_token: ${{ secrets.CI_SANDBOX_TOKEN }}
 
   assert-cross-org-pat:
     name: '[8] Assert — cross-org issue fetched via PAT'
