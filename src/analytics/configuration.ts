@@ -44,7 +44,7 @@ export async function configuration(): Promise<Configuration> {
       port: Number(process.env.PGPORT ?? '55432'),
       database: 'project_analytics', user: 'analytics_writer',
       password: (await readFile(required('PGPASSWORD_FILE'), 'utf8')).trim(),
-      max: 1, connectionTimeoutMillis: 10_000, statement_timeout: 60_000,
+      max: 1, connectionTimeoutMillis: 10_000, statement_timeout: 60_000, query_timeout: 65_000,
     },
   };
 }

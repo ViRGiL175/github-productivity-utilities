@@ -102,11 +102,7 @@ jobs:
           permission-metadata: read
       - name: Start clean PostgreSQL and Grafana
         run: |
-          # File-backed Compose secrets retain host ownership on Linux.
-          # Grant only the runtime UIDs access to their explicitly mounted secrets.
-          setfacl -m u:70:r .local/secrets/database-admin .local/secrets/database-writer .local/secrets/database-reader
-          setfacl -m u:472:r .local/secrets/database-reader .local/secrets/grafana-admin .local/secrets/grafana-encryption
-          setfacl -m u:472:r "$GRAFANA_TLS_CERT_FILE" "$GRAFANA_TLS_KEY_FILE" "$GRAFANA_TLS_CA_FILE"
+          node scripts/local-analytics.mjs permissions
           docker compose --env-file .local/analytics.env -f analytics/compose.yaml -f analytics/compose.https.yaml up -d --wait --wait-timeout 180
       - name: Import, reconcile, and query the fixture
         env:

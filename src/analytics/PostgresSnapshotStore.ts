@@ -26,17 +26,30 @@ export class PostgresSnapshotStore {
   async withLock<T>(operation: (session: SnapshotSession) => Promise<T>): Promise<T | null> {
     const client = await this.pool.connect();
     let locked = false;
+    let discard = false;
+    let connectionError: Error | undefined;
+    const onError = (error: Error) => { connectionError = error; };
+    client.on('error', onError);
     try {
-      const result = await client.query<{ locked: boolean }>('SELECT pg_try_advisory_lock(741936201) AS locked');
-      locked = result.rows[0]!.locked;
+      const lock = await client.query<{ locked: boolean }>('SELECT pg_try_advisory_lock(741936201) AS locked');
+      locked = lock.rows[0]!.locked;
       if (!locked) return null;
       await client.query(await readFile(new URL('../../analytics/schema.sql', import.meta.url), 'utf8'));
-      return await operation(new SnapshotSession(client));
+      const result = await operation(new SnapshotSession(client));
+      if (connectionError) throw connectionError;
+      return result;
+    } catch (error) {
+      discard = true;
+      throw error;
     } finally {
       try {
-        if (locked) await client.query('SELECT pg_advisory_unlock(741936201)');
+        if (locked && !discard && !connectionError) await client.query('SELECT pg_advisory_unlock(741936201)');
+      } catch (error) {
+        discard = true;
+        throw error;
       } finally {
-        client.release();
+        client.release(discard || connectionError !== undefined);
+        client.removeListener('error', onError);
       }
     }
   }
