@@ -125,7 +125,7 @@ jobs:
     name: Prepare reminder create scenario before current iteration starts
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
-    needs: resolve-auth
+    needs: [resolve-auth, create-next-iteration-scenario]
     outputs:
       reminder_title: ${{ steps.prepare.outputs.reminder_title }}
       current_date_override: ${{ steps.prepare.outputs.current_date_override }}
@@ -798,7 +798,7 @@ jobs:
     name: Prepare reminder empty current scenario
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
-    needs: resolve-auth
+    needs: [resolve-auth, cleanup-reminder-scenarios]
     outputs:
       reminder_title: ${{ steps.prepare.outputs.reminder_title }}
       current_date_override: ${{ steps.prepare.outputs.current_date_override }}
@@ -1164,6 +1164,19 @@ jobs:
 
             const itemId = await createReminderDraft(project.projectId);
             await setReminderIteration(project.projectId, itemId, project.iterationFieldId, emptyIteration.id);
+
+            // The scenario requires an existing reminder, visible through the same connection the automation reads.
+            let fixtureVisible = false;
+            for (let attempt = 1; attempt <= 12; attempt++) {
+              const visible = (await getAllProjectItems(project.projectId)).find(item => item.id === itemId);
+              fixtureVisible = visible?.content?.title === reminderTitle
+                && visible.fieldValues?.nodes?.some(value => value.__typename === 'ProjectV2ItemFieldIterationValue'
+                  && value.iterationId === emptyIteration.id);
+              if (fixtureVisible) break;
+              core.info(`Waiting for the pre-existing reminder fixture (attempt ${attempt}/12).`);
+              await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+            if (!fixtureVisible) throw new Error('Pre-existing reminder fixture did not become visible.');
 
             core.info(`Selected empty iteration "${emptyIteration.title}" (${emptyIteration.startDate}) for the empty current reminder scenario.`);
 
