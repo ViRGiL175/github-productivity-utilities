@@ -210,6 +210,8 @@ async function verifyDatabaseRecovery(pool: pg.Pool, itemId: string): Promise<vo
     const result = spawnSync('docker', ['compose', '--env-file', '.local/analytics.env',
       '-f', 'analytics/compose.yaml', '-f', 'analytics/compose.https.yaml', ...args, 'postgres'],
     { encoding: 'utf8', timeout: 120_000 });
+    if (result.status !== 0) console.error(JSON.stringify({ event: 'postgres_lifecycle_failed', action: args[0],
+      exitCode: result.status, unsupportedOption: /unknown flag|unknown shorthand flag|unknown command/.test(result.stderr ?? '') }));
     assert.equal(result.status, 0, 'Ephemeral PostgreSQL lifecycle command failed');
   }
   let stopped = false;
@@ -225,7 +227,7 @@ async function verifyDatabaseRecovery(pool: pg.Pool, itemId: string): Promise<vo
     console.log('The same collector survived an idle connection loss and a failed connection attempt');
     phase = 'database_recovery';
     completed = 0;
-    postgres('start', '--wait', '--wait-timeout', '90');
+    postgres('up', '-d', '--no-deps', '--no-recreate', '--wait', '--wait-timeout', '90');
     stopped = false;
     await waitFor(() => completed > 0, 180_000);
     const after = await pool.query("SELECT count(*)::int AS completed FROM analytics.sync_runs WHERE status='complete'");
@@ -243,7 +245,7 @@ async function verifyDatabaseRecovery(pool: pg.Pool, itemId: string): Promise<vo
       try { await closed; } finally { clearTimeout(timeout); }
     }
     for (const reader of readers) reader.close();
-    if (stopped) postgres('start', '--wait', '--wait-timeout', '90');
+    if (stopped) postgres('up', '-d', '--no-deps', '--no-recreate', '--wait', '--wait-timeout', '90');
   }
 }
 
