@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       auth_mode:
-        description: Token source to use for integration tests (pat=user sandbox, app=org sandbox)
+        description: Token source to use for integration tests (pat=CI_SANDBOX_TOKEN, app=GitHub App; both use org sandbox)
         required: false
         default: pat
         type: choice
@@ -15,6 +15,7 @@ on:
           - app
   pull_request:
     paths:
+      - 'package*.json'
       - '.github/workflows/safe-dependabot-pr-link.yml'
       - '.github/workflows/test-safe-dependabot-pr-link.yml'
       - 'src/automations/safe-dependabot-pr-link/**'
@@ -22,7 +23,8 @@ on:
       - 'src/github/PullRequestRepository.ts'
 
 concurrency:
-  group: ${{ github.workflow }}
+  group: integration-org-sandbox
+  queue: max
   cancel-in-progress: false
 
 permissions:
@@ -32,14 +34,14 @@ permissions:
 
 env:
   AUTH_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
-  INSTALLATION_OWNER: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-  PROJECT_OWNER: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-  PROJECT_NUMBER: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10' }}
+  INSTALLATION_OWNER: ViRGiL-GH-Productivity
+  PROJECT_OWNER: ViRGiL-GH-Productivity
+  PROJECT_NUMBER: 1
   STATUS_FIELD_NAME: Status
   STATUS_START_VALUE: To do
   STATUS_FINAL_VALUE: Done
-  REPO_OWNER: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-  REPO_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'test-client' || 'github-productivity-utilities' }}
+  REPO_OWNER: ViRGiL-GH-Productivity
+  REPO_NAME: test-client
   DEFAULT_BRANCH: main
 
 jobs:
@@ -64,7 +66,7 @@ jobs:
         id: normalize-key
         shell: bash
         env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
         run: |
           NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
           while IFS= read -r line; do
@@ -75,9 +77,9 @@ jobs:
       - name: Create GitHub App installation token
         if: ${{ env.AUTH_MODE == 'app' }}
         id: app-token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
-          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
@@ -86,7 +88,7 @@ jobs:
         id: auth
         shell: bash
         env:
-          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          DIRECT_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           case "$AUTH_MODE" in
@@ -245,8 +247,8 @@ jobs:
       - prepare-safe-scenario
     uses: ./.github/workflows/safe-dependabot-pr-link.yml
     with:
-      project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-      project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
+      project_owner: ViRGiL-GH-Productivity
+      project_number: 1
       repositories: |
         ${{ needs.prepare-safe-scenario.outputs.repo_owner }}/${{ needs.prepare-safe-scenario.outputs.repo_name }}
       status_field_name: Status
@@ -256,11 +258,11 @@ jobs:
       max_pull_requests_per_repo: 20
       closed_lookback_days: 7
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
-      installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+      installation_owner: ViRGiL-GH-Productivity
     secrets:
-      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
-      app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
-      app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+      pat_token: ${{ secrets.CI_SANDBOX_TOKEN }}
+      app_id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
+      app_private_key: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
 
   assert-safe-scenario:
     name: Assert safe Dependabot link scenario
@@ -275,7 +277,7 @@ jobs:
         id: normalize-key
         shell: bash
         env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
         run: |
           NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
           while IFS= read -r line; do
@@ -286,9 +288,9 @@ jobs:
       - name: Create GitHub App installation token
         if: ${{ env.AUTH_MODE == 'app' }}
         id: app-token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
-          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
@@ -297,7 +299,7 @@ jobs:
         id: auth
         shell: bash
         env:
-          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          DIRECT_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           case "$AUTH_MODE" in
@@ -415,8 +417,8 @@ jobs:
       - assert-safe-scenario
     uses: ./.github/workflows/safe-dependabot-pr-link.yml
     with:
-      project_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
-      project_number: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && '1' || '10') }}
+      project_owner: ViRGiL-GH-Productivity
+      project_number: 1
       repositories: |
         ${{ needs.prepare-safe-scenario.outputs.repo_owner }}/${{ needs.prepare-safe-scenario.outputs.repo_name }}
       status_field_name: Status
@@ -426,11 +428,11 @@ jobs:
       max_pull_requests_per_repo: 20
       closed_lookback_days: 7
       auth_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
-      installation_owner: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && 'ViRGiL-GH-Productivity' || 'ViRGiL175' }}
+      installation_owner: ViRGiL-GH-Productivity
     secrets:
-      pat_token: ${{ secrets.ORG_PROJECT_TOKEN }}
-      app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
-      app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+      pat_token: ${{ secrets.CI_SANDBOX_TOKEN }}
+      app_id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
+      app_private_key: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
 
   assert-safe-idempotency:
     name: Assert safe Dependabot link idempotency
@@ -445,7 +447,7 @@ jobs:
         id: normalize-key
         shell: bash
         env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
         run: |
           NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
           while IFS= read -r line; do
@@ -456,9 +458,9 @@ jobs:
       - name: Create GitHub App installation token
         if: ${{ env.AUTH_MODE == 'app' }}
         id: app-token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
-          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
@@ -467,7 +469,7 @@ jobs:
         id: auth
         shell: bash
         env:
-          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          DIRECT_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           case "$AUTH_MODE" in
@@ -556,7 +558,7 @@ jobs:
         id: normalize-key
         shell: bash
         env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
+          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
         run: |
           NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
           while IFS= read -r line; do
@@ -567,9 +569,9 @@ jobs:
       - name: Create GitHub App installation token
         if: ${{ env.AUTH_MODE == 'app' }}
         id: app-token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
-          app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
+          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
           private-key: ${{ steps.normalize-key.outputs.private_key }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
@@ -578,7 +580,7 @@ jobs:
         id: auth
         shell: bash
         env:
-          DIRECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          DIRECT_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           case "$AUTH_MODE" in
