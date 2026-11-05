@@ -89,6 +89,8 @@ CI использует только GitHub Secrets `ORG_AUTOMATION_APP_ID` и `
 
 ## HTTPS без reverse proxy
 
+Для существующего сертификата Certbot доступен отдельный [compose.letsencrypt.yaml](compose.letsencrypt.yaml) со штатным перечитыванием пары Grafana раз в минуту и read-only подключением только своей lineage. [Инструкция](TLS.md) описывает права, сохранение продления, перенос в независимый серверный Compose, проверку и откат. Это альтернатива файловому HTTPS-overlay ниже; вместе их подключать не нужно. Команды `local:*` автоматически HTTPS-overlay не выбирают.
+
 Дополнительный `compose.https.yaml` включает HTTPS самой Grafana. Передайте пути к сертификату сервера, его ключу и доверенному CA bundle через `GRAFANA_TLS_CERT_FILE`, `GRAFANA_TLS_KEY_FILE` и `GRAFANA_TLS_CA_FILE`; задайте `GRAFANA_DOMAIN`, соответствующий SAN сертификата. После подготовки TLS-файлов выполните `node scripts/local-analytics.mjs permissions` с теми же переменными окружения: на Linux команда даст Grafana доступ только на чтение. При запуске Compose добавьте этот файл после `compose.yaml`. Healthcheck проверяет цепочку и имя сервера через `curl --cacert`; HTTPS также включает Secure cookies. Автоматического выпуска и продления сертификатов эта конфигурация не делает.
 
 В существующем E2E OpenSSL создаёт временный CA и сертификат с SAN `localhost` и `127.0.0.1`. CA получает только тестовый HTTPS-клиент и healthcheck; системное и браузерное хранилища доверия не меняются. Клиент без этого CA должен отвергнуть соединение. После теста файлы сертификатов, ключи и volumes удаляются.

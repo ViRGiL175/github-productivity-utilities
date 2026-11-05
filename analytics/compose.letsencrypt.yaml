@@ -1,0 +1,33 @@
+# Use with compose.yaml, instead of compose.https.yaml. See TLS.md.
+services:
+  grafana:
+    environment:
+      GF_SERVER_PROTOCOL: https
+      GF_SERVER_DOMAIN: ${GRAFANA_DOMAIN:?Provide the certificate DNS name}
+      GF_SERVER_ROOT_URL: https://${GRAFANA_DOMAIN}:${GRAFANA_PORT:-3301}/
+      GF_SERVER_CERT_FILE: /etc/letsencrypt/live/${GRAFANA_TLS_LINEAGE:?Provide one Certbot certificate name}/fullchain.pem
+      GF_SERVER_CERT_KEY: /etc/letsencrypt/live/${GRAFANA_TLS_LINEAGE}/privkey.pem
+      GF_SERVER_CERTS_WATCH_INTERVAL: 1m
+      GF_SECURITY_COOKIE_SECURE: "true"
+    group_add:
+      - "${GRAFANA_TLS_GID:?Provide the non-root group allowed to read this TLS key}"
+    volumes:
+      - type: bind
+        source: ${GRAFANA_TLS_CONFIG_DIR:?Provide the absolute Certbot config directory}/live/${GRAFANA_TLS_LINEAGE}
+        target: /etc/letsencrypt/live/${GRAFANA_TLS_LINEAGE}
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${GRAFANA_TLS_CONFIG_DIR}/archive/${GRAFANA_TLS_LINEAGE}
+        target: /etc/letsencrypt/archive/${GRAFANA_TLS_LINEAGE}
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          curl --fail --silent --show-error
+          --resolve "$$GF_SERVER_DOMAIN:3000:127.0.0.1"
+          "https://$$GF_SERVER_DOMAIN:3000/api/health"
