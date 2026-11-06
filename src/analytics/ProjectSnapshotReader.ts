@@ -104,7 +104,7 @@ const ITEMS_QUERY = `query($id: ID!, $after: String) {
       content {
         __typename
         ... on DraftIssue { id title createdAt updatedAt }
-        ... on Issue { id number title url state createdAt updatedAt closedAt issueType { id name } repository { id nameWithOwner } }
+        ... on Issue { id number title url state createdAt updatedAt closedAt stateReason parent { id number repository { id nameWithOwner } } issueType { id name } repository { id nameWithOwner } }
         ... on PullRequest { id number title url state createdAt updatedAt closedAt mergedAt repository { id nameWithOwner } }
       }
       fieldValues(first: 20) { ${PAGE} nodes { ${VALUES} } }

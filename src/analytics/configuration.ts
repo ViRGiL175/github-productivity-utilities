@@ -11,6 +11,7 @@ export interface Configuration {
   keyReadApproved: boolean;
   database: PoolConfig;
   syncIntervalMs: number;
+  webhook: { secret: string; port: number } | null;
 }
 
 function required(name: string): string {
@@ -33,7 +34,18 @@ export async function configuration(): Promise<Configuration> {
   if (repositories.some(value => !/^[A-Za-z0-9_.-]+$/.test(value))) {
     throw new Error('Repository selection must contain repository names belonging to the configured owner.');
   }
+  const secretFile = process.env.GITHUB_WEBHOOK_SECRET_FILE?.trim();
+  let webhook: Configuration['webhook'] = null;
+  if (secretFile) {
+    const secret = (await readFile(secretFile, 'utf8')).trim();
+    const port = Number(process.env.GITHUB_WEBHOOK_PORT ?? '8787');
+    if (secret.length < 32 || !Number.isSafeInteger(port) || port < 1 || port > 65535) {
+      throw new Error('Webhook requires a secret of at least 32 characters and a valid port.');
+    }
+    webhook = { secret, port };
+  }
   return {
+    webhook,
     target: { owner, number }, repositories,
     appId: required('GITHUB_APP_ID'),
     privateKeyFile: required('GITHUB_APP_PRIVATE_KEY_FILE'),
