@@ -1,6 +1,9 @@
 import { createAppAuth } from '@octokit/auth-app';
 import { Octokit } from '@octokit/rest';
 import pg from 'pg';
+import { once as eventOnce } from 'node:events';
+import { PostgresEventStore } from './PostgresEventStore.ts';
+import { webhookServer } from './webhooks.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { appCredentials, configuration } from './configuration.ts';
 import { PostgresSnapshotStore } from './PostgresSnapshotStore.ts';
@@ -24,7 +27,20 @@ async function main(): Promise<void> {
     event: 'collector_started', syncIntervalSeconds: config.syncIntervalMs / 1000,
     mode: migrateOnly ? 'migrate' : once ? 'once' : 'continuous',
   }));
+  const eventPool = config.webhook && !once && !migrateOnly ? new pg.Pool({
+    ...config.database, max: 2, connectionTimeoutMillis: 1_000, statement_timeout: 2_000, query_timeout: 2_500,
+  }) : null;
+  eventPool?.on('error', error => {
+    console.error(JSON.stringify({ event: 'webhook_database_connection_failed', errorType: error.name }));
+  });
+  const server = eventPool && config.webhook
+    ? webhookServer(config.webhook.secret, new PostgresEventStore(eventPool, config.target, config.repositories)) : null;
   try {
+    if (server && config.webhook) {
+      server.listen(config.webhook.port, '127.0.0.1');
+      await eventOnce(server, 'listening');
+      console.log(JSON.stringify({ event: 'webhook_listening', port: config.webhook.port }));
+    }
     do {
       let retryDelayMs = 60_000;
       let stage = 'database_connect';
@@ -100,6 +116,11 @@ async function main(): Promise<void> {
       }
     } while (!stop.signal.aborted);
   } finally {
+    if (server?.listening) {
+      const closed = new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+      await closed;
+    }
+    await eventPool?.end();
     await pool.end();
   }
 }

@@ -67,7 +67,10 @@ SELECT item_id,
        (snapshot->>'createdAt')::timestamptz AS source_created_at,
        (snapshot->>'updatedAt')::timestamptz AS source_updated_at,
        snapshot,
-       snapshot->'content'->'issueType'->>'name' AS issue_type
+       snapshot->'content'->'issueType'->>'name' AS issue_type,
+       snapshot->'content'->>'stateReason' AS state_reason,
+       snapshot->'content'->'parent'->>'id' AS parent_issue_id,
+       snapshot->'content'->>'id' AS content_id
 FROM analytics.item_current;
 
 CREATE OR REPLACE VIEW analytics.item_fields AS
@@ -88,3 +91,24 @@ SELECT item_id, field_id, field_name,
        (value->>'duration')::integer AS duration_days
 FROM analytics.item_fields
 WHERE field_type = 'ITERATION';
+
+
+CREATE TABLE IF NOT EXISTS analytics.project_events (
+  revision bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  delivery_id uuid NOT NULL UNIQUE,
+  project_id text NOT NULL,
+  event_name text NOT NULL,
+  action text NOT NULL,
+  item_id text,
+  content_id text NOT NULL,
+  repository text,
+  source_updated_at timestamptz,
+  received_at timestamptz NOT NULL,
+  stored_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  data jsonb NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS project_events_content_time
+  ON analytics.project_events (content_id, received_at);
+CREATE INDEX IF NOT EXISTS project_events_item_time
+  ON analytics.project_events (item_id, received_at) WHERE item_id IS NOT NULL;
