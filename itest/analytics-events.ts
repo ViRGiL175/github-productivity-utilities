@@ -27,7 +27,8 @@ function payload(fixture: EventFixture, updatedAt: string, from: number, to: num
 
 async function receiver(pool: Pool, fixture: EventFixture) {
   const secret = randomBytes(32).toString('hex');
-  const eventPool = new Pool({ ...pool.options, max: 2,
+  // pg hides the password from enumeration, so spreading pool.options omits it.
+  const eventPool = new Pool({ ...pool.options, password: pool.options.password, max: 2,
     connectionTimeoutMillis: 1000, statement_timeout: 2000, query_timeout: 2500 });
   eventPool.on('error', () => { console.log('Webhook database connection closed; the next delivery will reconnect'); });
   const server = webhookServer(secret, new PostgresEventStore(eventPool, fixture.target, fixture.repositories));
