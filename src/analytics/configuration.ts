@@ -11,7 +11,7 @@ export interface Configuration {
   keyReadApproved: boolean;
   database: PoolConfig;
   syncIntervalMs: number;
-  webhook: { secret: string; port: number } | null;
+  webhook: { secret: string; port: number; host: '127.0.0.1' | '0.0.0.0' } | null;
 }
 
 function required(name: string): string {
@@ -39,10 +39,12 @@ export async function configuration(): Promise<Configuration> {
   if (secretFile) {
     const secret = (await readFile(secretFile, 'utf8')).trim();
     const port = Number(process.env.GITHUB_WEBHOOK_PORT ?? '8787');
-    if (secret.length < 32 || !Number.isSafeInteger(port) || port < 1 || port > 65535) {
-      throw new Error('Webhook requires a secret of at least 32 characters and a valid port.');
+    const host = process.env.GITHUB_WEBHOOK_HOST?.trim() || '127.0.0.1';
+    if (secret.length < 32 || !Number.isSafeInteger(port) || port < 1 || port > 65535 ||
+        (host !== '127.0.0.1' && host !== '0.0.0.0')) {
+      throw new Error('Webhook requires a secret of at least 32 characters, a valid port, and host 127.0.0.1 or 0.0.0.0.');
     }
-    webhook = { secret, port };
+    webhook = { secret, port, host };
   }
   return {
     webhook,
