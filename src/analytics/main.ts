@@ -37,7 +37,7 @@ async function main(): Promise<void> {
     ? webhookServer(config.webhook.secret, new PostgresEventStore(eventPool, config.target, config.repositories)) : null;
   try {
     if (server && config.webhook) {
-      server.listen(config.webhook.port, '127.0.0.1');
+      server.listen(config.webhook.port, config.webhook.host);
       await eventOnce(server, 'listening');
       console.log(JSON.stringify({ event: 'webhook_listening', port: config.webhook.port }));
     }
