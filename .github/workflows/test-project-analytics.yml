@@ -10,6 +10,7 @@ on:
       - 'scripts/local-analytics.mjs'
       - 'itest/project-analytics.ts'
       - 'itest/analytics-sandbox.ts'
+      - 'itest/analytics-events.ts'
       - 'package*.json'
       - 'tsconfig*.json'
   workflow_dispatch:

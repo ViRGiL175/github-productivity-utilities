@@ -9,6 +9,7 @@ import { Octokit } from '@octokit/rest';
 import pg from 'pg';
 import { ProjectV2Repository, type IterationDefinition } from '../src/github/ProjectV2Repository.ts';
 import { analyticsSandbox } from './analytics-sandbox.ts';
+import { startDatabaseFailureProbe, verifyEventRedelivery, type EventFixture } from './analytics-events.ts';
 
 const sandbox = await analyticsSandbox();
 const { owner, backlog: repo, number: projectNumber } = sandbox;
@@ -166,7 +167,8 @@ async function collect(): Promise<void> {
   }
 }
 
-async function verifyDatabaseRecovery(pool: pg.Pool, itemId: string): Promise<void> {
+async function verifyDatabaseRecovery(pool: pg.Pool, fixture: EventFixture): Promise<void> {
+  const { itemId } = fixture;
   phase = 'database_restart';
   assert.equal(process.env.GITHUB_ACTIONS, 'true', 'Database restart is restricted to the ephemeral CI stack');
   assert.equal(process.env.COMPOSE_PROJECT_NAME, `analytics-e2e-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`);
@@ -214,8 +216,10 @@ async function verifyDatabaseRecovery(pool: pg.Pool, itemId: string): Promise<vo
       exitCode: result.status, unsupportedOption: /unknown flag|unknown shorthand flag|unknown command/.test(result.stderr ?? '') }));
     assert.equal(result.status, 0, 'Ephemeral PostgreSQL lifecycle command failed');
   }
+  let events: Awaited<ReturnType<typeof startDatabaseFailureProbe>> | undefined;
   let stopped = false;
   try {
+    events = await startDatabaseFailureProbe(pool, fixture);
     await waitFor(async () => {
       const result = await pool.query("SELECT 1 FROM pg_stat_activity WHERE application_name=$1 AND state='idle'", [applicationName]);
       return result.rowCount === 1;
@@ -225,17 +229,19 @@ async function verifyDatabaseRecovery(pool: pg.Pool, itemId: string): Promise<vo
     postgres('stop', '--timeout', '1');
     await waitFor(() => idleConnectionFailed && connectionFailed, 90_000);
     console.log('The same collector survived an idle connection loss and a failed connection attempt');
+    await events.assertUnavailable();
     phase = 'database_recovery';
     completed = 0;
     postgres('up', '-d', '--no-deps', '--no-recreate', '--wait', '--wait-timeout', '90');
     stopped = false;
+    await events.assertRecovered();
     await waitFor(() => completed > 0, 180_000);
     const after = await pool.query("SELECT count(*)::int AS completed FROM analytics.sync_runs WHERE status='complete'");
     assert.ok(after.rows[0].completed > before.rows[0].completed);
-    const fixture = await pool.query(`SELECT present,
+    const fixtureState = await pool.query(`SELECT present,
       (SELECT count(*)::int FROM analytics.item_history WHERE item_id=$1) AS revisions
       FROM analytics.items WHERE item_id=$1`, [itemId]);
-    assert.deepEqual(fixture.rows, [{ present: false, revisions: 3 }]);
+    assert.deepEqual(fixtureState.rows, [{ present: false, revisions: 3 }]);
     assert.equal(exited, false);
     console.log('The same collector committed a fresh full snapshot after PostgreSQL restart; fixture history is unchanged');
   } finally {
@@ -244,6 +250,7 @@ async function verifyDatabaseRecovery(pool: pg.Pool, itemId: string): Promise<vo
       const timeout = setTimeout(() => collector.kill('SIGKILL'), 10_000);
       try { await closed; } finally { clearTimeout(timeout); }
     }
+    await events?.close();
     for (const reader of readers) reader.close();
     if (stopped) postgres('up', '-d', '--no-deps', '--no-recreate', '--wait', '--wait-timeout', '90');
   }
@@ -339,7 +346,11 @@ async function scenario(): Promise<void> {
     assert.deepEqual(kinds.rows.map(row => row.kind), ['observed', 'observed', 'missing']);
     console.log('Full reconciliation marks the removed item without deleting history');
 
-    await verifyDatabaseRecovery(pool, itemId);
+    const eventFixture: EventFixture = { target: { owner, number: projectNumber }, repositories: sandbox.repositories,
+      projectId: fixture.projectId, itemId, contentId: fixture.issueNodeId };
+    phase = 'webhook_redelivery';
+    await verifyEventRedelivery(pool, eventFixture);
+    await verifyDatabaseRecovery(pool, eventFixture);
     phase = 'grafana_query';
     await verifyGrafana({ from: 'now-1h', to: 'now', queries: [{ refId: 'A', format: 'table',
         datasource: { uid: 'project-analytics', type: 'grafana-postgresql-datasource' },
