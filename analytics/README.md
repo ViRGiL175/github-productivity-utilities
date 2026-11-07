@@ -210,7 +210,7 @@ Dashboard, расписание, доступы, размещение и бэк�
 
 Workflow **Test project analytics** использует существующий GitHub sandbox. Через официальный [gh webhook forward](https://docs.github.com/en/webhooks/testing-and-troubleshooting-webhooks/using-the-github-cli-to-forward-webhooks-for-testing) настоящие события GitHub приходят на локальный production-приёмник runner. Исходные тело, подпись и delivery ID не составляются тестом. Публичный порт, внешний туннель и доступ к рабочим серверам не нужны.
 
-Для forwarder используется существующий CI_SANDBOX_TOKEN с правом управления webhooks тестовой организации (для classic PAT: admin:org_hook). Без этого права тест завершается ошибкой, а не пропускает живые проверки. Постоянный сборщик по-прежнему получает только свой read-only App token. Одновременно в организации допустим один GitHub CLI forwarder; workflow использует общую очередь sandbox.
+Для forwarder используется существующий CI_SANDBOX_TOKEN с правом Organization Webhooks: write тестовой организации (для classic PAT: admin:org_hook). Этот же ограниченный sandbox PAT владельца выполняет перенос и удаление созданных прогоном тестовых issues. Остальные изменения fixtures выполняет временный App token; его права не расширяются ради этих двух операций. Без этого права тест завершается ошибкой, а не пропускает живые проверки. Постоянный сборщик по-прежнему получает только свой read-only App token. Одновременно в организации допустим один GitHub CLI forwarder; workflow использует общую очередь sandbox.
 
 Сценарии меняют только созданные этим запуском объекты:
 

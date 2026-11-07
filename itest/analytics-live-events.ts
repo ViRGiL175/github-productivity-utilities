@@ -122,8 +122,8 @@ export async function cleanupLiveFixtures(github: Octokit, projects: ProjectV2Re
 export async function verifyLiveEvents(pool: Pool, github: Octokit, projects: ProjectV2Repository, sandbox: Sandbox, marker: string): Promise<LiveEventQuery> {
   const { owner, backlog: repo, number } = sandbox;
   assert.ok(process.env.WEBHOOK_FORWARD_TOKEN, 'Missing sandbox webhook credential');
-  const hooks = new Octokit({ auth: process.env.WEBHOOK_FORWARD_TOKEN, request: { timeout: 30_000 }, log: { debug() {}, info() {}, warn() {}, error() {} } });
-  const existing = await hooks.paginate(hooks.rest.orgs.listWebhooks, { org: owner });
+  const sandboxOwner = new Octokit({ auth: process.env.WEBHOOK_FORWARD_TOKEN, request: { timeout: 30_000 }, log: { debug() {}, info() {}, warn() {}, error() {} } });
+  const existing = await sandboxOwner.paginate(sandboxOwner.rest.orgs.listWebhooks, { org: owner });
   assert.equal(existing.some(hook => hook.name === 'cli'), false, 'Another sandbox GitHub CLI forwarder is running');
   const status = await projects.getStatusMetadata(owner, number, 'Status');
   const priority = await projects.getStatusMetadata(owner, number, 'Priority');
@@ -201,9 +201,9 @@ export async function verifyLiveEvents(pool: Pool, github: Octokit, projects: Pr
     `mutation($input:${type}!) { ${operation}(input:$input) { clientMutationId } }`, { input });
   try {
     await waitFor(async () => connected ? true : undefined);
-    const hook = await waitFor(async () => (await hooks.paginate(hooks.rest.orgs.listWebhooks, { org: owner })).find(hook => hook.name === 'cli' && hook.active && !existing.some(old => old.id === hook.id)));
+    const hook = await waitFor(async () => (await sandboxOwner.paginate(sandboxOwner.rest.orgs.listWebhooks, { org: owner })).find(hook => hook.name === 'cli' && hook.active && !existing.some(old => old.id === hook.id)));
     fixtures.hookId = hook.id; await save(fixtures);
-    await hooks.rest.orgs.pingWebhook({ org: owner, hook_id: hook.id });
+    await sandboxOwner.rest.orgs.pingWebhook({ org: owner, hook_id: hook.id });
     await waitFor(async () => ready ? true : undefined);
     let parent!: Issue;
     await mutation('issue_opened', 'issues', 'opened', async () => { parent = await createIssue('parent'); }, row => row.content_id === parent.id && row.data.state === 'open');
@@ -281,14 +281,16 @@ export async function verifyLiveEvents(pool: Pool, github: Octokit, projects: Pr
     assert.ok(destination);
     const destinationRepo = await github.rest.repos.get({ owner, repo: destination });
     const sourceIssueId = transfer.id;
+    // Lifecycle mutations use the existing sandbox owner PAT; the fixture App keeps its limited permissions.
     await mutation('issue_transferred', 'issues', 'transferred', async () => {
-      const result = await github.graphql<{ transferIssue: { issue: { id: string; databaseId: number; number: number } } }>(`
+      const result = await sandboxOwner.graphql<{ transferIssue: { issue: { id: string; databaseId: number; number: number } } }>(`
         mutation($input:TransferIssueInput!) { transferIssue(input:$input) { issue { id databaseId number } } }`, { input: { issueId: transfer.id, repositoryId: destinationRepo.data.node_id } });
       Object.assign(transfer, result.transferIssue.issue, { repo: destination }); await save(fixtures);
     }, row => row.content_id === sourceIssueId);
     const disposable = await createIssue('delete');
     await mutation('issue_deleted', 'issues', 'deleted', async () => {
-      await graphqlMutation('deleteIssue', 'DeleteIssueInput', { issueId: disposable.id });
+      await sandboxOwner.graphql('mutation($input:DeleteIssueInput!) { deleteIssue(input:$input) { clientMutationId } }',
+        { input: { issueId: disposable.id } });
       disposable.deleted = true; await save(fixtures);
     }, row => row.content_id === disposable.id);
     verified.sort((a, b) => a.delivery_id.localeCompare(b.delivery_id));
@@ -298,13 +300,16 @@ export async function verifyLiveEvents(pool: Pool, github: Octokit, projects: Pr
       values: ['delivery_id', 'event_name', 'action', 'content_id', 'data'].map(key => verified.map(row => row[key as keyof EventRow])),
     };
   } catch (error) {
-    console.error(JSON.stringify({ event: 'live_webhook_scenario_failed', phase, httpStatus: typeof error === 'object' && error !== null && 'status' in error ? error.status : undefined }));
+    const graphqlErrorTypes = typeof error === 'object' && error !== null && 'errors' in error && Array.isArray(error.errors)
+      ? error.errors.map(item => typeof item?.type === 'string' && /^[A-Z_]+$/.test(item.type) ? item.type : 'UNKNOWN') : undefined;
+    console.error(JSON.stringify({ event: 'live_webhook_scenario_failed', phase, graphqlErrorTypes,
+      httpStatus: typeof error === 'object' && error !== null && 'status' in error ? error.status : undefined }));
     throw error;
   } finally {
     try {
       try {
         if (fixtures.hookId) {
-          await hooks.rest.orgs.deleteWebhook({ org: owner, hook_id: fixtures.hookId });
+          await sandboxOwner.rest.orgs.deleteWebhook({ org: owner, hook_id: fixtures.hookId });
           delete fixtures.hookId; await save(fixtures);
         }
       } finally {
