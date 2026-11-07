@@ -11,6 +11,8 @@ on:
       - 'itest/project-analytics.ts'
       - 'itest/analytics-sandbox.ts'
       - 'itest/analytics-events.ts'
+      - 'itest/analytics-live-events.ts'
+      - 'itest/analytics-fixture-state.ts'
       - 'package*.json'
       - 'tsconfig*.json'
   workflow_dispatch:
@@ -32,7 +34,7 @@ jobs:
        (github.event.pull_request.head.repo.full_name == github.repository &&
         contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)))
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       GITHUB_APP_ID: ${{ secrets.ORG_AUTOMATION_APP_ID }}
       GITHUB_APP_PRIVATE_KEY_FILE: .local/secrets/github-app.pem
@@ -98,10 +100,14 @@ jobs:
           app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
           private-key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
           owner: ${{ env.PROJECT_OWNER }}
-          repositories: ${{ env.FIXTURE_REPOSITORY }}
+          repositories: ${{ env.GITHUB_REPOSITORIES }}
           permission-organization-projects: write
           permission-issues: write
           permission-metadata: read
+      - name: Install official GitHub webhook forwarder
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh extension install cli/gh-webhook --pin v0.2.0
       - name: Start clean PostgreSQL and Grafana
         run: |
           node scripts/local-analytics.mjs permissions
@@ -109,11 +115,13 @@ jobs:
       - name: Import, reconcile, and query the fixture
         env:
           FIXTURE_TOKEN: ${{ steps.fixture-token.outputs.token }}
+          WEBHOOK_FORWARD_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
         run: node itest/project-analytics.ts
       - name: Clean up only this run's GitHub fixture
         if: ${{ always() && steps.fixture-token.outputs.token != '' }}
         env:
           FIXTURE_TOKEN: ${{ steps.fixture-token.outputs.token }}
+          WEBHOOK_FORWARD_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
         run: node itest/project-analytics.ts cleanup
       - name: Remove ephemeral containers, volumes, and credentials
         if: always()

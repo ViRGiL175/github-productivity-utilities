@@ -3,13 +3,15 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { randomBytes } from 'node:crypto';
 import { Agent, request } from 'node:https';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Octokit } from '@octokit/rest';
 import pg from 'pg';
 import { ProjectV2Repository, type IterationDefinition } from '../src/github/ProjectV2Repository.ts';
 import { analyticsSandbox } from './analytics-sandbox.ts';
+import { cleanupLiveFixtures, verifyLiveEvents, type LiveEventQuery } from './analytics-live-events.ts';
 import { startDatabaseFailureProbe, verifyEventRedelivery, type EventFixture } from './analytics-events.ts';
+import { cleanupAttempts, saveFixtureJournal } from './analytics-fixture-state.ts';
 
 const sandbox = await analyticsSandbox();
 const { owner, backlog: repo, number: projectNumber } = sandbox;
@@ -25,7 +27,7 @@ const github = new Octokit({ auth: process.env.FIXTURE_TOKEN, request: { timeout
 const projects = new ProjectV2Repository(github);
 let phase = 'fixture_setup';
 
-async function verifyGrafana(query: unknown): Promise<void> {
+async function verifyGrafana(query: unknown, live: LiveEventQuery): Promise<void> {
   const origin = new URL('https://127.0.0.1:3301');
   const trusted = new Agent({ ca: await readFile(process.env.GRAFANA_TLS_CA_FILE!) });
   const untrusted = new Agent();
@@ -111,6 +113,17 @@ async function verifyGrafana(query: unknown): Promise<void> {
     assert.deepEqual(result.body.results.A.frames[0]?.data.values, [[3]]);
     console.log('Anonymous access and signup are denied; Viewer reads but cannot edit; Admin can edit');
     console.log('Real Grafana PostgreSQL datasource returned all three fixture observations over verified HTTPS');
+    const events = await api<{ results: { A: { status: number; error?: string; frames: Array<{ data: { values: unknown[][] } }> } } }>('/api/ds/query', 'POST', {
+      from: 'now-1h', to: 'now', queries: [{ refId: 'A', format: 'table', datasource: { uid: 'project-analytics', type: 'grafana-postgresql-datasource' }, rawSql: live.sql }],
+    }, viewer);
+    assert.equal(events.status, 200);
+    assert.equal(events.body.results.A.status, 200);
+    assert.equal(events.body.results.A.error, undefined);
+    const eventValues = events.body.results.A.frames[0]?.data.values;
+    assert.ok(eventValues);
+    assert.deepEqual(eventValues.slice(0, 4), live.values.slice(0, 4));
+    assert.deepEqual(eventValues[4]?.map(value => JSON.parse(String(value))), live.values[4]);
+    console.log('Grafana returned the exact real GitHub delivery IDs and event identities verified in PostgreSQL');
   } finally {
     try {
       if (dashboardCreated) assert.equal((await api(`/api/dashboards/uid/${uid}`, 'DELETE', undefined, bootstrap)).status, 200);
@@ -136,12 +149,13 @@ interface Fixture {
 }
 
 async function save(fixture: Fixture): Promise<void> {
-  await writeFile(journal, JSON.stringify(fixture), { mode: 0o600 });
+  await saveFixtureJournal(journal, fixture);
 }
 
 async function collect(): Promise<void> {
   const env = { ...process.env };
   delete env.FIXTURE_TOKEN;
+  delete env.WEBHOOK_FORWARD_TOKEN;
   delete env.RAW_PRIVATE_KEY;
   for (let attempt = 0; attempt < 5; attempt++) {
     const result = spawnSync(process.execPath, ['dist/analytics/main.js', '--once'], { env, encoding: 'utf8', timeout: 180_000 });
@@ -176,6 +190,7 @@ async function verifyDatabaseRecovery(pool: pg.Pool, fixture: EventFixture): Pro
   const applicationName = 'analytics-e2e-recovery';
   const env: NodeJS.ProcessEnv = { ...process.env, SYNC_INTERVAL_SECONDS: '60', PGAPPNAME: applicationName };
   delete env.FIXTURE_TOKEN;
+  delete env.WEBHOOK_FORWARD_TOKEN;
   delete env.RAW_PRIVATE_KEY;
   const collector = spawn(process.execPath, ['dist/analytics/main.js'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
   let exited = false;
@@ -258,30 +273,39 @@ async function verifyDatabaseRecovery(pool: pg.Pool, fixture: EventFixture): Pro
 
 async function cleanup(): Promise<void> {
   phase = 'cleanup';
-  let fixture: Fixture;
-  try {
-    fixture = JSON.parse(await readFile(journal, 'utf8')) as Fixture;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
-    throw error;
+  const { attempt, finish } = cleanupAttempts();
+  let fixture: Fixture | undefined;
+  await attempt('base_journal', async () => {
+    let saved: Fixture;
+    try { saved = JSON.parse(await readFile(journal, 'utf8')) as Fixture; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
+    assert.equal(saved.marker, marker, 'Refusing to clean up another run');
+    fixture = saved;
+  });
+  if (fixture) {
+    const saved = fixture;
+    await attempt('base_project_item', async () => {
+      if (!saved.itemId || saved.removed) return;
+      const result = await github.graphql<{ node: { project: { id: string }; content: { id: string } } | null }>(`
+        query($id: ID!) { node(id: $id) { ... on ProjectV2Item { project { id } content { ... on Issue { id } } } } }
+      `, { id: saved.itemId });
+      if (result.node) {
+        assert.equal(result.node.project.id, saved.projectId);
+        assert.equal(result.node.content.id, saved.issueNodeId);
+        await projects.deleteProjectItem(saved.projectId, saved.itemId);
+      }
+    });
+    await attempt('base_issue_close', async () => {
+      const issue = await github.rest.issues.get({ owner, repo, issue_number: saved.issueNumber });
+      assert.equal(issue.data.node_id, saved.issueNodeId);
+      assert.equal(issue.data.title, marker);
+      assert.equal(issue.data.body, marker);
+      await github.rest.issues.update({ owner, repo, issue_number: saved.issueNumber, state: 'closed' });
+    });
   }
-  assert.equal(fixture.marker, marker, 'Refusing to clean up another run');
-  const issue = await github.rest.issues.get({ owner, repo, issue_number: fixture.issueNumber });
-  assert.equal(issue.data.node_id, fixture.issueNodeId);
-  assert.equal(issue.data.title, marker);
-  assert.equal(issue.data.body, marker);
-  if (fixture.itemId && !fixture.removed) {
-    const result = await github.graphql<{ node: { project: { id: string }; content: { id: string } } | null }>(`
-      query($id: ID!) { node(id: $id) { ... on ProjectV2Item { project { id } content { ... on Issue { id } } } } }
-    `, { id: fixture.itemId });
-    if (result.node) {
-      assert.equal(result.node.project.id, fixture.projectId);
-      assert.equal(result.node.content.id, fixture.issueNodeId);
-      await projects.deleteProjectItem(fixture.projectId, fixture.itemId);
-    }
-  }
-  await github.rest.issues.update({ owner, repo, issue_number: fixture.issueNumber, state: 'closed' });
-  console.log('This run’s project item removed and issue closed');
+  await attempt('live_fixtures', () => cleanupLiveFixtures(github, projects, sandbox, marker));
+  finish();
+  console.log('This run’s GitHub fixtures and webhook cleaned up');
 }
 
 async function scenario(): Promise<void> {
@@ -351,10 +375,12 @@ async function scenario(): Promise<void> {
     phase = 'webhook_redelivery';
     await verifyEventRedelivery(pool, eventFixture);
     await verifyDatabaseRecovery(pool, eventFixture);
+    phase = 'live_github_webhooks';
+    const live = await verifyLiveEvents(pool, github, projects, sandbox, marker);
     phase = 'grafana_query';
     await verifyGrafana({ from: 'now-1h', to: 'now', queries: [{ refId: 'A', format: 'table',
         datasource: { uid: 'project-analytics', type: 'grafana-postgresql-datasource' },
-        rawSql: `SELECT count(*)::int AS revisions FROM analytics.item_history WHERE snapshot->'content'->>'title' = '${marker}'` }] });
+        rawSql: `SELECT count(*)::int AS revisions FROM analytics.item_history WHERE snapshot->'content'->>'title' = '${marker}'` }] }, live);
   } finally {
     await pool.end();
   }
