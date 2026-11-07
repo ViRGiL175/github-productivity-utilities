@@ -9,6 +9,7 @@ import { Octokit } from '@octokit/rest';
 import pg from 'pg';
 import { ProjectV2Repository, type IterationDefinition } from '../src/github/ProjectV2Repository.ts';
 import { analyticsSandbox } from './analytics-sandbox.ts';
+import { cleanupLiveFixtures, verifyLiveEvents, type LiveEventQuery } from './analytics-live-events.ts';
 import { startDatabaseFailureProbe, verifyEventRedelivery, type EventFixture } from './analytics-events.ts';
 
 const sandbox = await analyticsSandbox();
@@ -25,7 +26,7 @@ const github = new Octokit({ auth: process.env.FIXTURE_TOKEN, request: { timeout
 const projects = new ProjectV2Repository(github);
 let phase = 'fixture_setup';
 
-async function verifyGrafana(query: unknown): Promise<void> {
+async function verifyGrafana(query: unknown, live: LiveEventQuery): Promise<void> {
   const origin = new URL('https://127.0.0.1:3301');
   const trusted = new Agent({ ca: await readFile(process.env.GRAFANA_TLS_CA_FILE!) });
   const untrusted = new Agent();
@@ -111,6 +112,14 @@ async function verifyGrafana(query: unknown): Promise<void> {
     assert.deepEqual(result.body.results.A.frames[0]?.data.values, [[3]]);
     console.log('Anonymous access and signup are denied; Viewer reads but cannot edit; Admin can edit');
     console.log('Real Grafana PostgreSQL datasource returned all three fixture observations over verified HTTPS');
+    const events = await api<{ results: { A: { status: number; error?: string; frames: Array<{ data: { values: unknown[][] } }> } } }>('/api/ds/query', 'POST', {
+      from: 'now-1h', to: 'now', queries: [{ refId: 'A', format: 'table', datasource: { uid: 'project-analytics', type: 'grafana-postgresql-datasource' }, rawSql: live.sql }],
+    }, viewer);
+    assert.equal(events.status, 200);
+    assert.equal(events.body.results.A.status, 200);
+    assert.equal(events.body.results.A.error, undefined);
+    assert.deepEqual(events.body.results.A.frames[0]?.data.values, live.values);
+    console.log('Grafana returned the exact real GitHub delivery IDs and event identities verified in PostgreSQL');
   } finally {
     try {
       if (dashboardCreated) assert.equal((await api(`/api/dashboards/uid/${uid}`, 'DELETE', undefined, bootstrap)).status, 200);
@@ -281,6 +290,7 @@ async function cleanup(): Promise<void> {
     }
   }
   await github.rest.issues.update({ owner, repo, issue_number: fixture.issueNumber, state: 'closed' });
+  await cleanupLiveFixtures(github, projects, sandbox, marker);
   console.log('This run’s project item removed and issue closed');
 }
 
@@ -351,10 +361,12 @@ async function scenario(): Promise<void> {
     phase = 'webhook_redelivery';
     await verifyEventRedelivery(pool, eventFixture);
     await verifyDatabaseRecovery(pool, eventFixture);
+    phase = 'live_github_webhooks';
+    const live = await verifyLiveEvents(pool, github, projects, sandbox, marker);
     phase = 'grafana_query';
     await verifyGrafana({ from: 'now-1h', to: 'now', queries: [{ refId: 'A', format: 'table',
         datasource: { uid: 'project-analytics', type: 'grafana-postgresql-datasource' },
-        rawSql: `SELECT count(*)::int AS revisions FROM analytics.item_history WHERE snapshot->'content'->>'title' = '${marker}'` }] });
+        rawSql: `SELECT count(*)::int AS revisions FROM analytics.item_history WHERE snapshot->'content'->>'title' = '${marker}'` }] }, live);
   } finally {
     await pool.end();
   }
