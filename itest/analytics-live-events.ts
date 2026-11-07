@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { once } from 'node:events';
-import { readFile, writeFile } from 'node:fs/promises';
+import { open, readFile } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Octokit } from '@octokit/rest';
@@ -11,6 +11,7 @@ import { PostgresEventStore } from '../src/analytics/PostgresEventStore.ts';
 import { webhookServer } from '../src/analytics/webhooks.ts';
 import type { ProjectV2Repository } from '../src/github/ProjectV2Repository.ts';
 import { analyticsSandbox } from './analytics-sandbox.ts';
+import { cleanupAttempts, saveFixtureJournal } from './analytics-fixture-state.ts';
 
 const journal = '.local/analytics-live-fixtures.json';
 type Sandbox = Awaited<ReturnType<typeof analyticsSandbox>>;
@@ -44,31 +45,69 @@ export interface LiveEventQuery {
   sql: string;
   values: unknown[][];
 }
-const save = (fixtures: Fixtures) => writeFile(journal, JSON.stringify(fixtures), { mode: 0o600 });
+const save = (fixtures: Fixtures) => saveFixtureJournal(journal, fixtures);
+
+function receiptPath(marker: string): string {
+  assert.match(marker, /^ITEST-analytics-\d+-\d+$/);
+  return `.local/secrets/analytics-forwarder-${marker}.log`;
+}
+
+async function forwarderHookId(owner: string, marker: string): Promise<number | undefined> {
+  let receipt: string;
+  try { receipt = await readFile(receiptPath(marker), 'utf8'); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
+  // gh-webhook v0.2.0 has no hook-ID output flag. Its private API response log
+  // identifies our creation even if the WebSocket connection/activation fails.
+  const ids = new Set<number>();
+  let json = '';
+  for (const line of receipt.split('\n')) {
+    if (!json && !line.startsWith('{')) continue;
+    json += line + '\n';
+    let value;
+    try { value = JSON.parse(json); } catch { continue; }
+    json = '';
+    if (value.name === 'cli' && Number.isSafeInteger(value.id) && value.id > 0 &&
+        value.url === `https://api.github.com/orgs/${owner}/hooks/${value.id}`) ids.add(value.id);
+  }
+  assert.ok(ids.size <= 1, 'Ambiguous forwarder receipt; refusing to guess webhook ownership');
+  return [...ids][0];
+}
+
+async function removeForwarderHook(hooks: Octokit, owner: string, marker: string, fixtures?: Fixtures): Promise<void> {
+  const receivedId = await forwarderHookId(owner, marker);
+  if (receivedId && fixtures?.hookId) assert.equal(receivedId, fixtures.hookId);
+  const id = receivedId ?? fixtures?.hookId;
+  if (!id) {
+    let receipt: string;
+    try { receipt = await readFile(receiptPath(marker), 'utf8'); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
+    assert.ok(/HTTP\/[\d.]+ 4\d\d\b/.test(receipt), 'Webhook creation outcome unknown; no owned hook ID was received');
+    return;
+  }
+  try {
+    const hook = await hooks.rest.orgs.getWebhook({ org: owner, hook_id: id });
+    assert.equal(hook.data.name, 'cli');
+    await hooks.rest.orgs.deleteWebhook({ org: owner, hook_id: id });
+  } catch (error) { if (!(typeof error === 'object' && error !== null && 'status' in error && error.status === 404)) throw error; }
+  if (fixtures) { delete fixtures.hookId; await save(fixtures); }
+  console.log('This run’s GitHub CLI webhook is absent');
+}
 
 export async function cleanupLiveFixtures(github: Octokit, projects: ProjectV2Repository, sandbox: Sandbox, marker: string): Promise<void> {
-  let fixtures: Fixtures;
-  try { fixtures = JSON.parse(await readFile(journal, 'utf8')) as Fixtures; }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
-  assert.equal(fixtures.marker, marker, 'Refusing to clean another run');
-  const failures: string[] = [];
-  const readableRepositories = new Set<string>();
-  async function attempt(label: string, action: () => Promise<void>): Promise<void> {
-    try { await action(); } catch (error) {
-      failures.push(label);
-      console.error(JSON.stringify({ event: 'analytics_cleanup_failed', step: label,
-        httpStatus: typeof error === 'object' && error !== null && 'status' in error ? error.status : undefined }));
-    }
-  }
-  if (fixtures.hookId) await attempt('webhook', async () => {
-    const hooks = new Octokit({ auth: process.env.WEBHOOK_FORWARD_TOKEN, log: { debug() {}, info() {}, warn() {}, error() {} } });
-    try {
-      const hook = await hooks.rest.orgs.getWebhook({ org: sandbox.owner, hook_id: fixtures.hookId! });
-      assert.equal(hook.data.name, 'cli');
-      await hooks.rest.orgs.deleteWebhook({ org: sandbox.owner, hook_id: fixtures.hookId! });
-    } catch (error) { if (!(typeof error === 'object' && error !== null && 'status' in error && error.status === 404)) throw error; }
-    delete fixtures.hookId; await save(fixtures);
+  const { attempt, finish } = cleanupAttempts();
+  let loaded: Fixtures | undefined;
+  await attempt('live_journal', async () => {
+    let saved: Fixtures;
+    try { saved = JSON.parse(await readFile(journal, 'utf8')) as Fixtures; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
+    assert.equal(saved.marker, marker, 'Refusing to clean another run');
+    loaded = saved;
   });
+  const hooks = new Octokit({ auth: process.env.WEBHOOK_FORWARD_TOKEN, request: { timeout: 30_000 }, log: { debug() {}, info() {}, warn() {}, error() {} } });
+  await attempt('webhook', () => removeForwarderHook(hooks, sandbox.owner, marker, loaded));
+  if (!loaded) { finish(); return; }
+  const fixtures = loaded;
+  const readableRepositories = new Set<string>();
   // Recover successful creations whose response or journal write was interrupted.
   for (const repo of sandbox.repositories) await attempt('issue_recovery', async () => {
     for await (const page of github.paginate.iterator(github.rest.issues.listForRepo, { owner: sandbox.owner, repo, state: 'all', per_page: 100 })) {
@@ -116,7 +155,7 @@ export async function cleanupLiveFixtures(github: Octokit, projects: ProjectV2Re
       await github.rest.issues.update({ owner: sandbox.owner, repo: issue.repo, issue_number: issue.number, state: 'closed' });
     });
   }
-  assert.deepEqual(failures, [], 'Some isolated sandbox cleanup steps failed; inspect the run journal');
+  finish();
 }
 
 export async function verifyLiveEvents(pool: Pool, github: Octokit, projects: ProjectV2Repository, sandbox: Sandbox, marker: string): Promise<LiveEventQuery> {
@@ -147,17 +186,20 @@ export async function verifyLiveEvents(pool: Pool, github: Octokit, projects: Pr
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/github/webhooks`;
   // GitHub's development forwarder preserves the original payload, signature and delivery ID.
   // Never omit --url: the CLI otherwise writes complete webhook payloads to stdout.
+  // Keep the CLI's API diagnostics private: they may contain the temporary secret.
+  // Passing the descriptor directly also preserves the creation response if Node exits.
+  const receipt = await open(receiptPath(marker), 'wx', 0o600).catch(async error => {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    throw error;
+  });
   const forwarder = spawn('gh', ['webhook', 'forward', '--org', owner, '--events', 'projects_v2_item,issues,sub_issues', '--url', url, '--secret', secret],
-    { env: { ...process.env, GH_TOKEN: process.env.WEBHOOK_FORWARD_TOKEN }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32' });
+    { env: { ...process.env, GH_TOKEN: process.env.WEBHOOK_FORWARD_TOKEN, GH_DEBUG: 'api', NO_COLOR: '1' },
+      stdio: ['ignore', 'ignore', receipt.fd], windowsHide: true, detached: process.platform !== 'win32' });
   let exited = false;
   const closed = new Promise<void>(resolve => {
     forwarder.once('error', () => { exited = true; resolve(); });
-    forwarder.once('exit', () => { exited = true; resolve(); });
+    forwarder.once('close', () => { exited = true; resolve(); });
   });
-  forwarder.stdout.resume();
-  let connected = false;
-  let diagnosticTail = '';
-  forwarder.stderr.on('data', chunk => { diagnosticTail = (diagnosticTail + chunk.toString()).slice(-1024); if (diagnosticTail.includes('Forwarding Webhook events from GitHub')) connected = true; });
   const verified: EventRow[] = [];
   let phase = 'signed_github_ping';
   async function waitFor<T>(read: () => Promise<T | undefined>): Promise<T> {
@@ -200,9 +242,12 @@ export async function verifyLiveEvents(pool: Pool, github: Octokit, projects: Pr
   const graphqlMutation = (operation: string, type: string, input: unknown) => github.graphql(
     `mutation($input:${type}!) { ${operation}(input:$input) { clientMutationId } }`, { input });
   try {
-    await waitFor(async () => connected ? true : undefined);
-    const hook = await waitFor(async () => (await sandboxOwner.paginate(sandboxOwner.rest.orgs.listWebhooks, { org: owner })).find(hook => hook.name === 'cli' && hook.active && !existing.some(old => old.id === hook.id)));
-    fixtures.hookId = hook.id; await save(fixtures);
+    const hookId = await waitFor(() => forwarderHookId(owner, marker));
+    fixtures.hookId = hookId; await save(fixtures);
+    const hook = await waitFor(async () => {
+      const result = await sandboxOwner.rest.orgs.getWebhook({ org: owner, hook_id: hookId });
+      return result.data.active ? result.data : undefined;
+    });
     await sandboxOwner.rest.orgs.pingWebhook({ org: owner, hook_id: hook.id });
     await waitFor(async () => ready ? true : undefined);
     let parent!: Issue;
@@ -306,22 +351,26 @@ export async function verifyLiveEvents(pool: Pool, github: Octokit, projects: Pr
       httpStatus: typeof error === 'object' && error !== null && 'status' in error ? error.status : undefined }));
     throw error;
   } finally {
-    try {
-      try {
-        if (fixtures.hookId) {
-          await sandboxOwner.rest.orgs.deleteWebhook({ org: owner, hook_id: fixtures.hookId });
-          delete fixtures.hookId; await save(fixtures);
-        }
-      } finally {
-        if (!exited && forwarder.pid) {
-          if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(forwarder.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
-          else process.kill(-forwarder.pid, 'SIGTERM');
-        }
-        await Promise.race([closed, delay(5000)]);
-        if (!exited && forwarder.pid && process.platform !== 'win32') process.kill(-forwarder.pid, 'SIGKILL');
+    const { attempt, finish } = cleanupAttempts();
+    // Stop the creator before reading its final receipt: it must not create a hook
+    // after cleanup has decided there is nothing to remove.
+    await attempt('forwarder_stop', async () => {
+      if (!exited && forwarder.pid) {
+        if (process.platform === 'win32') {
+          const result = spawnSync('taskkill', ['/PID', String(forwarder.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+          assert.equal(result.status, 0);
+        } else process.kill(-forwarder.pid, 'SIGTERM');
       }
-    } finally {
-      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
-    }
+      await Promise.race([closed, delay(5000)]);
+      if (!exited && forwarder.pid && process.platform !== 'win32') {
+        process.kill(-forwarder.pid, 'SIGKILL');
+        await Promise.race([closed, delay(5000)]);
+      }
+      assert.equal(exited, true, 'Forwarder did not stop');
+    });
+    await attempt('forwarder_receipt', async () => { try { await receipt.sync(); } finally { await receipt.close(); } });
+    await attempt('webhook', () => removeForwarderHook(sandboxOwner, owner, marker, fixtures));
+    await attempt('webhook_server', () => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())));
+    finish();
   }
 }

@@ -12,6 +12,7 @@ on:
       - 'itest/analytics-sandbox.ts'
       - 'itest/analytics-events.ts'
       - 'itest/analytics-live-events.ts'
+      - 'itest/analytics-fixture-state.ts'
       - 'package*.json'
       - 'tsconfig*.json'
   workflow_dispatch:
