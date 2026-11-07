@@ -118,7 +118,10 @@ async function verifyGrafana(query: unknown, live: LiveEventQuery): Promise<void
     assert.equal(events.status, 200);
     assert.equal(events.body.results.A.status, 200);
     assert.equal(events.body.results.A.error, undefined);
-    assert.deepEqual(events.body.results.A.frames[0]?.data.values, live.values);
+    const eventValues = events.body.results.A.frames[0]?.data.values;
+    assert.ok(eventValues);
+    assert.deepEqual(eventValues.slice(0, 4), live.values.slice(0, 4));
+    assert.deepEqual(eventValues[4]?.map(value => JSON.parse(String(value))), live.values[4]);
     console.log('Grafana returned the exact real GitHub delivery IDs and event identities verified in PostgreSQL');
   } finally {
     try {

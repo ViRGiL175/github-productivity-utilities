@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { once } from 'node:events';
 import { readFile, writeFile } from 'node:fs/promises';
@@ -51,40 +51,72 @@ export async function cleanupLiveFixtures(github: Octokit, projects: ProjectV2Re
   try { fixtures = JSON.parse(await readFile(journal, 'utf8')) as Fixtures; }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
   assert.equal(fixtures.marker, marker, 'Refusing to clean another run');
-  if (fixtures.hookId) {
+  const failures: string[] = [];
+  const readableRepositories = new Set<string>();
+  async function attempt(label: string, action: () => Promise<void>): Promise<void> {
+    try { await action(); } catch (error) {
+      failures.push(label);
+      console.error(JSON.stringify({ event: 'analytics_cleanup_failed', step: label,
+        httpStatus: typeof error === 'object' && error !== null && 'status' in error ? error.status : undefined }));
+    }
+  }
+  if (fixtures.hookId) await attempt('webhook', async () => {
     const hooks = new Octokit({ auth: process.env.WEBHOOK_FORWARD_TOKEN, log: { debug() {}, info() {}, warn() {}, error() {} } });
     try {
-      const hook = await hooks.rest.orgs.getWebhook({ org: sandbox.owner, hook_id: fixtures.hookId });
+      const hook = await hooks.rest.orgs.getWebhook({ org: sandbox.owner, hook_id: fixtures.hookId! });
       assert.equal(hook.data.name, 'cli');
-      await hooks.rest.orgs.deleteWebhook({ org: sandbox.owner, hook_id: fixtures.hookId });
+      await hooks.rest.orgs.deleteWebhook({ org: sandbox.owner, hook_id: fixtures.hookId! });
     } catch (error) { if (!(typeof error === 'object' && error !== null && 'status' in error && error.status === 404)) throw error; }
     delete fixtures.hookId; await save(fixtures);
-  }
-  const project = await projects.getStatusMetadata(sandbox.owner, sandbox.number, 'Status');
-  assert.equal(fixtures.projectId, project.projectId);
-  for (const itemId of [...fixtures.items]) {
-    const result = await github.graphql<{ node: { project: { id: string }; content: { title: string } } | null }>(`
-      query($id: ID!) { node(id:$id) { ... on ProjectV2Item { project { id } content {
-        ... on Issue { title } ... on DraftIssue { title }
-      } } } }`, { id: itemId });
-    if (result.node) {
-      assert.equal(result.node.project.id, fixtures.projectId);
-      assert.ok(result.node.content.title.startsWith(marker));
-      await projects.deleteProjectItem(fixtures.projectId, itemId);
+  });
+  // Recover successful creations whose response or journal write was interrupted.
+  for (const repo of sandbox.repositories) await attempt('issue_recovery', async () => {
+    for await (const page of github.paginate.iterator(github.rest.issues.listForRepo, { owner: sandbox.owner, repo, state: 'all', per_page: 100 })) {
+      for (const issue of page.data) {
+        if (issue.pull_request || !issue.title.startsWith(marker + '-') || !issue.body?.includes(marker)) continue;
+        if (!fixtures.issues.some(saved => saved.id === issue.node_id)) fixtures.issues.push({ id: issue.node_id, databaseId: issue.id, number: issue.number, repo });
+      }
     }
-    fixtures.items = fixtures.items.filter(id => id !== itemId);
+    readableRepositories.add(repo);
     await save(fixtures);
-  }
+  });
+  await attempt('project_items', async () => {
+    const project = await projects.getIterationMetadata(sandbox.owner, sandbox.number, 'Iteration');
+    assert.equal(fixtures.projectId, project.projectId);
+    const items = (await projects.listProjectItems(project.projectId, project.iterationFieldId)).filter(item => item.title.startsWith(marker + '-'));
+    for (const item of items) await attempt('project_item', async () => {
+      if (item.contentType === 'Issue') {
+        const result = await github.graphql<{ node: { id: string; databaseId: number; title: string; body: string; number: number; repository: { name: string; owner: { login: string } } } }>(
+          'query($id:ID!) { node(id:$id) { ... on Issue { id databaseId title body number repository { name owner { login } } } } }', { id: item.contentId });
+        const issue = result.node;
+        assert.ok(issue.title.startsWith(marker + '-') && issue.body.includes(marker));
+        assert.equal(issue.repository.owner.login.toLowerCase(), sandbox.owner.toLowerCase());
+        assert.ok(sandbox.repositories.includes(issue.repository.name));
+        if (!fixtures.issues.some(saved => saved.id === issue.id)) {
+          fixtures.issues.push({ id: issue.id, databaseId: issue.databaseId, number: issue.number, repo: issue.repository.name });
+          await save(fixtures);
+        }
+      } else assert.equal(item.contentType, 'DraftIssue');
+      await projects.deleteProjectItem(fixtures.projectId, item.id);
+      fixtures.items = fixtures.items.filter(id => id !== item.id); await save(fixtures);
+    });
+  });
   for (const issue of fixtures.issues) {
     if (issue.deleted) continue;
-    const result = await github.graphql<{ node: { id: string; title: string; number: number; repository: { name: string; owner: { login: string } } } | null }>(`
-      query($id: ID!) { node(id:$id) { ... on Issue { id title number repository { name owner { login } } } } }`, { id: issue.id });
-    if (!result.node) continue;
-    assert.ok(result.node.title.startsWith(marker));
-    assert.equal(result.node.repository.owner.login.toLowerCase(), sandbox.owner.toLowerCase());
-    assert.ok(sandbox.repositories.includes(result.node.repository.name));
-    await github.rest.issues.update({ owner: sandbox.owner, repo: result.node.repository.name, issue_number: result.node.number, state: 'closed' });
+    await attempt('issue_close', async () => {
+      let result;
+      try { result = await github.rest.issues.get({ owner: sandbox.owner, repo: issue.repo, issue_number: issue.number }); }
+      catch (error) {
+        if (readableRepositories.has(issue.repo) && typeof error === 'object' && error !== null && 'status' in error && error.status === 404) return;
+        throw error;
+      }
+      assert.ok(result.data.title.startsWith(marker + '-') && result.data.body?.includes(marker));
+      // A transfer changes the node ID; the destination was recovered by its run marker above.
+      if (result.data.node_id !== issue.id) return;
+      await github.rest.issues.update({ owner: sandbox.owner, repo: issue.repo, issue_number: issue.number, state: 'closed' });
+    });
   }
+  assert.deepEqual(failures, [], 'Some isolated sandbox cleanup steps failed; inspect the run journal');
 }
 
 export async function verifyLiveEvents(pool: Pool, github: Octokit, projects: ProjectV2Repository, sandbox: Sandbox, marker: string): Promise<LiveEventQuery> {
@@ -96,8 +128,8 @@ export async function verifyLiveEvents(pool: Pool, github: Octokit, projects: Pr
   const status = await projects.getStatusMetadata(owner, number, 'Status');
   const priority = await projects.getStatusMetadata(owner, number, 'Priority');
   const iteration = await projects.getIterationMetadata(owner, number, 'Iteration');
-  const fields = await github.graphql<{ node: { fields: { nodes: Array<{ id?: string; dataType?: string }> } } }>(`
-    query($id:ID!) { node(id:$id) { ... on ProjectV2 { fields(first:100) { nodes { ... on ProjectV2Field { id dataType } } } } } }`, { id: status.projectId });
+  const fields = await github.graphql<{ node: { fields: { nodes: Array<{ id?: string; name?: string; dataType?: string }> } } }>(`
+    query($id:ID!) { node(id:$id) { ... on ProjectV2 { fields(first:100) { nodes { ... on ProjectV2Field { id name dataType } } } } } }`, { id: status.projectId });
   const estimate = fields.node.fields.nodes.find(field => field.dataType === 'NUMBER');
   assert.ok(estimate?.id, 'Sandbox needs a number field');
   assert.ok(iteration.iterations.length >= 2);
@@ -124,7 +156,8 @@ export async function verifyLiveEvents(pool: Pool, github: Octokit, projects: Pr
   });
   forwarder.stdout.resume();
   let connected = false;
-  forwarder.stderr.on('data', chunk => { if (chunk.toString().includes('Forwarding Webhook events from GitHub')) connected = true; });
+  let diagnosticTail = '';
+  forwarder.stderr.on('data', chunk => { diagnosticTail = (diagnosticTail + chunk.toString()).slice(-1024); if (diagnosticTail.includes('Forwarding Webhook events from GitHub')) connected = true; });
   const verified: EventRow[] = [];
   let phase = 'signed_github_ping';
   async function waitFor<T>(read: () => Promise<T | undefined>): Promise<T> {
@@ -181,8 +214,14 @@ export async function verifyLiveEvents(pool: Pool, github: Octokit, projects: Pr
     const editField = (fieldId: string, value: unknown) => graphqlMutation('updateProjectV2ItemFieldValue', 'UpdateProjectV2ItemFieldValueInput', { projectId: fixtures.projectId, itemId, fieldId, value });
     const clearField = (fieldId: string) => graphqlMutation('clearProjectV2ItemFieldValue', 'ClearProjectV2ItemFieldValueInput', { projectId: fixtures.projectId, itemId, fieldId });
     const fieldMatch = (fieldId: string, to: unknown) => (row: EventRow) => row.content_id === parent.id && row.data.field?.field_node_id === fieldId && JSON.stringify(row.data.field.to) === JSON.stringify(to);
-    for (const [from, value] of [[null, 8], [8, 0]]) { const row = await mutation(`estimate_${value}`, 'projects_v2_item', 'edited', () => editField(estimate.id!, { number: value }), fieldMatch(estimate.id!, value)); assert.equal(row.data.field.from, from); }
-    assert.equal((await mutation('estimate_cleared', 'projects_v2_item', 'edited', () => clearField(estimate.id!), fieldMatch(estimate.id!, null))).data.field.from, 0);
+    for (const [from, value] of [[null, 8], [8, 0]]) { const row = await mutation(`estimate_${value}`, 'projects_v2_item', 'edited', () => editField(estimate.id!, { number: value }), fieldMatch(estimate.id!, value)); assert.equal(from === null ? row.data.field.from : Number(row.data.field.from), from); }
+    async function cleared(label: string, fieldId: string, fieldName: string): Promise<void> {
+      await mutation(label, 'projects_v2_item', 'edited', () => clearField(fieldId), row => row.content_id === parent.id && row.data.field?.field_node_id === fieldId &&
+        (!Object.hasOwn(row.data.field, 'to') || row.data.field.to === null));
+      const current = await github.graphql<{ node: { fieldValueByName: unknown } }>(        'query($id:ID!,$name:String!) { node(id:$id) { ... on ProjectV2Item { fieldValueByName(name:$name) { ... on ProjectV2ItemFieldNumberValue { number } ... on ProjectV2ItemFieldSingleSelectValue { name } ... on ProjectV2ItemFieldIterationValue { iterationId } } } } }', { id: itemId, name: fieldName });
+      assert.equal(current.node.fieldValueByName, null, 'GitHub must confirm the field was cleared even when its webhook omits endpoints');
+    }
+    await cleared('estimate_cleared', estimate.id!, estimate.name!);
     for (const [label, metadata] of [['status', status], ['focus_contract', priority]] as const) {
       const options = [...metadata.optionIdsByName.entries()];
       assert.ok(options.length >= 2);
@@ -192,11 +231,18 @@ export async function verifyLiveEvents(pool: Pool, github: Octokit, projects: Pr
         () => editField(metadata.statusFieldId, { singleSelectOptionId: id }), row => row.content_id === parent.id && row.data.field?.field_node_id === metadata.statusFieldId && row.data.field.to?.id === id && row.data.field.to?.name === name);
         assert.equal(row.data.field.from?.id ?? null, previous); previous = id;
       }
-      await mutation(`${label}_cleared`, 'projects_v2_item', 'edited', () => clearField(metadata.statusFieldId), fieldMatch(metadata.statusFieldId, null));
+      await cleared(`${label}_cleared`, metadata.statusFieldId, label === 'status' ? 'Status' : 'Priority');
     }
-    for (const value of iteration.iterations.slice(0, 2)) await mutation('iteration_changed', 'projects_v2_item', 'edited',
-      () => editField(iteration.iterationFieldId, { iterationId: value.id }), row => row.content_id === parent.id && row.data.field?.field_node_id === iteration.iterationFieldId && row.data.field.to?.id === value.id);
-    await mutation('iteration_cleared', 'projects_v2_item', 'edited', () => clearField(iteration.iterationFieldId), fieldMatch(iteration.iterationFieldId, null));
+    let previousIteration: Record<string, string | number> | null = null;
+    for (const value of iteration.iterations.slice(0, 2)) {
+      const row = await mutation('iteration_changed', 'projects_v2_item', 'edited',
+        () => editField(iteration.iterationFieldId, { iterationId: value.id }), row => row.content_id === parent.id && row.data.field?.field_node_id === iteration.iterationFieldId && row.data.field.to?.id === value.id);
+      assert.deepEqual(row.data.field.from, previousIteration);
+      const expected = { id: value.id, title: value.title, start_date: value.startDate, duration: value.duration };
+      assert.deepEqual(row.data.field.to, expected);
+      previousIteration = expected;
+    }
+    await cleared('iteration_cleared', iteration.iterationFieldId, 'Iteration');
     await mutation('issue_edited', 'issues', 'edited', () => github.rest.issues.update({ owner, repo, issue_number: parent.number, body: `${marker}-changed-private-body` }), row => row.content_id === parent.id);
     for (const reason of ['completed', 'not_planned'] as const) {
       await mutation(`closed_${reason}`, 'issues', 'closed', () => github.rest.issues.update({ owner, repo, issue_number: parent.number, state: 'closed', state_reason: reason }),
@@ -204,11 +250,11 @@ export async function verifyLiveEvents(pool: Pool, github: Octokit, projects: Pr
       await mutation('issue_reopened', 'issues', 'reopened', () => github.rest.issues.update({ owner, repo, issue_number: parent.number, state: 'open', state_reason: 'reopened' }), row => row.content_id === parent.id && row.data.state === 'open' && row.data.closed_at === null);
     }
     for (const linked of [true, false]) { await mutation(linked ? 'child_linked' : 'child_unlinked', 'sub_issues', linked ? 'sub_issue_added' : 'sub_issue_removed',
-      () => github.request(`${linked ? 'POST' : 'DELETE'} /repos/{owner}/{repo}/issues/{issue_number}/sub_issues`, { owner, repo, issue_number: parent.number, sub_issue_id: child.databaseId }),
+      () => (linked ? github.rest.issues.addSubIssue : github.rest.issues.removeSubIssue)({ owner, repo, issue_number: parent.number, sub_issue_id: child.databaseId }),
       row => row.content_id === child.id && row.data.linked === linked && (row.data.parent_id === parent.id || row.data.parent_database_id === parent.databaseId));
       const counterpart = await waitFor(async () => (await pool.query<EventRow>(
         'SELECT delivery_id,event_name,action,content_id,item_id,data FROM analytics.project_events WHERE event_name=$1 AND action=$2 AND content_id=$3 ORDER BY revision DESC',
-        ['sub_issues', linked ? 'parent_issue_added' : 'parent_issue_removed', child.id])).rows.find(row => row.data.linked === linked));
+        ['sub_issues', linked ? 'parent_issue_added' : 'parent_issue_removed', child.id])).rows.find(row => row.data.linked === linked && (row.data.parent_id === parent.id || row.data.parent_database_id === parent.databaseId)));
       verified.push(counterpart);
     }
     for (const archived of [true, false]) await mutation(archived ? 'project_archived' : 'project_restored', 'projects_v2_item', archived ? 'archived' : 'restored',
@@ -234,11 +280,12 @@ export async function verifyLiveEvents(pool: Pool, github: Octokit, projects: Pr
     const destination = sandbox.repositories.find(name => name !== repo);
     assert.ok(destination);
     const destinationRepo = await github.rest.repos.get({ owner, repo: destination });
+    const sourceIssueId = transfer.id;
     await mutation('issue_transferred', 'issues', 'transferred', async () => {
-      const result = await github.graphql<{ transferIssue: { issue: { number: number } } }>(`
-        mutation($input:TransferIssueInput!) { transferIssue(input:$input) { issue { number } } }`, { input: { issueId: transfer.id, repositoryId: destinationRepo.data.node_id } });
-      transfer.repo = destination; transfer.number = result.transferIssue.issue.number; await save(fixtures);
-    }, row => row.content_id === transfer.id);
+      const result = await github.graphql<{ transferIssue: { issue: { id: string; databaseId: number; number: number } } }>(`
+        mutation($input:TransferIssueInput!) { transferIssue(input:$input) { issue { id databaseId number } } }`, { input: { issueId: transfer.id, repositoryId: destinationRepo.data.node_id } });
+      Object.assign(transfer, result.transferIssue.issue, { repo: destination }); await save(fixtures);
+    }, row => row.content_id === sourceIssueId);
     const disposable = await createIssue('delete');
     await mutation('issue_deleted', 'issues', 'deleted', async () => {
       await graphqlMutation('deleteIssue', 'DeleteIssueInput', { issueId: disposable.id });
@@ -247,8 +294,8 @@ export async function verifyLiveEvents(pool: Pool, github: Octokit, projects: Pr
     verified.sort((a, b) => a.delivery_id.localeCompare(b.delivery_id));
     for (const row of verified) assert.match(row.delivery_id, /^[a-f0-9-]{36}$/i);
     return {
-      sql: `SELECT delivery_id::text,event_name,action,content_id FROM analytics.project_events WHERE delivery_id IN (${verified.map(row => `'${row.delivery_id}'`).join(',')}) ORDER BY delivery_id::text`,
-      values: ['delivery_id', 'event_name', 'action', 'content_id'].map(key => verified.map(row => row[key as keyof EventRow])),
+      sql: `SELECT delivery_id::text,event_name,action,content_id,data::text FROM analytics.project_events WHERE delivery_id IN (${verified.map(row => `'${row.delivery_id}'`).join(',')}) ORDER BY delivery_id::text`,
+      values: ['delivery_id', 'event_name', 'action', 'content_id', 'data'].map(key => verified.map(row => row[key as keyof EventRow])),
     };
   } catch (error) {
     console.error(JSON.stringify({ event: 'live_webhook_scenario_failed', phase, httpStatus: typeof error === 'object' && error !== null && 'status' in error ? error.status : undefined }));
@@ -262,7 +309,7 @@ export async function verifyLiveEvents(pool: Pool, github: Octokit, projects: Pr
         }
       } finally {
         if (!exited && forwarder.pid) {
-          if (process.platform === 'win32') forwarder.kill();
+          if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(forwarder.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
           else process.kill(-forwarder.pid, 'SIGTERM');
         }
         await Promise.race([closed, delay(5000)]);
