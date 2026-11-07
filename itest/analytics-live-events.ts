@@ -78,11 +78,10 @@ async function removeForwarderHook(hooks: Octokit, owner: string, marker: string
   if (receivedId && fixtures?.hookId) assert.equal(receivedId, fixtures.hookId);
   const id = receivedId ?? fixtures?.hookId;
   if (!id) {
-    let receipt: string;
-    try { receipt = await readFile(receiptPath(marker), 'utf8'); }
+    try { await readFile(receiptPath(marker), 'utf8'); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
-    assert.ok(/HTTP\/[\d.]+ 4\d\d\b/.test(receipt), 'Webhook creation outcome unknown; no owned hook ID was received');
-    return;
+    console.error(JSON.stringify({ event: 'analytics_webhook_cleanup_unconfirmed', reason: 'missing_creation_receipt' }));
+    throw new Error('Webhook creation outcome unknown; no owned hook ID was received');
   }
   try {
     const hook = await hooks.rest.orgs.getWebhook({ org: owner, hook_id: id });
