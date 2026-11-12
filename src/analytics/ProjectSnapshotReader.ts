@@ -97,9 +97,7 @@ const METADATA_QUERY = `query($owner: String!, $number: Int!, $after: String) {
   } }
 }`;
 
-const ITEMS_QUERY = `query($id: ID!, $after: String) {
-  node(id: $id) { ... on ProjectV2 {
-    items(first: 100, after: $after) { ${PAGE} nodes {
+const ITEM = `
       id type isArchived createdAt updatedAt
       content {
         __typename
@@ -108,6 +106,12 @@ const ITEMS_QUERY = `query($id: ID!, $after: String) {
         ... on PullRequest { id number title url state createdAt updatedAt closedAt mergedAt repository { id nameWithOwner } }
       }
       fieldValues(first: 20) { ${PAGE} nodes { ${VALUES} } }
+`;
+
+const ITEMS_QUERY = `query($id: ID!, $after: String) {
+  node(id: $id) { ... on ProjectV2 {
+    items(first: 100, after: $after) { ${PAGE} nodes {
+      ${ITEM}
     } }
   } }
 }`;
@@ -190,27 +194,7 @@ export class ProjectSnapshotReader implements SnapshotReader {
 
     const snapshots: ProjectSnapshot['items'] = [];
     for (const item of items) {
-      if (!item.content || item.type === 'REDACTED') {
-        throw new SnapshotReadError('An item is inaccessible. Check the selected repositories before reconciling.');
-      }
-      const fields: FieldValue[] = [];
-      const expected = item.fieldValues.totalCount;
-      append(fields, item.fieldValues, expected);
-      const cursors = new Set<string>();
-      after = nextCursor(item.fieldValues, cursors);
-      while (after) {
-        const response: { node?: { fieldValues?: Connection<FieldValue> } } = await this.github.graphql(FIELDS_QUERY, { id: item.id, after });
-        if (!response.node?.fieldValues) throw new SnapshotReadError('Item field values are unavailable.');
-        append(fields, response.node.fieldValues, expected);
-        after = nextCursor(response.node.fieldValues, cursors);
-      }
-      for (const value of fields) {
-        if (!value.field?.id) throw new SnapshotReadError('Unsupported or unreadable project field value.');
-        await this.completeList(item.id, value);
-      }
-      assertCount(fields, expected, value => value.field!.id, 'item_fields');
-      const { fieldValues: ignored, ...identity } = item;
-      snapshots.push({ ...identity, fields: fields.sort((left, right) => left.field!.id.localeCompare(right.field!.id)) } as ProjectSnapshot['items'][number]);
+      snapshots.push(await this.completeItem(item));
     }
 
     const final: { node?: { items: { totalCount: number }; updatedAt: string } } = await this.github.graphql(`
@@ -224,6 +208,41 @@ export class ProjectSnapshotReader implements SnapshotReader {
       project: { ...project!, fields: definitions.sort((a, b) => a.id.localeCompare(b.id)) } as unknown as ProjectSnapshot['project'],
       items: snapshots,
     };
+  }
+
+  async readItem(id: string, projectId: string): Promise<ProjectSnapshot['items'][number]> {
+    const response: { node?: Item & { project: { id: string } } } = await this.github.graphql(`
+      query($id: ID!) { node(id: $id) { ... on ProjectV2Item { project { id } ${ITEM} } } }
+    `, { id });
+    if (!response.node?.fieldValues || response.node.project?.id !== projectId) {
+      throw new SnapshotReadError('Project item is unavailable or belongs to another project.');
+    }
+    const { project: ignored, ...item } = response.node;
+    return this.completeItem(item);
+  }
+
+  private async completeItem(item: Item): Promise<ProjectSnapshot['items'][number]> {
+    if (!item.content || item.type === 'REDACTED') {
+      throw new SnapshotReadError('An item is inaccessible. Check the selected repositories before reconciling.');
+    }
+    const fields: FieldValue[] = [];
+    const expected = item.fieldValues.totalCount;
+    append(fields, item.fieldValues, expected);
+    const cursors = new Set<string>();
+    let after = nextCursor(item.fieldValues, cursors);
+    while (after) {
+      const response: { node?: { fieldValues?: Connection<FieldValue> } } = await this.github.graphql(FIELDS_QUERY, { id: item.id, after });
+      if (!response.node?.fieldValues) throw new SnapshotReadError('Item field values are unavailable.');
+      append(fields, response.node.fieldValues, expected);
+      after = nextCursor(response.node.fieldValues, cursors);
+    }
+    for (const value of fields) {
+      if (!value.field?.id) throw new SnapshotReadError('Unsupported or unreadable project field value.');
+      await this.completeList(item.id, value);
+    }
+    assertCount(fields, expected, value => value.field!.id, 'item_fields');
+    const { fieldValues: ignored, ...identity } = item;
+    return { ...identity, fields: fields.sort((left, right) => left.field!.id.localeCompare(right.field!.id)) } as ProjectSnapshot['items'][number];
   }
 
   private async completeList(itemId: string, value: FieldValue): Promise<void> {

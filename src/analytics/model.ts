@@ -21,3 +21,19 @@ export interface SnapshotReader {
 
   read(target: Target): Promise<ProjectSnapshot>;
 }
+
+export interface PendingEvents {
+
+  projectId: string;
+  contentId: string;
+  deliveries: string[];
+  needsParentHistory: boolean;
+}
+
+export interface EventEnrichment {
+
+  startedAt: Date;
+  observedAt: Date;
+  observations: Json[];
+  parentEvents: Json[];
+}

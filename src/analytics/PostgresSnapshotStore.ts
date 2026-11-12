@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import type { Pool, PoolClient } from 'pg';
-import type { Json, ProjectSnapshot, Target } from './model.ts';
+import type { EventEnrichment, Json, PendingEvents, ProjectSnapshot, Target } from './model.ts';
 
 function canonical(value: Json): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
@@ -18,6 +18,7 @@ function fingerprint(value: Json): string {
 export class PostgresSnapshotStore {
 
   private readonly pool: Pool;
+  private schemaReady = false;
 
   constructor(pool: Pool) {
     this.pool = pool;
@@ -34,7 +35,10 @@ export class PostgresSnapshotStore {
       const lock = await client.query<{ locked: boolean }>('SELECT pg_try_advisory_lock(741936201) AS locked');
       locked = lock.rows[0]!.locked;
       if (!locked) return null;
-      await client.query(await readFile(new URL('../../analytics/schema.sql', import.meta.url), 'utf8'));
+      if (!this.schemaReady) {
+        await client.query(await readFile(new URL('../../analytics/schema.sql', import.meta.url), 'utf8'));
+        this.schemaReady = true;
+      }
       const result = await operation(new SnapshotSession(client));
       if (connectionError) throw connectionError;
       return result;
@@ -76,6 +80,41 @@ export class SnapshotSession {
   async lastCompletedAt(): Promise<Date | null> {
     const result = await this.client.query<{ completed_at: Date | null }>("SELECT max(completed_at) AS completed_at FROM analytics.sync_runs WHERE status = 'complete'");
     return result.rows[0]!.completed_at;
+  }
+
+  async pendingEvents(): Promise<PendingEvents | null> {
+    const result = await this.client.query<PendingEvents>(`
+      WITH next AS (
+        SELECT e.project_id, e.content_id FROM analytics.project_events e
+        JOIN analytics.source_identity s ON s.project_id=e.project_id
+        WHERE e.enriched_at IS NULL AND (e.enrichment_retry_at IS NULL OR e.enrichment_retry_at <= now())
+        ORDER BY e.received_at DESC, e.revision DESC LIMIT 1
+      )
+      SELECT e.project_id AS "projectId", e.content_id AS "contentId",
+        array_agg(e.delivery_id::text ORDER BY e.revision) AS deliveries,
+        bool_or(e.event_name='sub_issues') AS "needsParentHistory"
+      FROM analytics.project_events e JOIN next n USING (project_id, content_id)
+      WHERE e.enriched_at IS NULL
+      GROUP BY e.project_id, e.content_id`);
+    return result.rows[0] ?? null;
+  }
+
+  async enrichEvents(events: PendingEvents, enrichment: EventEnrichment): Promise<void> {
+    // Only acknowledge the captured deliveries. Events arriving during the read remain pending.
+    // Store the observation once; the other deliveries point to it, preserving their original data.
+    await this.client.query(`UPDATE analytics.project_events SET
+      enrichment=CASE WHEN delivery_id=$2::uuid THEN $3::jsonb ELSE jsonb_build_object('delivery_id',$2::text) END,
+      enriched_at=$4, enrichment_retry_at=NULL
+      WHERE delivery_id=ANY($1::uuid[]) AND enriched_at IS NULL`,
+    [events.deliveries, events.deliveries[0], JSON.stringify({
+      read_started_at: enrichment.startedAt.toISOString(), observed_at: enrichment.observedAt.toISOString(),
+      deliveries: events.deliveries, observations: enrichment.observations, parent_events: enrichment.parentEvents,
+    }), enrichment.observedAt]);
+  }
+
+  async retryEvents(events: PendingEvents, delayMs = 60_000): Promise<void> {
+    await this.client.query(`UPDATE analytics.project_events SET enrichment_retry_at=now()+$2::double precision*interval '1 millisecond'
+      WHERE delivery_id=ANY($1::uuid[]) AND enriched_at IS NULL`, [events.deliveries, delayMs]);
   }
 
   async begin(): Promise<string> {
