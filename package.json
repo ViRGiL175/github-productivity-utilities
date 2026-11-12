@@ -17,6 +17,7 @@
     "local:status": "node scripts/local-analytics.mjs status"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.5.16",
     "@octokit/types": "^18.0.0",
     "@types/node": "^26.6.6",
     "@types/pg": "8.23.1",

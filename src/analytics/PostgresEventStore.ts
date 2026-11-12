@@ -7,11 +7,13 @@ export class PostgresEventStore {
   private readonly pool: Pool;
   private readonly target: Target;
   private readonly repositories: string[];
+  private readonly onStored: () => void;
 
-  constructor(pool: Pool, target: Target, repositories: string[]) {
+  constructor(pool: Pool, target: Target, repositories: string[], onStored: () => void = () => {}) {
     this.pool = pool;
     this.target = target;
     this.repositories = repositories;
+    this.onStored = onStored;
   }
 
   async projectId(): Promise<string> {
@@ -35,6 +37,7 @@ export class PostgresEventStore {
       ON CONFLICT (delivery_id) DO NOTHING RETURNING delivery_id`,
     [deliveryId, projectId, event.event, event.action, event.itemId, event.contentId, event.repository,
       event.sourceUpdatedAt, receivedAt, JSON.stringify(event.data)]);
+    if (result.rowCount) this.onStored();
     return result.rowCount ? 'stored' : 'duplicate';
   }
 }

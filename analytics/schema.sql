@@ -112,3 +112,9 @@ CREATE INDEX IF NOT EXISTS project_events_content_time
   ON analytics.project_events (content_id, received_at);
 CREATE INDEX IF NOT EXISTS project_events_item_time
   ON analytics.project_events (item_id, received_at) WHERE item_id IS NOT NULL;
+
+ALTER TABLE analytics.project_events ADD COLUMN IF NOT EXISTS enrichment jsonb;
+ALTER TABLE analytics.project_events ADD COLUMN IF NOT EXISTS enriched_at timestamptz;
+ALTER TABLE analytics.project_events ADD COLUMN IF NOT EXISTS enrichment_retry_at timestamptz;
+CREATE INDEX IF NOT EXISTS project_events_pending_enrichment
+  ON analytics.project_events (received_at DESC, revision DESC) WHERE enriched_at IS NULL;
