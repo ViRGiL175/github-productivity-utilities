@@ -28,6 +28,7 @@ export interface PendingEvents {
   contentId: string;
   deliveries: string[];
   needsParentHistory: boolean;
+  draftOnly?: boolean;
 }
 
 export interface EventEnrichment {
