@@ -236,7 +236,9 @@ async function verifyDatabaseRecovery(pool: pg.Pool, fixture: EventFixture): Pro
   try {
     events = await startDatabaseFailureProbe(pool, fixture);
     await waitFor(async () => {
-      const result = await pool.query("SELECT 1 FROM pg_stat_activity WHERE application_name=$1 AND state='idle'", [applicationName]);
+      // PostgreSQL also reports idle while the collector holds its lock and awaits GitHub.
+      const result = await pool.query(`SELECT 1 FROM pg_stat_activity a WHERE application_name=$1 AND state='idle'
+        AND NOT EXISTS (SELECT 1 FROM pg_locks l WHERE l.pid=a.pid AND l.locktype='advisory' AND l.granted)`, [applicationName]);
       return result.rowCount === 1;
     }, 10_000);
     console.log('Continuous collector connected; restarting only ephemeral PostgreSQL');
