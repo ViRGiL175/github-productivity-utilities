@@ -92,7 +92,9 @@ export class SnapshotSession {
       )
       SELECT e.project_id AS "projectId", e.content_id AS "contentId",
         array_agg(e.delivery_id::text ORDER BY e.revision) AS deliveries,
-        bool_or(e.event_name='sub_issues') AS "needsParentHistory"
+        bool_or(e.event_name='sub_issues') AS "needsParentHistory",
+        bool_and(COALESCE(e.event_name='projects_v2_item' AND e.action<>'converted'
+          AND e.data->>'content_type'='DraftIssue',false)) AS "draftOnly"
       FROM analytics.project_events e JOIN next n USING (project_id, content_id)
       WHERE e.enriched_at IS NULL
       GROUP BY e.project_id, e.content_id`);

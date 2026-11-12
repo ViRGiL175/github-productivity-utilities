@@ -142,7 +142,8 @@ export class EventEnrichmentReader {
     const startedAt = new Date();
     const observations: Json[] = [];
     const issues = new Map<string, Issue>();
-    let id: string | null = events.contentId;
+    // Drafts do not need issue enrichment, even when their GitHub node no longer exists.
+    let id: string | null = events.draftOnly ? null : events.contentId;
     while (id) {
       if (issues.has(id)) throw new SnapshotReadError('Cycle in the issue ancestry.');
       const issue = await this.issue(id);
