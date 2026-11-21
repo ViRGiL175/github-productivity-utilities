@@ -63,7 +63,7 @@ jobs:
           script: |
             const { run } = await import('${{ github.workspace }}/itest/field-updates.ts');
             await run({ github, context, core });
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: field-updates-${{ github.run_id }}-${{ github.run_attempt }}
