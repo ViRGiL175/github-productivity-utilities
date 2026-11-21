@@ -27,36 +27,32 @@ export async function reconcileOpenPrSprints(
   let checked = 0;
 
   for (const repository of repositories) {
-    for (let page = 1; ; page += 1) {
-      const openPullRequests = await pullRequests.listPullRequests(repository, 'open', page, 100);
-      for (const pullRequest of openPullRequests) {
-        if (input.pullRequestNumber && pullRequest.number !== input.pullRequestNumber) continue;
-        checked += 1;
-        try {
-          await reconcilePrSprint({
-            projectOwner: input.projectOwner,
-            projectNumber: input.projectNumber,
-            backlogRepository: input.backlogRepository,
-            iterationFieldName: input.iterationFieldName,
-            statusFieldName: '',
-            statusDoneValue: '',
-            statusInProgressValue: '',
-            statusInReviewValue: '',
-            pullRequestNodeId: pullRequest.nodeId,
-            pullRequestNumber: pullRequest.number,
-            pullRequestRepository: repository,
-            pullRequestBodyHint: pullRequest.body ?? '',
-            headRef: pullRequest.headRef ?? '',
-            action: 'reconcile_sprint',
-            requestedReviewersJson: '[]',
-          }, issues, pullRequests, projects, logger, now);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          failures.push(`${repository.nameWithOwner}#${pullRequest.number}: ${message}`);
-          logger.warning(`Could not reconcile Sprint for ${repository.nameWithOwner}#${pullRequest.number}: ${message}`);
-        }
+    for await (const pullRequest of pullRequests.listPullRequests(repository, 'open')) {
+      if (input.pullRequestNumber && pullRequest.number !== input.pullRequestNumber) continue;
+      checked += 1;
+      try {
+        await reconcilePrSprint({
+          projectOwner: input.projectOwner,
+          projectNumber: input.projectNumber,
+          backlogRepository: input.backlogRepository,
+          iterationFieldName: input.iterationFieldName,
+          statusFieldName: '',
+          statusDoneValue: '',
+          statusInProgressValue: '',
+          statusInReviewValue: '',
+          pullRequestNodeId: pullRequest.nodeId,
+          pullRequestNumber: pullRequest.number,
+          pullRequestRepository: repository,
+          pullRequestBodyHint: pullRequest.body ?? '',
+          headRef: pullRequest.headRef ?? '',
+          action: 'reconcile_sprint',
+          requestedReviewersJson: '[]',
+        }, issues, pullRequests, projects, logger, now);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        failures.push(`${repository.nameWithOwner}#${pullRequest.number}: ${message}`);
+        logger.warning(`Could not reconcile Sprint for ${repository.nameWithOwner}#${pullRequest.number}: ${message}`);
       }
-      if (openPullRequests.length < 100) break;
     }
   }
 

@@ -23,6 +23,7 @@ on:
       - 'src/github/ProjectV2Repository.ts'
       - 'itest/create-next-iteration.ts'
       - 'itest/runtime.ts'
+      - 'itest/reminder-fixtures.ts'
 
 concurrency:
   group: integration-org-sandbox
@@ -63,30 +64,19 @@ jobs:
       - name: Checkout tested implementation
         uses: actions/checkout@v7
 
-      - name: Normalize GitHub App private key
-        if: ${{ env.AUTH_MODE == 'app' }}
-        id: normalize-key
-        shell: bash
-        env:
-          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
-        run: |
-          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
-          while IFS= read -r line; do
-            printf '::add-mask::%s\n' "$line"
-          done <<< "$NORMALIZED_KEY"
-          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
-
-      - name: Create GitHub App installation token
+      - &app-token-step
+        name: Create GitHub App installation token
         if: ${{ env.AUTH_MODE == 'app' }}
         id: app-token
         uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
-          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          private-key: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
 
-      - name: Resolve job auth token
+      - &resolve-token-step
+        name: Resolve job auth token
         id: auth
         shell: bash
         env:
@@ -132,55 +122,10 @@ jobs:
       target_iteration_id: ${{ steps.prepare.outputs.target_iteration_id }}
       project_id: ${{ steps.prepare.outputs.project_id }}
     steps:
-      - name: Normalize GitHub App private key
-        if: ${{ env.AUTH_MODE == 'app' }}
-        id: normalize-key
-        shell: bash
-        env:
-          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
-        run: |
-          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
-          while IFS= read -r line; do
-            printf '::add-mask::%s\n' "$line"
-          done <<< "$NORMALIZED_KEY"
-          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+      - *app-token-step
 
-      - name: Create GitHub App installation token
-        if: ${{ env.AUTH_MODE == 'app' }}
-        id: app-token
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
-          private-key: ${{ steps.normalize-key.outputs.private_key }}
-          owner: ${{ env.INSTALLATION_OWNER }}
-          skip-token-revoke: true
-
-      - name: Resolve job auth token
-        id: auth
-        shell: bash
-        env:
-          DIRECT_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
-          APP_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          case "$AUTH_MODE" in
-            pat)
-              TOKEN="$DIRECT_TOKEN"
-              ;;
-            app)
-              TOKEN="$APP_TOKEN"
-              ;;
-            *)
-              echo "Unsupported auth mode: $AUTH_MODE" >&2
-              exit 1
-              ;;
-          esac
-
-          if [ -z "$TOKEN" ]; then
-            echo "Resolved token is empty for auth_mode=$AUTH_MODE" >&2
-            exit 1
-          fi
-
-          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+      - *resolve-token-step
 
       - name: Prepare reminder fixtures for create scenario
         id: prepare
@@ -193,245 +138,8 @@ jobs:
         with:
           github-token: ${{ steps.auth.outputs.token }}
           script: |
-            const ownerLogin = process.env.PROJECT_OWNER;
-            const projectNumber = Number(process.env.PROJECT_NUMBER);
-            const iterationFieldName = process.env.ITERATION_FIELD_NAME;
-            const reminderTitle = process.env.REMINDER_TITLE;
-
-            const ORGANIZATION_PROJECT_QUERY = `
-              query($owner: String!, $number: Int!) {
-                organization(login: $owner) {
-                  projectV2(number: $number) {
-                    id
-                    fields(first: 100) {
-                      nodes {
-                        __typename
-                        ... on ProjectV2FieldCommon {
-                          id
-                          name
-                        }
-                        ... on ProjectV2IterationField {
-                          configuration {
-                            completedIterations {
-                              id
-                              title
-                              startDate
-                              duration
-                            }
-                            iterations {
-                              id
-                              title
-                              startDate
-                              duration
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            `;
-
-            const USER_PROJECT_QUERY = `
-              query($owner: String!, $number: Int!) {
-                user(login: $owner) {
-                  projectV2(number: $number) {
-                    id
-                    fields(first: 100) {
-                      nodes {
-                        __typename
-                        ... on ProjectV2FieldCommon {
-                          id
-                          name
-                        }
-                        ... on ProjectV2IterationField {
-                          configuration {
-                            completedIterations {
-                              id
-                              title
-                              startDate
-                              duration
-                            }
-                            iterations {
-                              id
-                              title
-                              startDate
-                              duration
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            `;
-
-            const PROJECT_ITEMS_QUERY = `
-              query($projectId: ID!, $after: String) {
-                node(id: $projectId) {
-                  ... on ProjectV2 {
-                    items(first: 100, after: $after) {
-                      pageInfo {
-                        hasNextPage
-                        endCursor
-                      }
-                      nodes {
-                        id
-                        content {
-                          __typename
-                          ... on DraftIssue {
-                            id
-                            title
-                          }
-                          ... on Issue {
-                            id
-                            number
-                            title
-                          }
-                        }
-                        fieldValues(first: 20) {
-                          nodes {
-                            __typename
-                            ... on ProjectV2ItemFieldIterationValue {
-                              iterationId
-                              field {
-                                ... on ProjectV2FieldCommon {
-                                  id
-                                  name
-                                }
-                              }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            `;
-
-            const DELETE_ITEM_MUTATION = `
-              mutation($input: DeleteProjectV2ItemInput!) {
-                deleteProjectV2Item(input: $input) {
-                  deletedItemId
-                }
-              }
-            `;
-
-            function toUtcDate(value) {
-              return new Date(`${value}T00:00:00Z`);
-            }
-
-            function addDays(date, days) {
-              const result = new Date(date);
-              result.setUTCDate(result.getUTCDate() + days);
-              return result;
-            }
-
-            function sortIterations(iterations) {
-              return [...iterations].sort((a, b) => toUtcDate(a.startDate) - toUtcDate(b.startDate));
-            }
-
-            async function getProjectOwnerType(login) {
-              const response = await github.request('GET /users/{username}', {
-                username: login,
-                headers: {
-                  accept: 'application/vnd.github+json',
-                  'X-GitHub-Api-Version': '2022-11-28',
-                },
-              });
-
-              return response.data.type;
-            }
-
-            async function getProjectMetadata() {
-              const ownerType = await getProjectOwnerType(ownerLogin);
-              const query = ownerType === 'Organization' ? ORGANIZATION_PROJECT_QUERY : USER_PROJECT_QUERY;
-
-              const data = await github.graphql(query, {
-                owner: ownerLogin,
-                number: projectNumber,
-              });
-
-              const project = ownerType === 'Organization'
-                ? data.organization?.projectV2
-                : data.user?.projectV2;
-
-              if (!project) {
-                throw new Error(`Project ${ownerLogin}#${projectNumber} was not found.`);
-              }
-
-              const iterationField = project.fields.nodes.find((field) =>
-                field?.__typename === 'ProjectV2IterationField' && field.name === iterationFieldName,
-              );
-
-              if (!iterationField) {
-                throw new Error(`Iteration field "${iterationFieldName}" was not found in project ${ownerLogin}#${projectNumber}.`);
-              }
-
-              const iterations = sortIterations([
-                ...(iterationField.configuration?.completedIterations ?? []),
-                ...(iterationField.configuration?.iterations ?? []),
-              ]).filter((iteration) => iteration.startDate);
-
-              if (iterations.length < 2) {
-                throw new Error('Need at least two iterations in the sandbox project to run integration tests.');
-              }
-
-              return {
-                projectId: project.id,
-                iterations,
-              };
-            }
-
-            async function getAllProjectItems(projectId) {
-              const items = [];
-              let after = null;
-              let hasNextPage = true;
-
-              while (hasNextPage) {
-                const data = await github.graphql(PROJECT_ITEMS_QUERY, {
-                  projectId,
-                  after,
-                });
-
-                const connection = data.node?.items;
-                if (!connection) {
-                  throw new Error(`Unable to read project items for ${projectId}.`);
-                }
-
-                items.push(...connection.nodes);
-                hasNextPage = connection.pageInfo.hasNextPage;
-                after = connection.pageInfo.endCursor;
-              }
-
-              return items;
-            }
-
-            async function deleteProjectItem(projectId, itemId) {
-              await github.graphql(DELETE_ITEM_MUTATION, {
-                input: {
-                  projectId,
-                  itemId,
-                },
-              });
-            }
-
-            const project = await getProjectMetadata();
-            const items = await getAllProjectItems(project.projectId);
-            const staleItems = items.filter((item) => item.content?.__typename === 'DraftIssue' && item.content.title === reminderTitle);
-
-            for (const item of staleItems) {
-              await deleteProjectItem(project.projectId, item.id);
-              core.info(`Deleted stale draft ${item.id} for title ${reminderTitle}.`);
-            }
-
-            core.setOutput('reminder_title', reminderTitle);
-            core.setOutput('current_date_override', addDays(toUtcDate(project.iterations[0].startDate), -1).toISOString().slice(0, 10));
-            core.setOutput('target_iteration_id', project.iterations[0].id);
-            core.setOutput('project_id', project.projectId);
+            const { prepareReminder } = await import(`${process.env.GITHUB_WORKSPACE}/itest/reminder-fixtures.ts`);
+            await prepareReminder(github, core, 'before-first');
 
   run-reminder-create-scenario:
     name: Run reminder create scenario
@@ -462,55 +170,10 @@ jobs:
       - run-reminder-create-scenario
     runs-on: ubuntu-latest
     steps:
-      - name: Normalize GitHub App private key
-        if: ${{ env.AUTH_MODE == 'app' }}
-        id: normalize-key
-        shell: bash
-        env:
-          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
-        run: |
-          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
-          while IFS= read -r line; do
-            printf '::add-mask::%s\n' "$line"
-          done <<< "$NORMALIZED_KEY"
-          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+      - *app-token-step
 
-      - name: Create GitHub App installation token
-        if: ${{ env.AUTH_MODE == 'app' }}
-        id: app-token
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
-          private-key: ${{ steps.normalize-key.outputs.private_key }}
-          owner: ${{ env.INSTALLATION_OWNER }}
-          skip-token-revoke: true
-
-      - name: Resolve job auth token
-        id: auth
-        shell: bash
-        env:
-          DIRECT_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
-          APP_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          case "$AUTH_MODE" in
-            pat)
-              TOKEN="$DIRECT_TOKEN"
-              ;;
-            app)
-              TOKEN="$APP_TOKEN"
-              ;;
-            *)
-              echo "Unsupported auth mode: $AUTH_MODE" >&2
-              exit 1
-              ;;
-          esac
-
-          if [ -z "$TOKEN" ]; then
-            echo "Resolved token is empty for auth_mode=$AUTH_MODE" >&2
-            exit 1
-          fi
-
-          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+      - *resolve-token-step
 
       - name: Assert exactly one reminder draft exists in first future iteration
         uses: actions/github-script@v9
@@ -521,109 +184,8 @@ jobs:
         with:
           github-token: ${{ steps.auth.outputs.token }}
           script: |
-            const projectId = process.env.PROJECT_ID;
-            const reminderTitle = process.env.REMINDER_TITLE;
-            const targetIterationId = process.env.TARGET_ITERATION_ID;
-
-            const PROJECT_ITEMS_QUERY = `
-              query($projectId: ID!, $after: String) {
-                node(id: $projectId) {
-                  ... on ProjectV2 {
-                    items(first: 100, after: $after) {
-                      pageInfo {
-                        hasNextPage
-                        endCursor
-                      }
-                      nodes {
-                        id
-                        content {
-                          __typename
-                          ... on DraftIssue {
-                            id
-                            title
-                          }
-                        }
-                        fieldValues(first: 20) {
-                          nodes {
-                            __typename
-                            ... on ProjectV2ItemFieldIterationValue {
-                              iterationId
-                              field {
-                                ... on ProjectV2FieldCommon {
-                                  id
-                                  name
-                                }
-                              }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            `;
-
-            async function getAllProjectItems() {
-              const items = [];
-              let after = null;
-              let hasNextPage = true;
-
-              while (hasNextPage) {
-                const data = await github.graphql(PROJECT_ITEMS_QUERY, {
-                  projectId,
-                  after,
-                });
-
-                const connection = data.node?.items;
-                if (!connection) {
-                  throw new Error(`Unable to read project items for ${projectId}.`);
-                }
-
-                items.push(...connection.nodes);
-                hasNextPage = connection.pageInfo.hasNextPage;
-                after = connection.pageInfo.endCursor;
-              }
-
-              return items;
-            }
-
-            function sleep(ms) {
-              return new Promise((resolve) => setTimeout(resolve, ms));
-            }
-
-            function getIterationId(item) {
-              const fieldValue = item.fieldValues?.nodes?.find((node) => node.__typename === 'ProjectV2ItemFieldIterationValue');
-              return fieldValue?.iterationId ?? null;
-            }
-
-            let reminderItems = [];
-
-            for (let attempt = 1; attempt <= 12; attempt += 1) {
-              const items = await getAllProjectItems();
-              reminderItems = items.filter((item) => item.content?.__typename === 'DraftIssue' && item.content.title === reminderTitle);
-
-              if (reminderItems.length === 1) {
-                const iterationId = getIterationId(reminderItems[0]);
-                if (iterationId === targetIterationId) {
-                  core.info(`Reminder draft ${reminderItems[0].id} is present in the expected target iteration before the current sprint starts.`);
-                  return;
-                }
-
-                core.info(`Reminder draft ${reminderItems[0].id} is visible but still points to iteration ${iterationId || 'none'} (attempt ${attempt}/12).`);
-              } else {
-                core.info(`Waiting for reminder draft ${reminderTitle} to appear in the project (attempt ${attempt}/12, found ${reminderItems.length}).`);
-              }
-
-              await sleep(5000);
-            }
-
-            if (reminderItems.length !== 1) {
-              throw new Error(`Expected exactly one draft with title ${reminderTitle}, got ${reminderItems.length}.`);
-            }
-
-            const iterationId = getIterationId(reminderItems[0]);
-            throw new Error(`Expected reminder draft to be in iteration ${targetIterationId}, got ${iterationId || 'none'}.`);
+            const { assertReminder } = await import(`${process.env.GITHUB_WORKSPACE}/itest/reminder-fixtures.ts`);
+            await assertReminder(github, 12);
 
   rerun-reminder-create-scenario:
     name: Rerun reminder create scenario for idempotency
@@ -655,55 +217,10 @@ jobs:
       - rerun-reminder-create-scenario
     runs-on: ubuntu-latest
     steps:
-      - name: Normalize GitHub App private key
-        if: ${{ env.AUTH_MODE == 'app' }}
-        id: normalize-key
-        shell: bash
-        env:
-          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
-        run: |
-          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
-          while IFS= read -r line; do
-            printf '::add-mask::%s\n' "$line"
-          done <<< "$NORMALIZED_KEY"
-          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+      - *app-token-step
 
-      - name: Create GitHub App installation token
-        if: ${{ env.AUTH_MODE == 'app' }}
-        id: app-token
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
-          private-key: ${{ steps.normalize-key.outputs.private_key }}
-          owner: ${{ env.INSTALLATION_OWNER }}
-          skip-token-revoke: true
-
-      - name: Resolve job auth token
-        id: auth
-        shell: bash
-        env:
-          DIRECT_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
-          APP_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          case "$AUTH_MODE" in
-            pat)
-              TOKEN="$DIRECT_TOKEN"
-              ;;
-            app)
-              TOKEN="$APP_TOKEN"
-              ;;
-            *)
-              echo "Unsupported auth mode: $AUTH_MODE" >&2
-              exit 1
-              ;;
-          esac
-
-          if [ -z "$TOKEN" ]; then
-            echo "Resolved token is empty for auth_mode=$AUTH_MODE" >&2
-            exit 1
-          fi
-
-          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+      - *resolve-token-step
 
       - name: Assert rerun did not create duplicates before current iteration starts
         uses: actions/github-script@v9
@@ -714,85 +231,8 @@ jobs:
         with:
           github-token: ${{ steps.auth.outputs.token }}
           script: |
-            const projectId = process.env.PROJECT_ID;
-            const reminderTitle = process.env.REMINDER_TITLE;
-            const targetIterationId = process.env.TARGET_ITERATION_ID;
-
-            const PROJECT_ITEMS_QUERY = `
-              query($projectId: ID!, $after: String) {
-                node(id: $projectId) {
-                  ... on ProjectV2 {
-                    items(first: 100, after: $after) {
-                      pageInfo {
-                        hasNextPage
-                        endCursor
-                      }
-                      nodes {
-                        id
-                        content {
-                          __typename
-                          ... on DraftIssue {
-                            id
-                            title
-                          }
-                        }
-                        fieldValues(first: 20) {
-                          nodes {
-                            __typename
-                            ... on ProjectV2ItemFieldIterationValue {
-                              iterationId
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            `;
-
-            async function getAllProjectItems() {
-              const items = [];
-              let after = null;
-              let hasNextPage = true;
-
-              while (hasNextPage) {
-                const data = await github.graphql(PROJECT_ITEMS_QUERY, {
-                  projectId,
-                  after,
-                });
-
-                const connection = data.node?.items;
-                if (!connection) {
-                  throw new Error(`Unable to read project items for ${projectId}.`);
-                }
-
-                items.push(...connection.nodes);
-                hasNextPage = connection.pageInfo.hasNextPage;
-                after = connection.pageInfo.endCursor;
-              }
-
-              return items;
-            }
-
-            function getIterationId(item) {
-              const fieldValue = item.fieldValues?.nodes?.find((node) => node.__typename === 'ProjectV2ItemFieldIterationValue');
-              return fieldValue?.iterationId ?? null;
-            }
-
-            const items = await getAllProjectItems();
-            const reminderItems = items.filter((item) => item.content?.__typename === 'DraftIssue' && item.content.title === reminderTitle);
-
-            if (reminderItems.length !== 1) {
-              throw new Error(`Expected exactly one draft after rerun for ${reminderTitle}, got ${reminderItems.length}.`);
-            }
-
-            const iterationId = getIterationId(reminderItems[0]);
-            if (iterationId !== targetIterationId) {
-              throw new Error(`Expected reminder draft to stay in iteration ${targetIterationId}, got ${iterationId || 'none'}.`);
-            }
-
-            core.info(`Reminder rerun stayed idempotent for draft ${reminderItems[0].id} before the current sprint starts.`);
+            const { assertReminder } = await import(`${process.env.GITHUB_WORKSPACE}/itest/reminder-fixtures.ts`);
+            await assertReminder(github);
 
   prepare-reminder-empty-current-scenario:
     name: Prepare reminder empty current scenario
@@ -805,55 +245,10 @@ jobs:
       target_iteration_id: ${{ steps.prepare.outputs.target_iteration_id }}
       project_id: ${{ steps.prepare.outputs.project_id }}
     steps:
-      - name: Normalize GitHub App private key
-        if: ${{ env.AUTH_MODE == 'app' }}
-        id: normalize-key
-        shell: bash
-        env:
-          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
-        run: |
-          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
-          while IFS= read -r line; do
-            printf '::add-mask::%s\n' "$line"
-          done <<< "$NORMALIZED_KEY"
-          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+      - *app-token-step
 
-      - name: Create GitHub App installation token
-        if: ${{ env.AUTH_MODE == 'app' }}
-        id: app-token
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
-          private-key: ${{ steps.normalize-key.outputs.private_key }}
-          owner: ${{ env.INSTALLATION_OWNER }}
-          skip-token-revoke: true
-
-      - name: Resolve job auth token
-        id: auth
-        shell: bash
-        env:
-          DIRECT_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
-          APP_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          case "$AUTH_MODE" in
-            pat)
-              TOKEN="$DIRECT_TOKEN"
-              ;;
-            app)
-              TOKEN="$APP_TOKEN"
-              ;;
-            *)
-              echo "Unsupported auth mode: $AUTH_MODE" >&2
-              exit 1
-              ;;
-          esac
-
-          if [ -z "$TOKEN" ]; then
-            echo "Resolved token is empty for auth_mode=$AUTH_MODE" >&2
-            exit 1
-          fi
-
-          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+      - *resolve-token-step
 
       - name: Prepare reminder fixture in empty current iteration
         id: prepare
@@ -866,324 +261,8 @@ jobs:
         with:
           github-token: ${{ steps.auth.outputs.token }}
           script: |
-            const ownerLogin = process.env.PROJECT_OWNER;
-            const projectNumber = Number(process.env.PROJECT_NUMBER);
-            const iterationFieldName = process.env.ITERATION_FIELD_NAME;
-            const reminderTitle = process.env.REMINDER_TITLE;
-
-            const ORGANIZATION_PROJECT_QUERY = `
-              query($owner: String!, $number: Int!) {
-                organization(login: $owner) {
-                  projectV2(number: $number) {
-                    id
-                    fields(first: 100) {
-                      nodes {
-                        __typename
-                        ... on ProjectV2FieldCommon {
-                          id
-                          name
-                        }
-                        ... on ProjectV2IterationField {
-                          configuration {
-                            completedIterations {
-                              id
-                              title
-                              startDate
-                              duration
-                            }
-                            iterations {
-                              id
-                              title
-                              startDate
-                              duration
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            `;
-
-            const USER_PROJECT_QUERY = `
-              query($owner: String!, $number: Int!) {
-                user(login: $owner) {
-                  projectV2(number: $number) {
-                    id
-                    fields(first: 100) {
-                      nodes {
-                        __typename
-                        ... on ProjectV2FieldCommon {
-                          id
-                          name
-                        }
-                        ... on ProjectV2IterationField {
-                          configuration {
-                            completedIterations {
-                              id
-                              title
-                              startDate
-                              duration
-                            }
-                            iterations {
-                              id
-                              title
-                              startDate
-                              duration
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            `;
-
-            const PROJECT_ITEMS_QUERY = `
-              query($projectId: ID!, $after: String) {
-                node(id: $projectId) {
-                  ... on ProjectV2 {
-                    items(first: 100, after: $after) {
-                      pageInfo {
-                        hasNextPage
-                        endCursor
-                      }
-                      nodes {
-                        id
-                        content {
-                          __typename
-                          ... on DraftIssue {
-                            id
-                            title
-                          }
-                          ... on Issue {
-                            id
-                            number
-                            title
-                          }
-                        }
-                        fieldValues(first: 20) {
-                          nodes {
-                            __typename
-                            ... on ProjectV2ItemFieldIterationValue {
-                              iterationId
-                              field {
-                                ... on ProjectV2FieldCommon {
-                                  id
-                                  name
-                                }
-                              }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            `;
-
-            const ADD_DRAFT_MUTATION = `
-              mutation($input: AddProjectV2DraftIssueInput!) {
-                addProjectV2DraftIssue(input: $input) {
-                  projectItem {
-                    id
-                  }
-                }
-              }
-            `;
-
-            const UPDATE_ITERATION_MUTATION = `
-              mutation($input: UpdateProjectV2ItemFieldValueInput!) {
-                updateProjectV2ItemFieldValue(input: $input) {
-                  projectV2Item {
-                    id
-                  }
-                }
-              }
-            `;
-
-            const DELETE_ITEM_MUTATION = `
-              mutation($input: DeleteProjectV2ItemInput!) {
-                deleteProjectV2Item(input: $input) {
-                  deletedItemId
-                }
-              }
-            `;
-
-            function toUtcDate(value) {
-              return new Date(`${value}T00:00:00Z`);
-            }
-
-            function sortIterations(iterations) {
-              return [...iterations].sort((a, b) => toUtcDate(a.startDate) - toUtcDate(b.startDate));
-            }
-
-            function getItemIterationId(item, iterationFieldId) {
-              const fieldValue = item.fieldValues?.nodes?.find((node) =>
-                node.__typename === 'ProjectV2ItemFieldIterationValue'
-                && node.field?.id === iterationFieldId,
-              );
-
-              return fieldValue?.iterationId ?? null;
-            }
-
-            function findIterationWithoutIssues(iterations, items, iterationFieldId) {
-              // Link-PR and sub-issue fixtures write to the first and last iterations.
-              return iterations.slice(1, -1).find((iteration) => !items.some((item) =>
-                item.content?.__typename === 'Issue'
-                && getItemIterationId(item, iterationFieldId) === iteration.id,
-              ));
-            }
-
-            async function getProjectOwnerType(login) {
-              const response = await github.request('GET /users/{username}', {
-                username: login,
-                headers: {
-                  accept: 'application/vnd.github+json',
-                  'X-GitHub-Api-Version': '2022-11-28',
-                },
-              });
-
-              return response.data.type;
-            }
-
-            async function getProjectMetadata() {
-              const ownerType = await getProjectOwnerType(ownerLogin);
-              const query = ownerType === 'Organization' ? ORGANIZATION_PROJECT_QUERY : USER_PROJECT_QUERY;
-
-              const data = await github.graphql(query, {
-                owner: ownerLogin,
-                number: projectNumber,
-              });
-
-              const project = ownerType === 'Organization'
-                ? data.organization?.projectV2
-                : data.user?.projectV2;
-
-              if (!project) {
-                throw new Error(`Project ${ownerLogin}#${projectNumber} was not found.`);
-              }
-
-              const iterationField = project.fields.nodes.find((field) =>
-                field?.__typename === 'ProjectV2IterationField' && field.name === iterationFieldName,
-              );
-
-              if (!iterationField) {
-                throw new Error(`Iteration field "${iterationFieldName}" was not found in project ${ownerLogin}#${projectNumber}.`);
-              }
-
-              const iterations = sortIterations([
-                ...(iterationField.configuration?.completedIterations ?? []),
-                ...(iterationField.configuration?.iterations ?? []),
-              ]).filter((iteration) => iteration.startDate);
-
-              if (iterations.length < 1) {
-                throw new Error('Need at least one iteration in the sandbox project to run integration tests.');
-              }
-
-              return {
-                projectId: project.id,
-                iterationFieldId: iterationField.id,
-                iterations,
-              };
-            }
-
-            async function getAllProjectItems(projectId) {
-              const items = [];
-              let after = null;
-              let hasNextPage = true;
-
-              while (hasNextPage) {
-                const data = await github.graphql(PROJECT_ITEMS_QUERY, {
-                  projectId,
-                  after,
-                });
-
-                const connection = data.node?.items;
-                if (!connection) {
-                  throw new Error(`Unable to read project items for ${projectId}.`);
-                }
-
-                items.push(...connection.nodes);
-                hasNextPage = connection.pageInfo.hasNextPage;
-                after = connection.pageInfo.endCursor;
-              }
-
-              return items;
-            }
-
-            async function deleteProjectItem(projectId, itemId) {
-              await github.graphql(DELETE_ITEM_MUTATION, {
-                input: {
-                  projectId,
-                  itemId,
-                },
-              });
-            }
-
-            async function createReminderDraft(projectId) {
-              const response = await github.graphql(ADD_DRAFT_MUTATION, {
-                input: {
-                  projectId,
-                  title: reminderTitle,
-                },
-              });
-
-              return response.addProjectV2DraftIssue.projectItem.id;
-            }
-
-            async function setReminderIteration(projectId, itemId, fieldId, iterationId) {
-              await github.graphql(UPDATE_ITERATION_MUTATION, {
-                input: {
-                  projectId,
-                  itemId,
-                  fieldId,
-                  value: {
-                    iterationId,
-                  },
-                },
-              });
-            }
-
-            const project = await getProjectMetadata();
-            const items = await getAllProjectItems(project.projectId);
-            const staleItems = items.filter((item) => item.content?.__typename === 'DraftIssue' && item.content.title === reminderTitle);
-
-            for (const item of staleItems) {
-              await deleteProjectItem(project.projectId, item.id);
-              core.info(`Deleted stale draft ${item.id} for title ${reminderTitle}.`);
-            }
-
-            const emptyIteration = findIterationWithoutIssues(project.iterations, items, project.iterationFieldId);
-            if (!emptyIteration) {
-              throw new Error('Need an empty interior iteration (at least three sandbox iterations); first and last are used by concurrent link-PR and sub-issue fixtures.');
-            }
-
-            const itemId = await createReminderDraft(project.projectId);
-            await setReminderIteration(project.projectId, itemId, project.iterationFieldId, emptyIteration.id);
-
-            // The scenario requires an existing reminder, visible through the same connection the automation reads.
-            let fixtureVisible = false;
-            for (let attempt = 1; attempt <= 12; attempt++) {
-              const visible = (await getAllProjectItems(project.projectId)).find(item => item.id === itemId);
-              fixtureVisible = visible?.content?.title === reminderTitle
-                && visible.fieldValues?.nodes?.some(value => value.__typename === 'ProjectV2ItemFieldIterationValue'
-                  && value.iterationId === emptyIteration.id);
-              if (fixtureVisible) break;
-              core.info(`Waiting for the pre-existing reminder fixture (attempt ${attempt}/12).`);
-              await new Promise(resolve => setTimeout(resolve, 2000));
-            }
-            if (!fixtureVisible) throw new Error('Pre-existing reminder fixture did not become visible.');
-
-            core.info(`Selected empty iteration "${emptyIteration.title}" (${emptyIteration.startDate}) for the empty current reminder scenario.`);
-
-            core.setOutput('reminder_title', reminderTitle);
-            core.setOutput('current_date_override', emptyIteration.startDate);
-            core.setOutput('target_iteration_id', emptyIteration.id);
-            core.setOutput('project_id', project.projectId);
+            const { prepareReminder } = await import(`${process.env.GITHUB_WORKSPACE}/itest/reminder-fixtures.ts`);
+            await prepareReminder(github, core, 'empty-current');
 
   run-reminder-empty-current-scenario:
     name: Run reminder empty current scenario
@@ -1214,55 +293,10 @@ jobs:
       - run-reminder-empty-current-scenario
     runs-on: ubuntu-latest
     steps:
-      - name: Normalize GitHub App private key
-        if: ${{ env.AUTH_MODE == 'app' }}
-        id: normalize-key
-        shell: bash
-        env:
-          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
-        run: |
-          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
-          while IFS= read -r line; do
-            printf '::add-mask::%s\n' "$line"
-          done <<< "$NORMALIZED_KEY"
-          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+      - *app-token-step
 
-      - name: Create GitHub App installation token
-        if: ${{ env.AUTH_MODE == 'app' }}
-        id: app-token
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
-          private-key: ${{ steps.normalize-key.outputs.private_key }}
-          owner: ${{ env.INSTALLATION_OWNER }}
-          skip-token-revoke: true
-
-      - name: Resolve job auth token
-        id: auth
-        shell: bash
-        env:
-          DIRECT_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
-          APP_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          case "$AUTH_MODE" in
-            pat)
-              TOKEN="$DIRECT_TOKEN"
-              ;;
-            app)
-              TOKEN="$APP_TOKEN"
-              ;;
-            *)
-              echo "Unsupported auth mode: $AUTH_MODE" >&2
-              exit 1
-              ;;
-          esac
-
-          if [ -z "$TOKEN" ]; then
-            echo "Resolved token is empty for auth_mode=$AUTH_MODE" >&2
-            exit 1
-          fi
-
-          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+      - *resolve-token-step
 
       - name: Assert reminder stayed in empty current iteration
         uses: actions/github-script@v9
@@ -1273,85 +307,8 @@ jobs:
         with:
           github-token: ${{ steps.auth.outputs.token }}
           script: |
-            const projectId = process.env.PROJECT_ID;
-            const reminderTitle = process.env.REMINDER_TITLE;
-            const targetIterationId = process.env.TARGET_ITERATION_ID;
-
-            const PROJECT_ITEMS_QUERY = `
-              query($projectId: ID!, $after: String) {
-                node(id: $projectId) {
-                  ... on ProjectV2 {
-                    items(first: 100, after: $after) {
-                      pageInfo {
-                        hasNextPage
-                        endCursor
-                      }
-                      nodes {
-                        id
-                        content {
-                          __typename
-                          ... on DraftIssue {
-                            id
-                            title
-                          }
-                        }
-                        fieldValues(first: 20) {
-                          nodes {
-                            __typename
-                            ... on ProjectV2ItemFieldIterationValue {
-                              iterationId
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            `;
-
-            async function getAllProjectItems() {
-              const items = [];
-              let after = null;
-              let hasNextPage = true;
-
-              while (hasNextPage) {
-                const data = await github.graphql(PROJECT_ITEMS_QUERY, {
-                  projectId,
-                  after,
-                });
-
-                const connection = data.node?.items;
-                if (!connection) {
-                  throw new Error(`Unable to read project items for ${projectId}.`);
-                }
-
-                items.push(...connection.nodes);
-                hasNextPage = connection.pageInfo.hasNextPage;
-                after = connection.pageInfo.endCursor;
-              }
-
-              return items;
-            }
-
-            function getIterationId(item) {
-              const fieldValue = item.fieldValues?.nodes?.find((node) => node.__typename === 'ProjectV2ItemFieldIterationValue');
-              return fieldValue?.iterationId ?? null;
-            }
-
-            const items = await getAllProjectItems();
-            const reminderItems = items.filter((item) => item.content?.__typename === 'DraftIssue' && item.content.title === reminderTitle);
-
-            if (reminderItems.length !== 1) {
-              throw new Error(`Expected exactly one draft with title ${reminderTitle}, got ${reminderItems.length}.`);
-            }
-
-            const iterationId = getIterationId(reminderItems[0]);
-            if (iterationId !== targetIterationId) {
-              throw new Error(`Expected reminder draft to stay in iteration ${targetIterationId}, got ${iterationId || 'none'}.`);
-            }
-
-            core.info(`Reminder draft ${reminderItems[0].id} stayed in the empty current iteration as expected.`);
+            const { assertReminder } = await import(`${process.env.GITHUB_WORKSPACE}/itest/reminder-fixtures.ts`);
+            await assertReminder(github);
 
   cleanup-reminder-scenarios:
     name: Cleanup reminder scenarios
@@ -1365,55 +322,10 @@ jobs:
       - assert-reminder-idempotency-scenario
     runs-on: ubuntu-latest
     steps:
-      - name: Normalize GitHub App private key
-        if: ${{ env.AUTH_MODE == 'app' }}
-        id: normalize-key
-        shell: bash
-        env:
-          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
-        run: |
-          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
-          while IFS= read -r line; do
-            printf '::add-mask::%s\n' "$line"
-          done <<< "$NORMALIZED_KEY"
-          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+      - *app-token-step
 
-      - name: Create GitHub App installation token
-        if: ${{ env.AUTH_MODE == 'app' }}
-        id: app-token
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
-          private-key: ${{ steps.normalize-key.outputs.private_key }}
-          owner: ${{ env.INSTALLATION_OWNER }}
-          skip-token-revoke: true
-
-      - name: Resolve job auth token
-        id: auth
-        shell: bash
-        env:
-          DIRECT_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
-          APP_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          case "$AUTH_MODE" in
-            pat)
-              TOKEN="$DIRECT_TOKEN"
-              ;;
-            app)
-              TOKEN="$APP_TOKEN"
-              ;;
-            *)
-              echo "Unsupported auth mode: $AUTH_MODE" >&2
-              exit 1
-              ;;
-          esac
-
-          if [ -z "$TOKEN" ]; then
-            echo "Resolved token is empty for auth_mode=$AUTH_MODE" >&2
-            exit 1
-          fi
-
-          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+      - *resolve-token-step
 
       - name: Delete reminder drafts created by this run
         uses: actions/github-script@v9
@@ -1423,82 +335,8 @@ jobs:
         with:
           github-token: ${{ steps.auth.outputs.token }}
           script: |
-            const projectId = process.env.PROJECT_ID;
-            const reminderTitle = process.env.REMINDER_TITLE;
-
-            const PROJECT_ITEMS_QUERY = `
-              query($projectId: ID!, $after: String) {
-                node(id: $projectId) {
-                  ... on ProjectV2 {
-                    items(first: 100, after: $after) {
-                      pageInfo {
-                        hasNextPage
-                        endCursor
-                      }
-                      nodes {
-                        id
-                        content {
-                          __typename
-                          ... on DraftIssue {
-                            id
-                            title
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            `;
-
-            const DELETE_ITEM_MUTATION = `
-              mutation($input: DeleteProjectV2ItemInput!) {
-                deleteProjectV2Item(input: $input) {
-                  deletedItemId
-                }
-              }
-            `;
-
-            async function getAllProjectItems() {
-              const items = [];
-              let after = null;
-              let hasNextPage = true;
-
-              while (hasNextPage) {
-                const data = await github.graphql(PROJECT_ITEMS_QUERY, {
-                  projectId,
-                  after,
-                });
-
-                const connection = data.node?.items;
-                if (!connection) {
-                  throw new Error(`Unable to read project items for ${projectId}.`);
-                }
-
-                items.push(...connection.nodes);
-                hasNextPage = connection.pageInfo.hasNextPage;
-                after = connection.pageInfo.endCursor;
-              }
-
-              return items;
-            }
-
-            async function deleteProjectItem(itemId) {
-              await github.graphql(DELETE_ITEM_MUTATION, {
-                input: {
-                  projectId,
-                  itemId,
-                },
-              });
-            }
-
-            const items = await getAllProjectItems();
-            const reminderItems = items.filter((item) => item.content?.__typename === 'DraftIssue' && item.content.title === reminderTitle);
-
-            for (const item of reminderItems) {
-              await deleteProjectItem(item.id);
-              core.info(`Deleted reminder draft ${item.id} (${reminderTitle}).`);
-            }
+            const { cleanReminders } = await import(`${process.env.GITHUB_WORKSPACE}/itest/reminder-fixtures.ts`);
+            await cleanReminders(github);
 
   cleanup-reminder-empty-current-scenario:
     name: Cleanup reminder empty current scenario
@@ -1510,55 +348,10 @@ jobs:
       - assert-reminder-empty-current-scenario
     runs-on: ubuntu-latest
     steps:
-      - name: Normalize GitHub App private key
-        if: ${{ env.AUTH_MODE == 'app' }}
-        id: normalize-key
-        shell: bash
-        env:
-          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
-        run: |
-          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
-          while IFS= read -r line; do
-            printf '::add-mask::%s\n' "$line"
-          done <<< "$NORMALIZED_KEY"
-          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+      - *app-token-step
 
-      - name: Create GitHub App installation token
-        if: ${{ env.AUTH_MODE == 'app' }}
-        id: app-token
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
-          private-key: ${{ steps.normalize-key.outputs.private_key }}
-          owner: ${{ env.INSTALLATION_OWNER }}
-          skip-token-revoke: true
-
-      - name: Resolve job auth token
-        id: auth
-        shell: bash
-        env:
-          DIRECT_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
-          APP_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          case "$AUTH_MODE" in
-            pat)
-              TOKEN="$DIRECT_TOKEN"
-              ;;
-            app)
-              TOKEN="$APP_TOKEN"
-              ;;
-            *)
-              echo "Unsupported auth mode: $AUTH_MODE" >&2
-              exit 1
-              ;;
-          esac
-
-          if [ -z "$TOKEN" ]; then
-            echo "Resolved token is empty for auth_mode=$AUTH_MODE" >&2
-            exit 1
-          fi
-
-          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+      - *resolve-token-step
 
       - name: Delete reminder draft created for empty current scenario
         uses: actions/github-script@v9
@@ -1568,82 +361,8 @@ jobs:
         with:
           github-token: ${{ steps.auth.outputs.token }}
           script: |
-            const projectId = process.env.PROJECT_ID;
-            const reminderTitle = process.env.REMINDER_TITLE;
-
-            const PROJECT_ITEMS_QUERY = `
-              query($projectId: ID!, $after: String) {
-                node(id: $projectId) {
-                  ... on ProjectV2 {
-                    items(first: 100, after: $after) {
-                      pageInfo {
-                        hasNextPage
-                        endCursor
-                      }
-                      nodes {
-                        id
-                        content {
-                          __typename
-                          ... on DraftIssue {
-                            id
-                            title
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            `;
-
-            const DELETE_ITEM_MUTATION = `
-              mutation($input: DeleteProjectV2ItemInput!) {
-                deleteProjectV2Item(input: $input) {
-                  deletedItemId
-                }
-              }
-            `;
-
-            async function getAllProjectItems() {
-              const items = [];
-              let after = null;
-              let hasNextPage = true;
-
-              while (hasNextPage) {
-                const data = await github.graphql(PROJECT_ITEMS_QUERY, {
-                  projectId,
-                  after,
-                });
-
-                const connection = data.node?.items;
-                if (!connection) {
-                  throw new Error(`Unable to read project items for ${projectId}.`);
-                }
-
-                items.push(...connection.nodes);
-                hasNextPage = connection.pageInfo.hasNextPage;
-                after = connection.pageInfo.endCursor;
-              }
-
-              return items;
-            }
-
-            async function deleteProjectItem(itemId) {
-              await github.graphql(DELETE_ITEM_MUTATION, {
-                input: {
-                  projectId,
-                  itemId,
-                },
-              });
-            }
-
-            const items = await getAllProjectItems();
-            const reminderItems = items.filter((item) => item.content?.__typename === 'DraftIssue' && item.content.title === reminderTitle);
-
-            for (const item of reminderItems) {
-              await deleteProjectItem(item.id);
-              core.info(`Deleted reminder draft ${item.id} (${reminderTitle}).`);
-            }
+            const { cleanReminders } = await import(`${process.env.GITHUB_WORKSPACE}/itest/reminder-fixtures.ts`);
+            await cleanReminders(github);
 
   test-skipped-for-fork-pr:
     name: Test skipped for fork PR

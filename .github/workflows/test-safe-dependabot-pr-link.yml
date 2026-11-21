@@ -61,26 +61,13 @@ jobs:
       open_branch_name: ${{ steps.prepare.outputs.open_branch_name }}
       closed_branch_name: ${{ steps.prepare.outputs.closed_branch_name }}
     steps:
-      - name: Normalize GitHub App private key
-        if: ${{ env.AUTH_MODE == 'app' }}
-        id: normalize-key
-        shell: bash
-        env:
-          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
-        run: |
-          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
-          while IFS= read -r line; do
-            printf '::add-mask::%s\n' "$line"
-          done <<< "$NORMALIZED_KEY"
-          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
-
       - name: Create GitHub App installation token
         if: ${{ env.AUTH_MODE == 'app' }}
         id: app-token
         uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
-          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          private-key: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
 
@@ -272,26 +259,13 @@ jobs:
       - run-safe-scenario
     runs-on: ubuntu-latest
     steps:
-      - name: Normalize GitHub App private key
-        if: ${{ env.AUTH_MODE == 'app' }}
-        id: normalize-key
-        shell: bash
-        env:
-          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
-        run: |
-          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
-          while IFS= read -r line; do
-            printf '::add-mask::%s\n' "$line"
-          done <<< "$NORMALIZED_KEY"
-          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
-
       - name: Create GitHub App installation token
         if: ${{ env.AUTH_MODE == 'app' }}
         id: app-token
         uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
-          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          private-key: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
 
@@ -442,26 +416,13 @@ jobs:
       - rerun-safe-scenario
     runs-on: ubuntu-latest
     steps:
-      - name: Normalize GitHub App private key
-        if: ${{ env.AUTH_MODE == 'app' }}
-        id: normalize-key
-        shell: bash
-        env:
-          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
-        run: |
-          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
-          while IFS= read -r line; do
-            printf '::add-mask::%s\n' "$line"
-          done <<< "$NORMALIZED_KEY"
-          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
-
       - name: Create GitHub App installation token
         if: ${{ env.AUTH_MODE == 'app' }}
         id: app-token
         uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
-          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          private-key: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
 
@@ -553,26 +514,13 @@ jobs:
       - assert-safe-idempotency
     runs-on: ubuntu-latest
     steps:
-      - name: Normalize GitHub App private key
-        if: ${{ env.AUTH_MODE == 'app' }}
-        id: normalize-key
-        shell: bash
-        env:
-          RAW_PRIVATE_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
-        run: |
-          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
-          while IFS= read -r line; do
-            printf '::add-mask::%s\n' "$line"
-          done <<< "$NORMALIZED_KEY"
-          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
-
       - name: Create GitHub App installation token
         if: ${{ env.AUTH_MODE == 'app' }}
         id: app-token
         uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
-          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          private-key: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
 

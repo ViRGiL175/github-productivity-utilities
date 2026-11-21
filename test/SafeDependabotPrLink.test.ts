@@ -24,9 +24,9 @@ const input = {
 
 function createDependencies(existingStatus: string | null = null) {
   const pullRequests: PullRequestListGateway = {
-    listPullRequests: vi.fn().mockImplementation(async (_repository, state, page) => {
-      if (page > 1 || state === 'closed') return [];
-      return [{ nodeId: 'PR', number: 12, updatedAt: '2026-09-14T00:00:00Z', authorLogin: 'dependabot[bot]' }];
+    listPullRequests: vi.fn(async function* (_repository, state) {
+      if (state === 'closed') return;
+      yield { nodeId: 'PR', number: 12, updatedAt: '2026-09-14T00:00:00Z', authorLogin: 'dependabot[bot]' };
     }),
   };
   const projects: ProjectStatusGateway = {
@@ -89,11 +89,11 @@ describe('SafeDependabotPrLink', () => {
 
   it('still marks a closed Dependabot PR as done', async () => {
     const dependencies = createDependencies('In progress');
-    vi.mocked(dependencies.pullRequests.listPullRequests).mockImplementation(async (_repository, state, page) =>
-      state === 'closed' && page === 1
-        ? [{ nodeId: 'PR', number: 12, updatedAt: '2026-09-14T00:00:00Z', authorLogin: 'dependabot[bot]' }]
-        : [],
-    );
+    vi.mocked(dependencies.pullRequests.listPullRequests).mockImplementation(async function* (_repository, state) {
+      if (state === 'closed') {
+        yield { nodeId: 'PR', number: 12, updatedAt: '2026-09-14T00:00:00Z', authorLogin: 'dependabot[bot]' };
+      }
+    });
 
     await safeDependabotPrLink(
       input, dependencies.pullRequests, dependencies.projects, logger, () => new Date('2026-09-15T00:00:00Z'),
@@ -104,9 +104,9 @@ describe('SafeDependabotPrLink', () => {
 
   it('ignores pull requests from other authors', async () => {
     const dependencies = createDependencies();
-    vi.mocked(dependencies.pullRequests.listPullRequests).mockResolvedValueOnce([
-      { nodeId: 'PR', number: 12, updatedAt: '2026-09-14T00:00:00Z', authorLogin: 'someone' },
-    ]).mockResolvedValue([]);
+    vi.mocked(dependencies.pullRequests.listPullRequests).mockImplementationOnce(async function* () {
+      yield { nodeId: 'PR', number: 12, updatedAt: '2026-09-14T00:00:00Z', authorLogin: 'someone' };
+    });
     await safeDependabotPrLink(input, dependencies.pullRequests, dependencies.projects, logger);
 
     expect(dependencies.projects.getContentProjectItem).not.toHaveBeenCalled();

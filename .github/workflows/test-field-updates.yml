@@ -37,24 +37,12 @@ jobs:
         with:
           node-version: 24
       - run: npm ci
-      - name: Normalize existing App key
-        if: ${{ env.AUTH_MODE == 'app' }}
-        id: normalize-key
-        shell: bash
-        env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
-        run: |
-          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
-          while IFS= read -r line; do
-            printf '::add-mask::%s\n' "$line"
-          done <<< "$NORMALIZED_KEY"
-          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
       - uses: actions/create-github-app-token@v3
         if: ${{ env.AUTH_MODE == 'app' }}
         id: app-token
         with:
           app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
-          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          private-key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
           owner: ViRGiL-GH-Productivity
       - name: Exercise real native and project APIs and both PR paths
         uses: actions/github-script@v9

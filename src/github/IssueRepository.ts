@@ -192,16 +192,11 @@ export class IssueRepository implements IssueReader, IssueReopenGateway, SubIssu
   }
 
   async listSubIssues(repository: RepositoryCoordinates, parentNumber: number): Promise<Array<IssueRecord & { isOpen: boolean }>> {
-    const result: Array<IssueRecord & { isOpen: boolean }> = [];
-    for (let page = 1; ; page += 1) {
-      const response = await this.octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues', {
-        ...repository, issue_number: parentNumber, page, per_page: 100, headers: API_HEADERS,
-      });
-      for (const issue of response.data) {
-        result.push({ ...mapIssue(issue as GitHubIssueData), isOpen: issue.state === 'open' });
-      }
-      if (response.data.length < 100) return result;
-    }
+    return this.octokit.paginate(this.octokit.rest.issues.listSubIssues, {
+      ...repository, issue_number: parentNumber, per_page: 100, headers: API_HEADERS,
+    }, response => response.data.map(issue => ({
+      ...mapIssue(issue as GitHubIssueData), isOpen: issue.state === 'open',
+    })));
   }
 
   async listCrossReferencedPullRequests(

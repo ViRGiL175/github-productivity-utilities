@@ -43,26 +43,13 @@ jobs:
       reject_issue_number: ${{ steps.prepare.outputs.reject_issue_number }}
       reject_issue_url: ${{ steps.prepare.outputs.reject_issue_url }}
     steps:
-      - name: Normalize GitHub App private key
-        if: ${{ env.AUTH_MODE == 'app' }}
-        id: normalize-key
-        shell: bash
-        env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
-        run: |
-          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
-          while IFS= read -r line; do
-            printf '::add-mask::%s\n' "$line"
-          done <<< "$NORMALIZED_KEY"
-          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
-
       - name: Create GitHub App installation token
         if: ${{ env.AUTH_MODE == 'app' }}
         id: app-token
         uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
-          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          private-key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
 
@@ -139,26 +126,13 @@ jobs:
       - run-scrum-ready-scenario
     runs-on: ubuntu-latest
     steps:
-      - name: Normalize GitHub App private key
-        if: ${{ env.AUTH_MODE == 'app' }}
-        id: normalize-key
-        shell: bash
-        env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
-        run: |
-          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
-          while IFS= read -r line; do
-            printf '::add-mask::%s\n' "$line"
-          done <<< "$NORMALIZED_KEY"
-          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
-
       - name: Create GitHub App installation token
         if: ${{ env.AUTH_MODE == 'app' }}
         id: app-token
         uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
-          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          private-key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
 
@@ -206,26 +180,13 @@ jobs:
       - run-scrum-rejected-scenario
     runs-on: ubuntu-latest
     steps:
-      - name: Normalize GitHub App private key
-        if: ${{ env.AUTH_MODE == 'app' }}
-        id: normalize-key
-        shell: bash
-        env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
-        run: |
-          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
-          while IFS= read -r line; do
-            printf '::add-mask::%s\n' "$line"
-          done <<< "$NORMALIZED_KEY"
-          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
-
       - name: Create GitHub App installation token
         if: ${{ env.AUTH_MODE == 'app' }}
         id: app-token
         uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
-          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          private-key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
 
@@ -261,26 +222,13 @@ jobs:
       - assert-scrum-rejected-scenario
     runs-on: ubuntu-latest
     steps:
-      - name: Normalize GitHub App private key
-        if: ${{ env.AUTH_MODE == 'app' }}
-        id: normalize-key
-        shell: bash
-        env:
-          RAW_PRIVATE_KEY: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
-        run: |
-          NORMALIZED_KEY=$(printf '%b' "$RAW_PRIVATE_KEY")
-          while IFS= read -r line; do
-            printf '::add-mask::%s\n' "$line"
-          done <<< "$NORMALIZED_KEY"
-          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
-
       - name: Create GitHub App installation token
         if: ${{ env.AUTH_MODE == 'app' }}
         id: app-token
         uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
-          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          private-key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
           owner: ${{ env.INSTALLATION_OWNER }}
           skip-token-revoke: true
 

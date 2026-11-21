@@ -42,13 +42,17 @@ describe('PullRequestRepository review state', () => {
 
 describe('PullRequestRepository listing', () => {
   it('includes body and branch for Sprint reconciliation', async () => {
-    const request = vi.fn().mockResolvedValue({ data: [{
-      node_id: 'PR_NODE', number: 7, updated_at: '2026-09-23T00:00:00Z',
-      user: { login: 'author' }, body: 'Closes owner/backlog#42', head: { ref: '42-change' },
-    }] });
-    const gateway = new PullRequestRepository({ request } as unknown as Octokit);
-
-    await expect(gateway.listPullRequests({ owner: 'owner', repo: 'service' }, 'open', 1, 100)).resolves.toEqual([{
+    const iterator = async function* () {
+      yield { data: [{
+        node_id: 'PR_NODE', number: 7, updated_at: '2026-09-23T00:00:00Z',
+        user: { login: 'author' }, body: 'Closes owner/backlog#42', head: { ref: '42-change' },
+      }] };
+    };
+    const github = { paginate: { iterator }, rest: { pulls: { list: vi.fn() } } };
+    const gateway = new PullRequestRepository(github as unknown as Octokit);
+    const records = [];
+    for await (const record of gateway.listPullRequests({ owner: 'owner', repo: 'service' }, 'open')) records.push(record);
+    expect(records).toEqual([{
       nodeId: 'PR_NODE', number: 7, updatedAt: '2026-09-23T00:00:00Z', authorLogin: 'author',
       body: 'Closes owner/backlog#42', headRef: '42-change',
     }]);

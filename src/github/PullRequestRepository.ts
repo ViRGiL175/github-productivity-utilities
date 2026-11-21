@@ -32,9 +32,8 @@ export interface PullRequestListGateway {
   listPullRequests(
     repository: RepositoryCoordinates,
     state: 'open' | 'closed',
-    page: number,
-    perPage: number,
-  ): Promise<PullRequestRecord[]>;
+    perPage?: number,
+  ): AsyncIterable<PullRequestRecord>;
 }
 
 export interface PullRequestMutationGateway {
@@ -81,30 +80,26 @@ export class PullRequestRepository implements PullRequestListGateway, PullReques
   private readonly octokit: Octokit;
   constructor(octokit: Octokit) { this.octokit = octokit; }
 
-  async listPullRequests(
+  async *listPullRequests(
     repository: RepositoryCoordinates,
     state: 'open' | 'closed',
-    page: number,
-    perPage: number,
-  ): Promise<PullRequestRecord[]> {
-    const response = await this.octokit.request('GET /repos/{owner}/{repo}/pulls', {
-      ...repository,
-      state,
-      sort: 'updated',
-      direction: 'desc',
-      page,
-      per_page: perPage,
-      headers: API_HEADERS,
+    perPage = 100,
+  ): AsyncIterable<PullRequestRecord> {
+    const pages = this.octokit.paginate.iterator(this.octokit.rest.pulls.list, {
+      ...repository, state, sort: 'updated', direction: 'desc', per_page: perPage, headers: API_HEADERS,
     });
-
-    return response.data.map((pullRequest) => ({
-      nodeId: pullRequest.node_id,
-      number: pullRequest.number,
-      updatedAt: pullRequest.updated_at,
-      authorLogin: pullRequest.user?.login ?? '',
-      body: pullRequest.body ?? '',
-      headRef: pullRequest.head.ref,
-    }));
+    for await (const { data } of pages) {
+      for (const pullRequest of data) {
+        yield {
+          nodeId: pullRequest.node_id,
+          number: pullRequest.number,
+          updatedAt: pullRequest.updated_at,
+          authorLogin: pullRequest.user?.login ?? '',
+          body: pullRequest.body ?? '',
+          headRef: pullRequest.head.ref,
+        };
+      }
+    }
   }
 
   async getPullRequestBody(repository: RepositoryCoordinates, pullRequestNumber: number): Promise<string> {
@@ -169,20 +164,10 @@ export class PullRequestRepository implements PullRequestListGateway, PullReques
   }
 
   async listAssignableLogins(repository: RepositoryCoordinates): Promise<Set<string>> {
-    const logins = new Set<string>();
-    for (let page = 1; ; page += 1) {
-      const response = await this.octokit.request('GET /repos/{owner}/{repo}/assignees', {
-        ...repository,
-        page,
-        per_page: 100,
-        headers: API_HEADERS,
-      });
-      for (const assignee of response.data) {
-        if (assignee.login) logins.add(assignee.login);
-      }
-      if (response.data.length < 100) break;
-    }
-    return logins;
+    const logins = await this.octokit.paginate(this.octokit.rest.issues.listAssignees, {
+      ...repository, per_page: 100, headers: API_HEADERS,
+    }, response => response.data.flatMap(user => user.login ? [user.login] : []));
+    return new Set(logins);
   }
 
   async setAssignees(repository: RepositoryCoordinates, issueNumber: number, assignees: string[]): Promise<void> {

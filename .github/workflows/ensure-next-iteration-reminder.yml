@@ -83,24 +83,13 @@ jobs:
               ;;
           esac
 
-      - name: Normalize GitHub App private key
-        if: ${{ env.DIRECT_TOKEN == '' && env.AUTH_MODE == 'app' }}
-        id: normalize-key
-        shell: bash
-        run: |
-          NORMALIZED_KEY=$(printf '%b' "$APP_PRIVATE_KEY")
-          while IFS= read -r line; do
-            printf '::add-mask::%s\n' "$line"
-          done <<< "$NORMALIZED_KEY"
-          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
-
       - name: Create GitHub App installation token
         if: ${{ env.DIRECT_TOKEN == '' && env.AUTH_MODE == 'app' }}
         id: app-token
         uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.app_id }}
-          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          private-key: ${{ secrets.app_private_key }}
           owner: ${{ inputs.installation_owner }}
           skip-token-revoke: true
 

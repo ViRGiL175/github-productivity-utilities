@@ -9,9 +9,9 @@ describe('ReconcileOpenPrSprints', () => {
   it('scans configured repositories without adding unrelated PRs or changing their statuses', async () => {
     const issues = {} as IssueReader & IssueManagedCommentGateway;
     const pullRequests = {
-      listPullRequests: vi.fn().mockImplementation(async (_repository, _state, page) => page === 1
-        ? [{ nodeId: 'PR', number: 7, updatedAt: '2026-09-23T00:00:00Z', authorLogin: 'author', body: '', headRef: '' }]
-        : []),
+      listPullRequests: vi.fn(async function* () {
+        yield { nodeId: 'PR', number: 7, updatedAt: '2026-09-23T00:00:00Z', authorLogin: 'author', body: '', headRef: '' };
+      }),
       listClosingIssues: vi.fn(),
       getPullRequestBody: vi.fn(),
     } as PullRequestListGateway & PullRequestClosingIssuesGateway & Pick<PullRequestMutationGateway, 'getPullRequestBody'>;
@@ -38,10 +38,10 @@ describe('ReconcileOpenPrSprints', () => {
   it('limits an on-demand reconciliation to the selected PR number', async () => {
     const issues = {} as IssueReader & IssueManagedCommentGateway;
     const pullRequests = {
-      listPullRequests: vi.fn().mockResolvedValue([
-        { nodeId: 'PR_7', number: 7, updatedAt: '2026-09-23T00:00:00Z', authorLogin: 'author' },
-        { nodeId: 'PR_8', number: 8, updatedAt: '2026-09-23T00:00:00Z', authorLogin: 'author' },
-      ]),
+      listPullRequests: vi.fn(async function* () {
+        yield { nodeId: 'PR_7', number: 7, updatedAt: '2026-09-23T00:00:00Z', authorLogin: 'author' };
+        yield { nodeId: 'PR_8', number: 8, updatedAt: '2026-09-23T00:00:00Z', authorLogin: 'author' };
+      }),
       listClosingIssues: vi.fn().mockResolvedValue([]),
       getPullRequestBody: vi.fn().mockResolvedValue(''),
     } as PullRequestListGateway & PullRequestClosingIssuesGateway & Pick<PullRequestMutationGateway, 'getPullRequestBody'>;
