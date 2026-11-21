@@ -764,14 +764,19 @@ jobs:
       app_id: ${{ secrets.app_id }}
       app_private_key: ${{ secrets.app_private_key }}
 
-  assert-link-idempotency-scenario:
-    name: Assert link PR idempotency scenario
+  prepare-link-edited-scenario:
+    name: Verify idempotency and prepare multiple linked sprints
     needs:
       - resolve-auth
       - prepare-link-scenario
       - rerun-link-open-scenario
       - assert-link-open-scenario
     runs-on: ubuntu-latest
+    outputs:
+      secondary_issue_number: ${{ steps.prepare-secondary.outputs.secondary_issue_number }}
+      secondary_issue_node_id: ${{ steps.prepare-secondary.outputs.secondary_issue_node_id }}
+      unsprinted_issue_number: ${{ steps.prepare-secondary.outputs.unsprinted_issue_number }}
+      unsprinted_issue_node_id: ${{ steps.prepare-secondary.outputs.unsprinted_issue_node_id }}
     steps:
       - uses: actions/checkout@v7
       - *app-token-step
@@ -887,33 +892,6 @@ jobs:
             });
 
             core.info(`PR #${pullNumber} rerun stayed idempotent.`);
-
-  prepare-link-edited-scenario:
-    name: Prepare multiple linked sprint scenario
-    needs:
-      - resolve-auth
-      - prepare-link-scenario
-      - assert-link-idempotency-scenario
-    runs-on: ubuntu-latest
-    outputs:
-      secondary_issue_number: ${{ steps.prepare-secondary.outputs.secondary_issue_number }}
-      secondary_issue_node_id: ${{ steps.prepare-secondary.outputs.secondary_issue_node_id }}
-      unsprinted_issue_number: ${{ steps.prepare-secondary.outputs.unsprinted_issue_number }}
-      unsprinted_issue_node_id: ${{ steps.prepare-secondary.outputs.unsprinted_issue_node_id }}
-    steps:
-      - *app-token-step
-
-      - &resolve-token-step-2
-        name: Resolve job auth token
-        id: auth
-        shell: bash
-        env:
-          DIRECT_TOKEN: ${{ secrets.pat_token }}
-          APP_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          if [ "$AUTH_MODE" = "app" ]; then TOKEN="$APP_TOKEN"; else TOKEN="$DIRECT_TOKEN"; fi
-          if [ -z "$TOKEN" ]; then echo "Resolved token is empty" >&2; exit 1; fi
-          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Add a later-sprint issue and clear PR fields before edited event
         id: prepare-secondary
@@ -1079,7 +1057,7 @@ jobs:
     steps:
       - *app-token-step
 
-      - *resolve-token-step-2
+      - *resolve-token-step
 
       - name: Assert edited event selected the latest linked Sprint
         uses: actions/github-script@v9
@@ -1696,18 +1674,6 @@ jobs:
               core.info(`Review request assigned @${reviewer}; Sprint is ${expectedSprint || 'empty without an active iteration'}.`);
             }
 
-  close-pr-before-status-check:
-    name: Close PR before status check
-    needs:
-      - resolve-auth
-      - prepare-link-scenario
-      - assert-link-review-requested-scenario
-    runs-on: ubuntu-latest
-    steps:
-      - *app-token-step
-
-      - *resolve-token-step
-
       - name: Close temporary PR
         uses: actions/github-script@v9
         env:
@@ -1738,7 +1704,7 @@ jobs:
     needs:
       - resolve-auth
       - prepare-link-scenario
-      - close-pr-before-status-check
+      - assert-link-review-requested-scenario
     uses: ./.github/workflows/link-pr-to-project.yml
     with:
       project_owner: ViRGiL-GH-Productivity
@@ -1847,7 +1813,6 @@ jobs:
       - run-link-open-scenario
       - assert-link-open-scenario
       - rerun-link-open-scenario
-      - assert-link-idempotency-scenario
       - prepare-link-edited-scenario
       - run-link-edited-scenario
       - assert-link-edited-scenario
@@ -1855,7 +1820,6 @@ jobs:
       - assert-link-synchronize-scenario
       - run-link-review-requested-scenario
       - assert-link-review-requested-scenario
-      - close-pr-before-status-check
       - run-link-closed-scenario
       - assert-link-closed-scenario
     runs-on: ubuntu-latest

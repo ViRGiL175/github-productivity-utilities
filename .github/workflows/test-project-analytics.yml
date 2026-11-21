@@ -21,7 +21,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: integration-org-sandbox
+  group: analytics-org-webhook
   queue: max
   cancel-in-progress: false
 
@@ -36,6 +36,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
+      PROJECT_OWNER: ViRGiL-GH-Productivity
+      GITHUB_REPOSITORIES: scrum-test-backlog,test-client
       GITHUB_APP_ID: ${{ secrets.ORG_AUTOMATION_APP_ID }}
       GITHUB_APP_PRIVATE_KEY_FILE: .local/secrets/github-app.pem
       ALLOW_GITHUB_APP_KEY_READ: 'true'
@@ -63,19 +65,13 @@ jobs:
         run: |
           node scripts/local-analytics.mjs init
           node --input-type=module <<'JS'
-          import { appendFileSync, writeFileSync } from 'node:fs';
-          import { analyticsSandbox } from './itest/analytics-sandbox.ts';
+          import { writeFileSync } from 'node:fs';
           if (!process.env.GITHUB_APP_ID) throw new Error('Missing ORG_AUTOMATION_APP_ID repository secret');
           if (!process.env.RAW_PRIVATE_KEY) throw new Error('Missing ORG_AUTOMATION_APP_PRIVATE_KEY repository secret');
           const key = process.env.RAW_PRIVATE_KEY.replace(/\\n/g, '\n');
           for (const line of key.split(/\r?\n/).filter(Boolean)) console.log(`::add-mask::${line}`);
           writeFileSync(process.env.GITHUB_APP_PRIVATE_KEY_FILE, key, { mode: 0o600 });
           writeFileSync('.local/analytics.env', '', { mode: 0o600 });
-          const sandbox = await analyticsSandbox();
-          const settings = { PROJECT_OWNER: sandbox.owner, PROJECT_NUMBER: sandbox.number,
-            GITHUB_REPOSITORIES: sandbox.repositories.join(','), FIXTURE_REPOSITORY: sandbox.backlog };
-          for (const value of [sandbox.owner, ...sandbox.repositories]) console.log(`::add-mask::${value}`);
-          appendFileSync(process.env.GITHUB_ENV, Object.entries(settings).map(([key, value]) => `${key}=${value}\n`).join(''));
           JS
       - name: Create a temporary test CA and localhost certificate
         run: |
@@ -104,6 +100,17 @@ jobs:
           permission-organization-projects: write
           permission-issues: write
           permission-metadata: read
+      - name: Copy sandbox project fields for this run
+        id: sandbox
+        env:
+          GH_TOKEN: ${{ steps.fixture-token.outputs.token }}
+        run: |
+          project=$(gh project copy 1 --source-owner "$PROJECT_OWNER" --target-owner "$PROJECT_OWNER" \
+            --title "ITEST analytics $GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --format json)
+          id=$(jq -er '.id' <<< "$project")
+          number=$(jq -er '.number | select(. > 1)' <<< "$project")
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          echo "PROJECT_NUMBER=$number" >> "$GITHUB_ENV"
       - name: Install official GitHub webhook forwarder
         env:
           GH_TOKEN: ${{ github.token }}
@@ -118,11 +125,20 @@ jobs:
           WEBHOOK_FORWARD_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
         run: node itest/project-analytics.ts
       - name: Clean up only this run's GitHub fixture
-        if: ${{ always() && steps.fixture-token.outputs.token != '' }}
+        if: ${{ always() && steps.sandbox.outputs.id != '' }}
         env:
           FIXTURE_TOKEN: ${{ steps.fixture-token.outputs.token }}
           WEBHOOK_FORWARD_TOKEN: ${{ secrets.CI_SANDBOX_TOKEN }}
         run: node itest/project-analytics.ts cleanup
+      - name: Delete this run's sandbox project
+        if: always() && steps.sandbox.outputs.id != ''
+        env:
+          GH_TOKEN: ${{ steps.fixture-token.outputs.token }}
+          PROJECT_ID: ${{ steps.sandbox.outputs.id }}
+        run: |
+          gh api graphql -f id="$PROJECT_ID" -f query='mutation($id: ID!) {
+            deleteProjectV2(input: { projectId: $id }) { clientMutationId }
+          }' --silent
       - name: Remove ephemeral containers, volumes, and credentials
         if: always()
         run: |

@@ -10,11 +10,11 @@ import type { Pool } from 'pg';
 import { PostgresEventStore } from '../src/analytics/PostgresEventStore.ts';
 import { webhookServer } from '../src/analytics/webhooks.ts';
 import type { ProjectV2Repository } from '../src/github/ProjectV2Repository.ts';
-import { analyticsSandbox } from './analytics-sandbox.ts';
+import type { analyticsSandbox } from './analytics-sandbox.ts';
 import { cleanupAttempts, saveFixtureJournal } from './analytics-fixture-state.ts';
 
 const journal = '.local/analytics-live-fixtures.json';
-type Sandbox = Awaited<ReturnType<typeof analyticsSandbox>>;
+type Sandbox = ReturnType<typeof analyticsSandbox>;
 interface Issue {
 
   id: string;
