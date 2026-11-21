@@ -26,7 +26,7 @@ export async function run({ github, context, core }: {
 }): Promise<void> {
   const owner = 'ViRGiL-GH-Productivity';
   const projectId = 'PVT_kwDOD_pocM4BRshl';
-  const suffix = `${context.runId}-${process.env.GITHUB_RUN_ATTEMPT}`;
+  const suffix = `${context.runId}-${process.env.GITHUB_RUN_ATTEMPT}-${process.env.AUTH_MODE}`;
   const projects = new ProjectV2Repository(github);
   const issues = new IssueRepository(github);
   const pulls = new PullRequestRepository(github);

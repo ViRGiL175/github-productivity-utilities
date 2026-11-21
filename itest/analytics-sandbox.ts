@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { parse } from 'yaml';
 
 export async function analyticsSandbox(): Promise<{ owner: string; number: number; backlog: string; repositories: string[] }> {
-  const workflow = await readFile(new URL('../.github/workflows/test-link-pr-to-project.yml', import.meta.url), 'utf8');
+  const workflow = await readFile(new URL('../.github/workflows/itest-link-pr-to-project.yml', import.meta.url), 'utf8');
   const settings = parse(workflow).env as Record<string, unknown>;
   function sandboxValue(key: string): string {
     const value = settings[key];

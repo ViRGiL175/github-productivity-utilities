@@ -17,6 +17,8 @@ on:
       - 'src/automations/collect-linked-context/**'
       - '.github/workflows/collect-linked-context.yml'
       - '.github/workflows/test-collect-linked-context.yml'
+      - '.github/workflows/sandbox-auth-modes.yml'
+      - '.github/workflows/itest-private-linked-context.yml'
 
 concurrency:
   group: ${{ github.workflow }}
@@ -272,76 +274,24 @@ jobs:
           fi
           echo "OK: 'Linux-2.6.12-rc2' found in output"
 
-  # ─── Case 8: cross-org private issue via PAT ─────────────────────────────
-  # ViRGiL-GH-Productivity/scrum-test-backlog#1 is a known private sandbox issue.
-  # GITHUB_TOKEN alone can't access it — requires CI_SANDBOX_TOKEN restricted to the test organization.
-  collect-cross-org-pat:
-    name: '[8] Collect — cross-org private issue via PAT (auth_mode=pat)'
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-    uses: ./.github/workflows/collect-linked-context.yml
+  auth-modes:
+    uses: ./.github/workflows/sandbox-auth-modes.yml
     with:
-      text: 'Backlog: ViRGiL-GH-Productivity/scrum-test-backlog#1'
-      auth_mode: pat
-    secrets:
-      pat_token: ${{ secrets.CI_SANDBOX_TOKEN }}
+      requested_mode: ${{ inputs.auth_mode || '' }}
 
-  assert-cross-org-pat:
-    name: '[8] Assert — cross-org issue fetched via PAT'
-    runs-on: ubuntu-latest
-    needs: collect-cross-org-pat
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-    env:
-      ACTUAL: ${{ needs.collect-cross-org-pat.outputs.value }}
-    steps:
-      - name: Output must not be empty
-        run: |
-          if [ -z "$ACTUAL" ]; then
-            echo "Expected issue context for scrum-test-backlog#1, got empty — PAT cross-org access failed" >&2
-            exit 1
-          fi
-          echo "OK: output not empty"
-      - name: Output must mention the issue number
-        run: |
-          if ! echo "$ACTUAL" | grep -q 'scrum-test-backlog#1'; then
-            echo "Expected 'scrum-test-backlog#1' in output, got: $ACTUAL" >&2
-            exit 1
-          fi
-          echo "OK: 'scrum-test-backlog#1' found in output"
-
-  # ─── Case 9: cross-org private issue via GitHub App ──────────────────────
-  # Same private issue, but token is minted from GitHub App credentials.
-  # Only runs on workflow_dispatch with auth_mode=app; skipped on pull_request and pat dispatch.
-  collect-cross-org-app:
-    name: '[9] Collect — cross-org private issue via App (auth_mode=app)'
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' }}
-    uses: ./.github/workflows/collect-linked-context.yml
+  sandbox:
+    name: Sandbox (${{ matrix.auth_mode }})
+    needs: auth-modes
+    if: needs.auth-modes.outputs.modes != ''
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        auth_mode: ${{ fromJSON(needs.auth-modes.outputs.modes) }}
+    uses: ./.github/workflows/itest-private-linked-context.yml
     with:
-      text: 'Backlog: ViRGiL-GH-Productivity/scrum-test-backlog#1'
-      auth_mode: app
-      installation_owner: ViRGiL-GH-Productivity
+      auth_mode: ${{ matrix.auth_mode }}
     secrets:
-      app_id: ${{ secrets.ORG_AUTOMATION_APP_ID }}
-      app_private_key: ${{ secrets.ORG_AUTOMATION_APP_PRIVATE_KEY }}
-
-  assert-cross-org-app:
-    name: '[9] Assert — cross-org issue fetched via App'
-    runs-on: ubuntu-latest
-    needs: collect-cross-org-app
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode == 'app' }}
-    env:
-      ACTUAL: ${{ needs.collect-cross-org-app.outputs.value }}
-    steps:
-      - name: Output must not be empty
-        run: |
-          if [ -z "$ACTUAL" ]; then
-            echo "Expected issue context for scrum-test-backlog#1, got empty — App cross-org access failed" >&2
-            exit 1
-          fi
-          echo "OK: output not empty"
-      - name: Output must mention the issue number
-        run: |
-          if ! echo "$ACTUAL" | grep -q 'scrum-test-backlog#1'; then
-            echo "Expected 'scrum-test-backlog#1' in output, got: $ACTUAL" >&2
-            exit 1
-          fi
-          echo "OK: 'scrum-test-backlog#1' found in output"
+      pat_token: ${{ matrix.auth_mode == 'pat' && secrets.CI_SANDBOX_TOKEN || '' }}
+      app_id: ${{ matrix.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_ID || '' }}
+      app_private_key: ${{ matrix.auth_mode == 'app' && secrets.ORG_AUTOMATION_APP_PRIVATE_KEY || '' }}

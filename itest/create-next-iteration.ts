@@ -11,7 +11,7 @@ export async function run(github: Octokit, core: IntegrationCore): Promise<void>
   assert(owner, 'PROJECT_OWNER is required');
   const number = Number(process.env.PROJECT_NUMBER);
   const repo = 'scrum-test-backlog';
-  const suffix = `${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`;
+  const suffix = `${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}-${process.env.AUTH_MODE}`;
   const fieldName = `ITEST-${suffix}-iteration`;
   const reminderTitle = `ITEST-${suffix}-new-iteration-reminder`;
   const projects = new ProjectV2Repository(github);

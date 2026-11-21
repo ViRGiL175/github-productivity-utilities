@@ -11,9 +11,9 @@ on:
         options: [pat, app]
   push:
     branches: [gff-pr-field-updates]
-    paths: ['src/**', 'itest/field-updates.ts', 'itest/runtime.ts', '.github/workflows/test-field-updates.yml', 'package*.json']
+    paths: ['src/**', 'itest/field-updates.ts', 'itest/runtime.ts', '.github/workflows/test-field-updates.yml', '.github/workflows/sandbox-auth-modes.yml', 'package*.json']
   pull_request:
-    paths: ['src/github/FieldController.ts', 'src/automations/field-updates/**', 'itest/field-updates.ts', 'itest/runtime.ts', '.github/workflows/test-field-updates.yml', 'package*.json']
+    paths: ['src/github/FieldController.ts', 'src/automations/field-updates/**', 'itest/field-updates.ts', 'itest/runtime.ts', '.github/workflows/test-field-updates.yml', '.github/workflows/sandbox-auth-modes.yml', 'package*.json']
 
 permissions:
   contents: read
@@ -23,12 +23,22 @@ concurrency:
   queue: max
   cancel-in-progress: false
 
-env:
-  AUTH_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.auth_mode || 'pat' }}
-
 jobs:
+  auth-modes:
+    uses: ./.github/workflows/sandbox-auth-modes.yml
+    with:
+      requested_mode: ${{ inputs.auth_mode || '' }}
+
   test-fields:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    needs: auth-modes
+    if: needs.auth-modes.outputs.modes != ''
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        auth_mode: ${{ fromJSON(needs.auth-modes.outputs.modes) }}
+    env:
+      AUTH_MODE: ${{ matrix.auth_mode }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -47,13 +57,13 @@ jobs:
       - name: Exercise real native and project APIs and both PR paths
         uses: actions/github-script@v9
         with:
-          github-token: ${{ env.AUTH_MODE == 'app' && steps.app-token.outputs.token || secrets.CI_SANDBOX_TOKEN }}
+          github-token: ${{ steps.app-token.outputs.token || (matrix.auth_mode == 'pat' && secrets.CI_SANDBOX_TOKEN) || '' }}
           script: |
             const { run } = await import('${{ github.workspace }}/itest/field-updates.ts');
             await run({ github, context, core });
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: field-updates-${{ github.run_id }}-${{ github.run_attempt }}
+          name: field-updates-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.auth_mode }}
           path: field-updates-result.json
           if-no-files-found: warn
