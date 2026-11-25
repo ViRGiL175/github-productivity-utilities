@@ -7,10 +7,14 @@ import { logger, repositoryName, required } from './environment.ts';
 import { createFieldUpdates } from '../automations/field-updates/FieldUpdates.ts';
 
 export async function run(github: Octokit): Promise<void> {
+  const projectOwner = required('PROJECT_OWNER');
+  const projectNumber = Number(required('PROJECT_NUMBER'));
   await linkPrToProject({
-    fieldUpdates: await createFieldUpdates(github, process.env.FIELD_UPDATES ?? '', required('PROJECT_OWNER'), Number(required('PROJECT_NUMBER'))),
-    projectOwner: required('PROJECT_OWNER'),
-    projectNumber: Number(required('PROJECT_NUMBER')),
+    projectOwner,
+    projectNumber,
+    fieldUpdates: await createFieldUpdates(
+      github, process.env.FIELD_UPDATES ?? '', projectOwner, projectNumber, process.env.FIELD_UPDATES_JSON,
+    ),
     backlogRepository: { owner: required('BACKLOG_REPO_OWNER'), repo: required('BACKLOG_REPO') },
     iterationFieldName: required('ITERATION_FIELD_NAME'),
     statusFieldName: required('STATUS_FIELD_NAME'),

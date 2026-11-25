@@ -6,11 +6,13 @@ import type { RepositoryCoordinates } from '../../github/IssueRepository.ts';
 export type FieldUpdates = (itemId: string, repository: RepositoryCoordinates, number: number) => Promise<void>;
 
 export async function createFieldUpdates(
-  github: Octokit, yaml: string, projectOwner: string, projectNumber: number,
+  github: Octokit, yaml: string, projectOwner: string, projectNumber: number, json = '',
 ): Promise<FieldUpdates | undefined> {
-  if (!yaml.trim()) return undefined;
-  const { parse } = await import('yaml');
-  const config: unknown = parse(yaml, { uniqueKeys: true, maxAliasCount: 0 });
+  if (!yaml.trim() && !json.trim()) return undefined;
+  if (yaml.trim() && json.trim()) throw new Error('Set either field_updates or field_updates_json.');
+  const config: unknown = json.trim()
+    ? JSON.parse(json)
+    : (await import('yaml')).parse(yaml, { uniqueKeys: true, maxAliasCount: 0 });
   validateConfig(config);
   const controller = new FieldController(github);
   return async (itemId, repository, issueNumber) => {
@@ -26,7 +28,7 @@ export async function createFieldUpdates(
 }
 
 function validateConfig(config: unknown): asserts config is FieldConfig {
-  if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('Field updates must be a YAML mapping');
+  if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('Field updates must be a mapping');
   for (const [scope, fields] of Object.entries(config)) {
     if (scope === 'force') {
       if (typeof fields !== 'boolean') throw new Error('Field updates force must be boolean');

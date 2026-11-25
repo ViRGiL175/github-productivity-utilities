@@ -18,6 +18,7 @@ on:
       - '.github/workflows/resolve-integration-test-token.yml'
       - 'package*.json'
       - '.github/workflows/ensure-next-iteration-reminder.yml'
+      - '.github/workflows/nightly-project.yml'
       - '.github/workflows/test-ensure-next-iteration-reminder.yml'
       - '.github/workflows/sandbox-auth-modes.yml'
       - '.github/workflows/itest-ensure-next-iteration-reminder.yml'

@@ -1,5 +1,5 @@
 import type { IssueManagedCommentGateway, IssueReader, RepositoryCoordinates } from '../../github/IssueRepository.ts';
-import type { ProjectIterationGateway, ProjectV2Gateway } from '../../github/ProjectV2Repository.ts';
+import type { ProjectIterationGateway, ProjectMetadata, ProjectV2Gateway } from '../../github/ProjectV2Repository.ts';
 import type { PullRequestClosingIssuesGateway, PullRequestListGateway, PullRequestMutationGateway } from '../../github/PullRequestRepository.ts';
 import type { Logger } from '../../runtime/Logger.ts';
 import { parseRepositories } from '../safe-dependabot-pr-link/SafeDependabotPrLink.ts';
@@ -25,12 +25,14 @@ export async function reconcileOpenPrSprints(
   const repositories = parseRepositories(input.repositories, '', input.projectOwner, logger);
   const failures: string[] = [];
   let checked = 0;
+  let project: ProjectMetadata | undefined;
 
   for (const repository of repositories) {
     for await (const pullRequest of pullRequests.listPullRequests(repository, 'open')) {
       if (input.pullRequestNumber && pullRequest.number !== input.pullRequestNumber) continue;
       checked += 1;
       try {
+        project ??= await projects.getProjectMetadata(input.projectOwner, input.projectNumber, input.iterationFieldName);
         await reconcilePrSprint({
           projectOwner: input.projectOwner,
           projectNumber: input.projectNumber,
@@ -47,7 +49,7 @@ export async function reconcileOpenPrSprints(
           headRef: pullRequest.headRef ?? '',
           action: 'reconcile_sprint',
           requestedReviewersJson: '[]',
-        }, issues, pullRequests, projects, logger, now);
+        }, issues, pullRequests, projects, logger, now, project);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         failures.push(`${repository.nameWithOwner}#${pullRequest.number}: ${message}`);

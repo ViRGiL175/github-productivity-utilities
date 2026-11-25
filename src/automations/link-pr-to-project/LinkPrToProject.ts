@@ -1,5 +1,5 @@
 import type { IssueClosingReferenceGateway, IssueClosingPullRequestsGateway, IssueManagedCommentGateway, IssueReader, RepositoryCoordinates } from '../../github/IssueRepository.ts';
-import type { ProjectIterationGateway, ProjectStatusGateway, ProjectV2Gateway } from '../../github/ProjectV2Repository.ts';
+import type { ProjectIterationGateway, ProjectMetadata, ProjectStatusGateway, ProjectV2Gateway } from '../../github/ProjectV2Repository.ts';
 import type { PullRequestClosingIssuesGateway, PullRequestMutationGateway } from '../../github/PullRequestRepository.ts';
 import type { Logger } from '../../runtime/Logger.ts';
 import { collectClosingIssueReferences } from '../../github/ClosingReferenceParser.ts';
@@ -48,6 +48,10 @@ logger: Logger,
 now: () => Date = () => new Date(),
 ): Promise<void> {
   validateInput(input);
+  if (input.action === 'submitted' && input.reviewState?.toLowerCase() === 'commented') {
+    logger.info('Comment-only review does not change assignees.');
+    return;
+  }
   const [iterationMetadata, statusMetadata] = await Promise.all([
     projects.getProjectMetadata(input.projectOwner, input.projectNumber, input.iterationFieldName),
     projects.getStatusMetadata(input.projectOwner, input.projectNumber, input.statusFieldName),
@@ -99,10 +103,6 @@ now: () => Date = () => new Date(),
   }
 
   if (['review_request_removed', 'submitted', 'dismissed'].includes(input.action)) {
-    if (input.action === 'submitted' && input.reviewState?.toLowerCase() === 'commented') {
-      logger.info('Comment-only review does not change assignees.');
-      return;
-    }
     await syncReviewAssignees(input, pullRequests, logger);
     if (input.action === 'submitted' && input.reviewState?.toLowerCase() === 'changes_requested' &&
       await isHumanReviewActor(input, pullRequests)) {
@@ -223,9 +223,10 @@ export async function reconcilePrSprint(
   projects: ProjectV2Gateway & Pick<ProjectIterationGateway, 'getIterationMetadata'>,
   logger: Logger,
   now: () => Date = () => new Date(),
+  projectMetadata?: ProjectMetadata,
 ): Promise<void> {
   validateInput(input);
-  const project = await projects.getProjectMetadata(input.projectOwner, input.projectNumber, input.iterationFieldName);
+  const project = projectMetadata ?? await projects.getProjectMetadata(input.projectOwner, input.projectNumber, input.iterationFieldName);
   const pullRequestItem = await projects.getIssueProjectItem(
     input.pullRequestNodeId, project.projectId, input.iterationFieldName,
   );

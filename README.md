@@ -10,6 +10,7 @@
 
 | Workflow-файл | Описание |
 | --- | --- |
+| [`nightly-project.yml`](./.github/workflows/nightly-project.yml) | За один запуск импортирует Dependabot PR, сверяет Sprint открытых PR и обновляет напоминание. |
 | [`./.github/workflows/ensure-next-iteration-reminder.yml`](./.github/workflows/ensure-next-iteration-reminder.yml) | Создаёт следующую итерацию, если её ещё нет, и поддерживает reminder draft в целевой итерации. |
 | [`./.github/workflows/ai-label-issue.yml`](./.github/workflows/ai-label-issue.yml) | **Deprecated.** Сохранён только для обратной совместимости; новые подключения не поддерживаются. |
 | [`./.github/workflows/link-pr-to-project.yml`](./.github/workflows/link-pr-to-project.yml) | Добавляет PR в Project V2, копирует sprint и assignee из связанной issue и ставит статус Done при закрытии. При `pull_request: synchronize` переводит PR и все открытые closing issues из Todo или пустого статуса в In progress, сохраняя более поздние статусы. Когда все открытые связанные PR уже в статусе ревью, переводит и backlog issue в этот статус, не меняя её ответственных. После запроса изменений человеком возвращает PR и связанную issue в Todo. Режим `action: reconcile_sprints` сверяет Sprint открытых PR из списка `repositories`, не меняя их Status, assignee и описание. Для синхронизации assignee токену нужны права на запись в issues PR-репозитория. |
@@ -21,7 +22,7 @@
 
 ## TypeScript-реализации
 
-Публичным интерфейсом автоматизаций остаются reusable workflow в `.github/workflows`. Каждый workflow загружает исходный TypeScript из `src/scripts` и запускает его через `actions/github-script@v9` с авторизованным GitHub-клиентом. Сборки `dist` нет. Без `field_updates` установка npm-зависимостей при запуске не нужна; при непустой настройке устанавливается runtime YAML-парсер. В YAML остаются события, permissions, secrets, авторизация и оркестрация jobs.
+Публичным интерфейсом автоматизаций остаются reusable workflow в `.github/workflows`. Каждый workflow загружает исходный TypeScript из `src/scripts` и запускает его через `actions/github-script@v9` с авторизованным GitHub-клиентом. Сборки `dist` нет. Node.js читает `field_updates_json` без установки зависимостей. Для прежнего входа `field_updates` workflow устанавливает YAML-парсер. В YAML остаются события, permissions, secrets, авторизация и оркестрация jobs.
 
 Все прежние inputs, secrets, defaults и правила обработки сохранены. В каждом reusable workflow checkout реализации использует `job.workflow_sha`: тесты выполняют исходный код из проверяемого коммита, а вызов workflow через `@tag` — код из коммита этого тега. Внешним репозиториям не нужно отдельно выбирать ref реализации.
 
@@ -31,7 +32,7 @@
 
 Чтобы новые коммиты переводили PR и его открытые closing issues в In progress, caller должен вызывать `link-pr-to-project.yml` на `pull_request: synchronize` и передавать `status_in_progress_value` с точным названием статуса Project V2. Статусы Need review, Done и другие значения, отличные от Todo, сохраняются.
 
-Изменение Sprint связанной issue в Project V2 не вызывает событие PR. Для периодической сверки открытых PR вызывайте `link-pr-to-project.yml` по расписанию или вручную с `action: reconcile_sprints` и многострочным списком `repositories`. Режим пропускает PR вне проекта и не меняет их Status, assignee или описание.
+Изменение Sprint связанной issue в Project V2 не вызывает событие PR. Подключите `nightly-project.yml` к одному ночному расписанию на проект. Передайте `repositories` для импорта Dependabot и `backlog_repo` для сверки Sprint по тому же списку репозиториев. Названия поля и вариантов статуса должны совпадать с настройками проекта. Параметры `reminder_title` и `iteration_field_name` определяют напоминание. Каждый шаг пишет результат отдельно. Ошибка одного шага позволяет выполнить остальные и помечает весь запуск как неуспешный. Для отдельной сверки доступен `link-pr-to-project.yml` с `action: reconcile_sprints`.
 
 Локальные проверки TypeScript:
 
@@ -40,21 +41,18 @@ npm ci
 npm run check
 ```
 
-TypeScript используется в форме, которую Node.js 24 запускает напрямую. `npm` используется для проверки типов и unit-тестов, а также для установки YAML-парсера при подключённом `field_updates`.
+TypeScript используется в форме, которую Node.js 24 запускает напрямую. `npm` используется для проверки типов и unit-тестов, а также для старого YAML-входа `field_updates`.
 
 ## Поля после добавления PR
 
-`link-pr-to-project.yml` и `safe-dependabot-pr-link.yml` принимают необязательный YAML input `field_updates`. Поля назначаются после добавления PR и повторно при обработке уже добавленного PR. Пустой input сохраняет прежнее поведение; настройку у потребителя нужно подключить отдельно.
-
-Пример для обоих reusable workflow:
+Для репозитория-потребителя задайте поля в `field_updates_json`. Этот вход поддерживают обычные PR, импорт Dependabot и ночное обслуживание проекта. При добавлении и повторной обработке PR пустое поле получит значение по умолчанию.
 
 ```yaml
 with:
-  field_updates: |
-    project:
-      Horizon: Inbox
-    force: false
+  field_updates_json: '{"project":{"Horizon":"Inbox"}}'
 ```
+
+В `link-pr-to-project.yml` и `safe-dependabot-pr-link.yml` также доступен прежний YAML-вход `field_updates`. Указывайте один из двух форматов.
 
 `project` и `issue` — отдельные словари «точное имя поля: значение». По умолчанию `force: false` сохраняет заполненное, включая ноль; `force: true` заменяет указанные поля. Совпадающие значения пропускаются. Очистка не поддерживается: значения — непустые строки или конечные числа.
 
@@ -62,7 +60,7 @@ with:
 
 Обе секции проверяются перед записью. Каждый scope записывается одним запросом: Project REST PATCH, затем native REST POST; пустой POST и заменяющий все поля PUT не отправляются. Общей транзакции нет; проверка пустоты не защищена от параллельной ручной правки. При ошибке item остаётся в проекте, `FieldUpdateError.report.applied` содержит подтверждённые записи, `uncertain` — поля с неизвестным результатом. Перед их повторной записью нужно прочитать состояние.
 
-Используются существующие права Projects/Issues и доступ к Issue Fields организации. При непустом input workflow устанавливает runtime YAML-парсер. `test-field-updates.yml` проверяет оба API и оба пути добавления PR через штатный App в sandbox без моков. Регулярная проверка импортера использует App fixture с настроенным bot-login. Fixtures закрываются, items и ветки сохраняются.
+Используются существующие права Projects/Issues и доступ к Issue Fields организации. `test-field-updates.yml` проверяет оба API и оба пути добавления PR через штатный App в sandbox без моков. Регулярная проверка импортера использует App fixture с настроенным bot-login. Fixtures закрываются, items и ветки сохраняются.
 
 ## Создание следующей итерации
 

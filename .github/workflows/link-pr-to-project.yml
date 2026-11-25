@@ -10,6 +10,10 @@ on:
         type: string
         required: false
         default: ''
+      field_updates_json:
+        description: Project/issue field updates as JSON, parsed directly by Node.js
+        type: string
+        required: false
       project_owner:
         description: Login of the organization or user that owns the Project V2 board
         required: true
@@ -196,6 +200,7 @@ jobs:
         uses: actions/github-script@v9
         env:
           FIELD_UPDATES: ${{ inputs.field_updates }}
+          FIELD_UPDATES_JSON: ${{ inputs.field_updates_json }}
           PROJECT_OWNER: ${{ inputs.project_owner }}
           PROJECT_NUMBER: ${{ inputs.project_number }}
           BACKLOG_REPO: ${{ inputs.backlog_repo }}

@@ -1,0 +1,167 @@
+name: Nightly project maintenance
+
+on:
+  workflow_call:
+    inputs:
+      project_owner:
+        required: true
+        type: string
+      project_number:
+        required: true
+        type: number
+      iteration_field_name:
+        required: true
+        type: string
+      reminder_title:
+        required: true
+        type: string
+      repositories:
+        description: Newline-delimited PR repositories for the Dependabot import and sprint scan
+        type: string
+      backlog_repo:
+        description: Backlog repository name under project_owner. Enables the sprint scan.
+        type: string
+      status_field_name:
+        type: string
+        default: Status
+      status_start_value:
+        type: string
+        default: To do
+      status_final_value:
+        type: string
+        default: Done
+      field_updates_json:
+        description: Project/issue field defaults for Dependabot PRs
+        type: string
+      current_date_override:
+        required: false
+        type: string
+      auth_mode:
+        required: false
+        default: pat
+        type: string
+      installation_owner:
+        required: false
+        type: string
+    secrets:
+      project_token:
+        required: false
+      pat_token:
+        required: false
+      app_id:
+        required: false
+      app_private_key:
+        required: false
+
+jobs:
+  maintain-project:
+    # This lock is repository-scoped; use one caller repository per project field.
+    concurrency:
+      group: ensure-next-iteration-reminder-${{ inputs.project_owner }}-${{ inputs.project_number }}-${{ inputs.iteration_field_name }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    env:
+      PROJECT_OWNER: ${{ inputs.project_owner }}
+      PROJECT_NUMBER: ${{ inputs.project_number }}
+      ITERATION_FIELD_NAME: ${{ inputs.iteration_field_name }}
+      REPOSITORIES: ${{ inputs.repositories }}
+      AUTH_MODE: ${{ inputs.auth_mode }}
+      INSTALLATION_OWNER: ${{ inputs.installation_owner }}
+      DIRECT_TOKEN: ${{ secrets.project_token }}
+      PAT_TOKEN: ${{ secrets.pat_token }}
+      APP_ID: ${{ secrets.app_id }}
+      APP_PRIVATE_KEY: ${{ secrets.app_private_key }}
+
+    steps:
+      - name: Validate configuration
+        env:
+          BACKLOG_REPO: ${{ inputs.backlog_repo }}
+        shell: bash
+        run: |
+          if [[ -n "$BACKLOG_REPO" && -z "$REPOSITORIES" ]]; then
+            echo "::error::Set repositories when backlog_repo is supplied."
+            exit 1
+          fi
+          if [ -n "$DIRECT_TOKEN" ]; then
+            exit 0
+          fi
+
+          case "$AUTH_MODE" in
+            pat)
+              if [ -z "$PAT_TOKEN" ]; then
+                echo "pat_token secret is required when auth_mode=pat and project_token is not provided" >&2
+                exit 1
+              fi
+              ;;
+            app)
+              if [ -z "$APP_ID" ] || [ -z "$APP_PRIVATE_KEY" ] || [ -z "$INSTALLATION_OWNER" ]; then
+                echo "app_id, app_private_key, and installation_owner are required when auth_mode=app and project_token is not provided" >&2
+                exit 1
+              fi
+              ;;
+            *)
+              echo "Unsupported auth_mode: $AUTH_MODE" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Create GitHub App installation token
+        if: ${{ env.DIRECT_TOKEN == '' && env.AUTH_MODE == 'app' }}
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.app_id }}
+          private-key: ${{ secrets.app_private_key }}
+          owner: ${{ inputs.installation_owner }}
+          skip-token-revoke: true
+
+      - name: Checkout automation implementation
+        id: checkout
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .github-productivity-utilities-runtime
+
+      - name: Reconcile Dependabot PR links
+        if: inputs.repositories != ''
+        uses: actions/github-script@v9
+        env:
+          REPOSITORY_OWNER: ${{ inputs.project_owner }}
+          STATUS_FIELD_NAME: ${{ inputs.status_field_name }}
+          STATUS_START_VALUE: ${{ inputs.status_start_value }}
+          STATUS_FINAL_VALUE: ${{ inputs.status_final_value }}
+          FIELD_UPDATES_JSON: ${{ inputs.field_updates_json }}
+        with:
+          github-token: &token ${{ env.DIRECT_TOKEN || (env.AUTH_MODE == 'pat' && env.PAT_TOKEN) || steps.app-token.outputs.token }}
+          script: |
+            const { run } = await import(`${process.env.GITHUB_WORKSPACE}/.github-productivity-utilities-runtime/src/scripts/safe-dependabot-pr-link.ts`)
+            await run(github)
+
+      - name: Reconcile open PR sprints
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' && inputs.backlog_repo != '' }}
+        uses: actions/github-script@v9
+        env:
+          BACKLOG_REPO_OWNER: ${{ inputs.project_owner }}
+          BACKLOG_REPO: ${{ inputs.backlog_repo }}
+        with:
+          github-token: *token
+          script: |
+            const { run } = await import(`${process.env.GITHUB_WORKSPACE}/.github-productivity-utilities-runtime/src/scripts/reconcile-open-pr-sprints.ts`)
+            await run(github)
+
+      - name: Ensure reminder draft exists in target iteration
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        uses: actions/github-script@v9
+        env:
+          REMINDER_TITLE: ${{ inputs.reminder_title }}
+          CURRENT_DATE_OVERRIDE: ${{ inputs.current_date_override }}
+        with:
+          github-token: *token
+          script: |
+            const { run } = await import(`${process.env.GITHUB_WORKSPACE}/.github-productivity-utilities-runtime/src/scripts/ensure-next-iteration-reminder.ts`)
+            await run(github)
