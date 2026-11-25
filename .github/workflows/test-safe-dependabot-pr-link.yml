@@ -21,6 +21,12 @@ on:
       - '.github/workflows/sandbox-auth-modes.yml'
       - '.github/workflows/itest-safe-dependabot-pr-link.yml'
       - 'src/automations/safe-dependabot-pr-link/**'
+      - 'src/automations/field-updates/**'
+      - 'src/github/FieldController.ts'
+      - 'src/github/IssueRepository.ts'
+      - 'src/scripts/safe-dependabot-pr-link.ts'
+      - 'src/scripts/environment.ts'
+      - 'src/runtime/**'
       - 'src/github/ProjectV2Repository.ts'
       - 'src/github/PullRequestRepository.ts'
 

@@ -93,6 +93,10 @@ jobs:
 
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
       - name: Create parent and child issues
         id: prepare
         uses: actions/github-script@v9
@@ -120,207 +124,33 @@ jobs:
               'X-GitHub-Api-Version': '2022-11-28',
             };
 
-            const ORGANIZATION_PROJECT_QUERY = `
-              query($owner: String!, $number: Int!) {
-                organization(login: $owner) {
-                  projectV2(number: $number) {
-                    id
-                    fields(first: 100) {
-                      nodes {
-                        __typename
-                        ... on ProjectV2FieldCommon {
-                          id
-                          name
-                        }
-                        ... on ProjectV2IterationField {
-                          configuration {
-                            completedIterations {
-                              id
-                              title
-                              startDate
-                              duration
-                            }
-                            iterations {
-                              id
-                              title
-                              startDate
-                              duration
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            `;
-
-            const USER_PROJECT_QUERY = `
-              query($owner: String!, $number: Int!) {
-                user(login: $owner) {
-                  projectV2(number: $number) {
-                    id
-                    fields(first: 100) {
-                      nodes {
-                        __typename
-                        ... on ProjectV2FieldCommon {
-                          id
-                          name
-                        }
-                        ... on ProjectV2IterationField {
-                          configuration {
-                            completedIterations {
-                              id
-                              title
-                              startDate
-                              duration
-                            }
-                            iterations {
-                              id
-                              title
-                              startDate
-                              duration
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            `;
-
-            const ADD_PROJECT_ITEM_MUTATION = `
-              mutation($projectId: ID!, $contentId: ID!) {
-                addProjectV2ItemById(input: { projectId: $projectId, contentId: $contentId }) {
-                  item {
-                    id
-                  }
-                }
-              }
-            `;
-
-            const UPDATE_ITERATION_MUTATION = `
-              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $iterationId: String!) {
-                updateProjectV2ItemFieldValue(input: {
-                  projectId: $projectId
-                  itemId: $itemId
-                  fieldId: $fieldId
-                  value: { iterationId: $iterationId }
-                }) {
-                  projectV2Item {
-                    id
-                  }
-                }
-              }
-            `;
-
-            function toUtcDate(value) {
-              return new Date(`${value}T00:00:00Z`);
+            const { ProjectV2Repository } = await import(`${process.env.GITHUB_WORKSPACE}/src/github/ProjectV2Repository.ts`);
+            const projects = new ProjectV2Repository(github);
+            const project = await projects.getIterationMetadata(projectOwner, projectNumber, iterationFieldName);
+            const iterations = project.iterations.filter(iteration => iteration.startDate);
+            if (iterations.length < 2) {
+              throw new Error('Need at least two iterations in the sandbox project to run sync-sub-issue-sprint integration tests.');
             }
+            const targetIterationId = iterations[0].id;
+            // Keep interior iterations free for the concurrent empty-reminder scenario.
+            const alternativeIterationId = iterations.at(-1).id;
 
-            function sortIterations(iterations) {
-              return [...iterations].sort((a, b) => toUtcDate(a.startDate) - toUtcDate(b.startDate));
-            }
-
-            async function getProjectOwnerType(login) {
-              const response = await github.request('GET /users/{username}', {
-                username: login,
-                headers: {
-                  accept: 'application/vnd.github+json',
-                  'X-GitHub-Api-Version': '2022-11-28',
-                },
-              });
-
-              return response.data.type;
-            }
-
-            async function getProjectMetadata() {
-              const ownerType = await getProjectOwnerType(projectOwner);
-              const query = ownerType === 'Organization' ? ORGANIZATION_PROJECT_QUERY : USER_PROJECT_QUERY;
-
-              const data = await github.graphql(query, {
-                owner: projectOwner,
-                number: projectNumber,
-              });
-
-              const project = ownerType === 'Organization'
-                ? data.organization?.projectV2
-                : data.user?.projectV2;
-
-              if (!project) {
-                throw new Error(`Project ${projectOwner}#${projectNumber} was not found.`);
-              }
-
-              const iterationField = project.fields.nodes.find((field) =>
-                field?.__typename === 'ProjectV2IterationField' && field.name === iterationFieldName,
-              );
-              if (!iterationField) {
-                throw new Error(`Iteration field "${iterationFieldName}" was not found in project ${projectOwner}#${projectNumber}.`);
-              }
-
-              const iterations = sortIterations([
-                ...(iterationField.configuration?.iterations ?? []),
-                ...(iterationField.configuration?.completedIterations ?? []),
-              ]).filter((iteration) => iteration.startDate);
-
-              if (iterations.length < 2) {
-                throw new Error('Need at least two iterations in the sandbox project to run sync-sub-issue-sprint integration tests.');
-              }
-
-              return {
-                projectId: project.id,
-                iterationFieldId: iterationField.id,
-                targetIterationId: iterations[0].id,
-                // Keep interior iterations free for the concurrent empty-reminder scenario.
-                alternativeIterationId: iterations[iterations.length - 1].id,
-              };
-            }
-
-            async function addIssueToProject(projectId, issueNodeId) {
-              async function findItem() {
-                const data = await github.graphql(`query($id: ID!) {
-                  node(id: $id) { ... on Issue {
-                    projectItems(first: 100) { nodes { id project { id } } }
-                  } }
-                }`, { id: issueNodeId });
-                return data.node.projectItems.nodes.find(item => item?.project?.id === projectId)?.id;
-              }
-
+            async function ensureParentItem(nodeId) {
+              const findItem = () => projects.getIssueProjectItem(nodeId, project.projectId, iterationFieldName);
               const existing = await findItem();
-              if (existing) {
-                core.info(`Reusing auto-added fixture item ${existing}.`);
-                return existing;
-              }
+              if (existing) return existing.id;
               try {
-                const data = await github.graphql(ADD_PROJECT_ITEM_MUTATION, {
-                  projectId,
-                  contentId: issueNodeId,
-                });
-                return data.addProjectV2ItemById.item.id;
+                return await projects.addIssueToProject(project.projectId, nodeId);
               } catch (error) {
                 // Auto-add can win the race between the lookup and mutation.
                 if (error.errors?.some(entry => entry.message === 'Content already exists in this project')) {
                   const added = await findItem();
-                  if (added) {
-                    core.info(`Reusing fixture item ${added} after concurrent auto-add.`);
-                    return added;
-                  }
+                  if (added) return added.id;
                 }
                 throw error;
               }
             }
 
-            async function setIteration(projectId, itemId, fieldId, iterationId) {
-              await github.graphql(UPDATE_ITERATION_MUTATION, {
-                projectId,
-                itemId,
-                fieldId,
-                iterationId,
-              });
-            }
-
-            const project = await getProjectMetadata();
             core.setOutput('project_id', project.projectId);
 
             const parentResponse = await github.request('POST /repos/{owner}/{repo}/issues', {
@@ -346,8 +176,8 @@ jobs:
             core.setOutput('child_node_id', childIssue.node_id);
             core.setOutput('child_id', String(childIssue.id));
 
-            const parentProjectItemId = await addIssueToProject(project.projectId, parentIssue.node_id);
-            await setIteration(project.projectId, parentProjectItemId, project.iterationFieldId, project.targetIterationId);
+            const parentProjectItemId = await ensureParentItem(parentIssue.node_id);
+            await projects.setIteration(project.projectId, parentProjectItemId, project.iterationFieldId, targetIterationId);
 
             await github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues', {
               owner,
@@ -357,8 +187,8 @@ jobs:
               headers,
             });
 
-            core.setOutput('target_iteration_id', project.targetIterationId);
-            core.setOutput('alternative_iteration_id', project.alternativeIterationId);
+            core.setOutput('target_iteration_id', targetIterationId);
+            core.setOutput('alternative_iteration_id', alternativeIterationId);
 
   run-sync-scenario:
     name: Run sub-issue sync scenario

@@ -15,6 +15,11 @@ on:
     paths:
       - 'package*.json'
       - 'src/automations/collect-linked-context/**'
+      - 'src/github/LinkedContextRepository.ts'
+      - 'src/github/IssueRepository.ts'
+      - 'src/scripts/collect-linked-context.ts'
+      - 'src/scripts/environment.ts'
+      - 'src/runtime/**'
       - '.github/workflows/collect-linked-context.yml'
       - '.github/workflows/test-collect-linked-context.yml'
       - '.github/workflows/sandbox-auth-modes.yml'

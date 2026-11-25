@@ -110,6 +110,10 @@ jobs:
 
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
       - name: Create issue, project item, branch, and PR
         id: prepare
         uses: actions/github-script@v9
@@ -149,120 +153,10 @@ jobs:
               'X-GitHub-Api-Version': '2022-11-28',
             };
 
-            const ORGANIZATION_PROJECT_QUERY = `
-              query($owner: String!, $number: Int!) {
-                organization(login: $owner) {
-                  projectV2(number: $number) {
-                    id
-                    fields(first: 100) {
-                      nodes {
-                        __typename
-                        ... on ProjectV2FieldCommon {
-                          id
-                          name
-                        }
-                        ... on ProjectV2IterationField {
-                          configuration {
-                            completedIterations {
-                              id
-                              title
-                              startDate
-                              duration
-                            }
-                            iterations {
-                              id
-                              title
-                              startDate
-                              duration
-                            }
-                          }
-                        }
-                        ... on ProjectV2SingleSelectField {
-                          options {
-                            id
-                            name
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            `;
-
-            const USER_PROJECT_QUERY = `
-              query($owner: String!, $number: Int!) {
-                user(login: $owner) {
-                  projectV2(number: $number) {
-                    id
-                    fields(first: 100) {
-                      nodes {
-                        __typename
-                        ... on ProjectV2FieldCommon {
-                          id
-                          name
-                        }
-                        ... on ProjectV2IterationField {
-                          configuration {
-                            completedIterations {
-                              id
-                              title
-                              startDate
-                              duration
-                            }
-                            iterations {
-                              id
-                              title
-                              startDate
-                              duration
-                            }
-                          }
-                        }
-                        ... on ProjectV2SingleSelectField {
-                          options {
-                            id
-                            name
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            `;
-
-            const ADD_PROJECT_ITEM_MUTATION = `
-              mutation($projectId: ID!, $contentId: ID!) {
-                addProjectV2ItemById(input: { projectId: $projectId, contentId: $contentId }) {
-                  item {
-                    id
-                  }
-                }
-              }
-            `;
-
-            const UPDATE_ITERATION_MUTATION = `
-              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $iterationId: String!) {
-                updateProjectV2ItemFieldValue(input: {
-                  projectId: $projectId
-                  itemId: $itemId
-                  fieldId: $fieldId
-                  value: { iterationId: $iterationId }
-                }) {
-                  projectV2Item {
-                    id
-                  }
-                }
-              }
-            `;
-
-            function toUtcDate(value) {
-              return new Date(`${value}T00:00:00Z`);
-            }
-
-            function sortIterations(iterations) {
-              return [...iterations].sort((a, b) => toUtcDate(a.startDate) - toUtcDate(b.startDate));
-            }
+            const { ProjectV2Repository } = await import(`${process.env.GITHUB_WORKSPACE}/src/github/ProjectV2Repository.ts`);
+            const projects = new ProjectV2Repository(github);
+            const { PullRequestRepository } = await import(`${process.env.GITHUB_WORKSPACE}/src/github/PullRequestRepository.ts`);
+            const pulls = new PullRequestRepository(github);
 
             function pickPreferredOption(optionNames, preferredNames, excludedNames = []) {
               const excluded = new Set(excludedNames.filter(Boolean));
@@ -276,124 +170,49 @@ jobs:
               return optionNames.find((name) => !excluded.has(name)) ?? null;
             }
 
-            async function listRepoAssigneeLogins(owner, repo) {
-              const assignees = await github.paginate('GET /repos/{owner}/{repo}/assignees', {
-                owner,
-                repo,
-                per_page: 100,
-                headers,
-              });
+            const [sprint, status, backlogAssignees, pullAssignees] = await Promise.all([
+              projects.getIterationMetadata(projectOwner, projectNumber, iterationFieldName),
+              projects.getStatusMetadata(projectOwner, projectNumber, statusFieldName),
+              pulls.listAssignableLogins({ owner: backlogRepoOwner, repo: backlogRepoName }),
+              pulls.listAssignableLogins({ owner: pullRequestRepoOwner, repo: pullRequestRepoName }),
+            ]);
+            const iterations = sprint.iterations.filter(iteration => iteration.startDate);
 
-              return (assignees ?? [])
-                .map((assignee) => assignee?.login)
-                .filter(Boolean);
+            if (iterations.length < 2) {
+              throw new Error('Need at least two iterations in the sandbox project to test latest-sprint selection.');
             }
 
-            async function getProjectOwnerType(login) {
-              const response = await github.request('GET /users/{username}', {
-                username: login,
-                headers: {
-                  accept: 'application/vnd.github+json',
-                  'X-GitHub-Api-Version': '2022-11-28',
-                },
-              });
-
-              return response.data.type;
+            const statusOptionNames = [...status.optionIdsByName.keys()];
+            if (!statusOptionNames.includes(statusDoneValue)) {
+              throw new Error(`Status option "${statusDoneValue}" was not found in field ${statusFieldName} of project ${projectOwner}#${projectNumber}.`);
             }
 
-            async function getProjectMetadata() {
-              const ownerType = await getProjectOwnerType(projectOwner);
-              const query = ownerType === 'Organization' ? ORGANIZATION_PROJECT_QUERY : USER_PROJECT_QUERY;
-
-              const data = await github.graphql(query, {
-                owner: projectOwner,
-                number: projectNumber,
-              });
-
-              const project = ownerType === 'Organization'
-                ? data.organization?.projectV2
-                : data.user?.projectV2;
-
-              if (!project) {
-                throw new Error(`Project ${projectOwner}#${projectNumber} was not found.`);
-              }
-
-              const iterationField = project.fields.nodes.find((field) =>
-                field?.__typename === 'ProjectV2IterationField' && field.name === iterationFieldName,
-              );
-              if (!iterationField) {
-                throw new Error(`Iteration field "${iterationFieldName}" was not found in project ${projectOwner}#${projectNumber}.`);
-              }
-
-              const statusField = project.fields.nodes.find((field) =>
-                field?.__typename === 'ProjectV2SingleSelectField' && field.name === statusFieldName,
-              );
-              if (!statusField) {
-                throw new Error(`Status field "${statusFieldName}" was not found in project ${projectOwner}#${projectNumber}.`);
-              }
-
-              const iterations = sortIterations([
-                ...(iterationField.configuration?.iterations ?? []),
-                ...(iterationField.configuration?.completedIterations ?? []),
-              ]).filter((iteration) => iteration.startDate);
-
-              if (iterations.length < 2) {
-                throw new Error('Need at least two iterations in the sandbox project to test latest-sprint selection.');
-              }
-
-              const statusOptionNames = (statusField.options ?? []).map((option) => option.name);
-              if (!statusOptionNames.includes(statusDoneValue)) {
-                throw new Error(`Status option "${statusDoneValue}" was not found in field ${statusFieldName} of project ${projectOwner}#${projectNumber}.`);
-              }
-
-              const nonDoneStatusNames = statusOptionNames.filter((name) => name !== statusDoneValue);
-              if (nonDoneStatusNames.length === 0) {
-                throw new Error(`Need at least one non-${statusDoneValue} option in field ${statusFieldName} to run link-pr-to-project integration tests.`);
-              }
-
-              const statusInProgressValue = pickPreferredOption(
-                nonDoneStatusNames,
-                ['In Progress', 'Doing', 'Active', 'Planned', 'Todo', 'To Do', 'Backlog'],
-              );
-              const statusInReviewValue = pickPreferredOption(
-                nonDoneStatusNames,
-                ['Need Review', 'In Review', 'Review', 'Ready for Review'],
-                [statusInProgressValue],
-              ) ?? statusInProgressValue;
-
-              return {
-                projectId: project.id,
-                iterationFieldId: iterationField.id,
-                statusFieldId: statusField.id,
-                targetIterationId: iterations[0].id,
-                latestIterationId: iterations[iterations.length - 1].id,
-                statusInProgressValue,
-                statusInReviewValue,
-              };
+            const nonDoneStatusNames = statusOptionNames.filter((name) => name !== statusDoneValue);
+            if (nonDoneStatusNames.length === 0) {
+              throw new Error(`Need at least one non-${statusDoneValue} option in field ${statusFieldName} to run link-pr-to-project integration tests.`);
             }
 
-            async function addIssueToProject(projectId, issueNodeId) {
-              const data = await github.graphql(ADD_PROJECT_ITEM_MUTATION, {
-                projectId,
-                contentId: issueNodeId,
-              });
+            const statusInProgressValue = pickPreferredOption(
+              nonDoneStatusNames,
+              ['In Progress', 'Doing', 'Active', 'Planned', 'Todo', 'To Do', 'Backlog'],
+            );
+            const statusInReviewValue = pickPreferredOption(
+              nonDoneStatusNames,
+              ['Need Review', 'In Review', 'Review', 'Ready for Review'],
+              [statusInProgressValue],
+            ) ?? statusInProgressValue;
 
-              return data.addProjectV2ItemById.item.id;
-            }
+            const project = {
+              projectId: sprint.projectId,
+              iterationFieldId: sprint.iterationFieldId,
+              statusFieldId: status.statusFieldId,
+              targetIterationId: iterations[0].id,
+              latestIterationId: iterations[iterations.length - 1].id,
+              statusInProgressValue,
+              statusInReviewValue,
+            };
 
-            async function setIteration(projectId, itemId, fieldId, iterationId) {
-              await github.graphql(UPDATE_ITERATION_MUTATION, {
-                projectId,
-                itemId,
-                fieldId,
-                iterationId,
-              });
-            }
-
-            const project = await getProjectMetadata();
-            const backlogRepoAssignees = await listRepoAssigneeLogins(backlogRepoOwner, backlogRepoName);
-            const pullRequestRepoAssignees = new Set(await listRepoAssigneeLogins(pullRequestRepoOwner, pullRequestRepoName));
-            const issueAssigneeLogin = backlogRepoAssignees.find((login) => pullRequestRepoAssignees.has(login)) ?? null;
+            const issueAssigneeLogin = [...backlogAssignees].find(login => pullAssignees.has(login)) ?? null;
 
             if (!issueAssigneeLogin) {
               throw new Error(`Need at least one common assignable user between ${backlogRepoOwner}/${backlogRepoName} and ${pullRequestRepoOwner}/${pullRequestRepoName} to run link-pr-to-project integration tests.`);
@@ -409,8 +228,8 @@ jobs:
             });
             const issue = issueResponse.data;
 
-            const issueProjectItemId = await addIssueToProject(project.projectId, issue.node_id);
-            await setIteration(project.projectId, issueProjectItemId, project.iterationFieldId, project.targetIterationId);
+            const issueProjectItemId = await projects.addContentToProject(project.projectId, issue.node_id);
+            await projects.setIteration(project.projectId, issueProjectItemId, project.iterationFieldId, project.targetIterationId);
 
             const branchName = `${issue.number}-itest-${context.runId}`;
             const baseBranch = `itest-base-${context.runId}-${process.env.AUTH_MODE}`;
@@ -458,7 +277,7 @@ jobs:
             });
             const pullRequest = pullResponse.data;
 
-            const pullItemId = await addIssueToProject(project.projectId, pullRequest.node_id);
+            const pullItemId = await projects.addContentToProject(project.projectId, pullRequest.node_id);
             await github.graphql(`
               mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!) {
                 clearProjectV2ItemFieldValue(input: { projectId: $projectId, itemId: $itemId, fieldId: $fieldId }) {
@@ -933,28 +752,10 @@ jobs:
               headers,
             });
             const secondaryIssue = issueResponse.data;
-            const added = await github.graphql(`
-              mutation($projectId: ID!, $contentId: ID!) {
-                addProjectV2ItemById(input: { projectId: $projectId, contentId: $contentId }) {
-                  item { id }
-                }
-              }
-            `, { projectId, contentId: secondaryIssue.node_id });
-            await github.graphql(`
-              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $iterationId: String!) {
-                updateProjectV2ItemFieldValue(input: {
-                  projectId: $projectId
-                  itemId: $itemId
-                  fieldId: $fieldId
-                  value: { iterationId: $iterationId }
-                }) { projectV2Item { id } }
-              }
-            `, {
-              projectId,
-              itemId: added.addProjectV2ItemById.item.id,
-              fieldId: iterationFieldId,
-              iterationId: latestIterationId,
-            });
+            const { ProjectV2Repository } = await import(`${process.env.GITHUB_WORKSPACE}/src/github/ProjectV2Repository.ts`);
+            const projects = new ProjectV2Repository(github);
+            const itemId = await projects.addIssueToProject(projectId, secondaryIssue.node_id);
+            await projects.setIteration(projectId, itemId, iterationFieldId, latestIterationId);
 
             const unsprintedIssueResponse = await github.request('POST /repos/{owner}/{repo}/issues', {
               owner: backlogOwner,
@@ -964,13 +765,7 @@ jobs:
               headers,
             });
             const unsprintedIssue = unsprintedIssueResponse.data;
-            await github.graphql(`
-              mutation($projectId: ID!, $contentId: ID!) {
-                addProjectV2ItemById(input: { projectId: $projectId, contentId: $contentId }) {
-                  item { id }
-                }
-              }
-            `, { projectId, contentId: unsprintedIssue.node_id });
+            await projects.addIssueToProject(projectId, unsprintedIssue.node_id);
 
             const data = await github.graphql(`
               query($pullNodeId: ID!) {

@@ -13,7 +13,22 @@ on:
     branches: [gff-pr-field-updates]
     paths: ['src/**', 'itest/field-updates.ts', 'itest/runtime.ts', '.github/workflows/test-field-updates.yml', '.github/workflows/sandbox-auth-modes.yml', 'package*.json']
   pull_request:
-    paths: ['src/github/FieldController.ts', 'src/automations/field-updates/**', 'itest/field-updates.ts', 'itest/runtime.ts', '.github/workflows/test-field-updates.yml', '.github/workflows/sandbox-auth-modes.yml', 'package*.json']
+    paths:
+      - 'src/automations/field-updates/**'
+      - 'src/automations/link-pr-to-project/LinkPrToProject.ts'
+      - 'src/automations/safe-dependabot-pr-link/SafeDependabotPrLink.ts'
+      - 'src/automations/ensure-next-iteration-reminder/EnsureNextIterationReminder.ts'
+      - 'src/github/ClosingReferenceParser.ts'
+      - 'src/github/FieldController.ts'
+      - 'src/github/IssueRepository.ts'
+      - 'src/github/ProjectV2Repository.ts'
+      - 'src/github/PullRequestRepository.ts'
+      - 'src/runtime/**'
+      - 'itest/field-updates.ts'
+      - 'itest/runtime.ts'
+      - '.github/workflows/test-field-updates.yml'
+      - '.github/workflows/sandbox-auth-modes.yml'
+      - 'package*.json'
 
 permissions:
   contents: read

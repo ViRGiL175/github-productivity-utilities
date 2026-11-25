@@ -37,6 +37,7 @@ on:
       - 'src/scripts/environment.ts'
       - 'src/runtime/**'
       - 'itest/retry-assertion.ts'
+      - 'itest/runtime.ts'
 
 concurrency:
   group: integration-org-sandbox
