@@ -10,7 +10,7 @@
 
 | Workflow-файл | Описание |
 | --- | --- |
-| [`nightly-project.yml`](./.github/workflows/nightly-project.yml) | За один запуск импортирует Dependabot PR, сверяет Sprint открытых PR и обновляет напоминание. |
+| [`nightly-project.yml`](./.github/workflows/nightly-project.yml) | За один запуск импортирует PR Dependabot, сверяет спринты открытых PR, заполняет пустой Horizon и обновляет напоминание. |
 | [`./.github/workflows/ensure-next-iteration-reminder.yml`](./.github/workflows/ensure-next-iteration-reminder.yml) | Создаёт следующую итерацию, если её ещё нет, и поддерживает reminder draft в целевой итерации. |
 | [`./.github/workflows/ai-label-issue.yml`](./.github/workflows/ai-label-issue.yml) | **Deprecated.** Сохранён только для обратной совместимости; новые подключения не поддерживаются. |
 | [`./.github/workflows/link-pr-to-project.yml`](./.github/workflows/link-pr-to-project.yml) | Добавляет PR в Project V2, копирует sprint и assignee из связанной issue и ставит статус Done при закрытии. При `pull_request: synchronize` переводит PR и все открытые closing issues из Todo или пустого статуса в In progress, сохраняя более поздние статусы. Когда все открытые связанные PR уже в статусе ревью, переводит и backlog issue в этот статус, не меняя её ответственных. После запроса изменений человеком возвращает PR и связанную issue в Todo. Режим `action: reconcile_sprints` сверяет Sprint открытых PR из списка `repositories`, не меняя их Status, assignee и описание. Для синхронизации assignee токену нужны права на запись в issues PR-репозитория. |
@@ -42,6 +42,17 @@ npm run check
 ```
 
 TypeScript используется в форме, которую Node.js 24 запускает напрямую. `npm` используется для проверки типов и unit-тестов, а также для установки парсера многострочного YAML.
+
+## Ночное заполнение Horizon
+
+В ночном вызове `nightly-project.yml` укажите вариант, который уже существует в поле проекта:
+
+```yaml
+with:
+  horizon_default: '📥 Inbox'
+```
+
+Раз в сутки workflow выбирает из проекта обычные задачи и PR с пустым `Horizon`, включая закрытые. Перед записью он повторно читает поле и отправляет изменения группами до 20 элементов. Черновики и архив проекта пропускаются. После подключения уберите `Horizon` из `field_updates` у обработчиков PR и импорта Dependabot. Если пользователь очистит поле, ближайший ночной запуск снова его заполнит.
 
 ## Поля после добавления PR
 

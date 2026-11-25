@@ -33,6 +33,9 @@ on:
       field_updates:
         description: Project/issue field defaults for Dependabot PRs
         type: string
+      horizon_default:
+        description: Option to assign to empty Horizon fields on project issues and PRs
+        type: string
       current_date_override:
         required: false
         type: string
@@ -159,6 +162,17 @@ jobs:
           github-token: *token
           script: |
             const { run } = await import(`${process.env.GITHUB_WORKSPACE}/.github-productivity-utilities-runtime/src/scripts/reconcile-open-pr-sprints.ts`)
+            await run(github)
+
+      - name: Fill empty horizons on project issues and PRs
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' && inputs.horizon_default != '' }}
+        uses: actions/github-script@v9
+        env:
+          HORIZON_DEFAULT: ${{ inputs.horizon_default }}
+        with:
+          github-token: *token
+          script: |
+            const { run } = await import(`${process.env.GITHUB_WORKSPACE}/.github-productivity-utilities-runtime/src/scripts/fill-empty-horizons.ts`)
             await run(github)
 
       - name: Ensure reminder draft exists in target iteration
