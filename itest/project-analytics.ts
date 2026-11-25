@@ -13,13 +13,10 @@ import { cleanupLiveFixtures, verifyLiveEvents, type LiveEventQuery } from './an
 import { startDatabaseFailureProbe, verifyEventRedelivery, type EventFixture } from './analytics-events.ts';
 import { cleanupAttempts, saveFixtureJournal } from './analytics-fixture-state.ts';
 
-const sandbox = await analyticsSandbox();
+const sandbox = analyticsSandbox();
 const { owner, backlog: repo, number: projectNumber } = sandbox;
 const journal = '.local/analytics-e2e-fixture.json';
 const marker = `ITEST-analytics-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`;
-if (process.env.PROJECT_OWNER !== owner || process.env.PROJECT_NUMBER !== String(projectNumber)) {
-  throw new Error('E2E must target the existing sandbox');
-}
 assert.ok(process.env.GITHUB_RUN_ID && process.env.FIXTURE_TOKEN, 'Run through the sandbox workflow');
 assert.match(process.env.GITHUB_RUN_ID, /^\d+$/);
 assert.match(process.env.GITHUB_RUN_ATTEMPT ?? '', /^\d+$/);

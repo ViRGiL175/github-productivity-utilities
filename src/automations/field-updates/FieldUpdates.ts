@@ -5,12 +5,26 @@ import type { RepositoryCoordinates } from '../../github/IssueRepository.ts';
 
 export type FieldUpdates = (itemId: string, repository: RepositoryCoordinates, number: number) => Promise<void>;
 
+// Only use the fast path when JSON round-trips exactly. Other YAML, including
+// mappings with duplicate keys, must go through the original strict parser.
+export function parseCompactFieldUpdates(input: string): unknown {
+  const text = input.trim();
+  if (!text.startsWith('{')) return undefined;
+  try {
+    const config: unknown = JSON.parse(text);
+    if (JSON.stringify(config) === text) return config;
+  } catch {
+    // Flow-style YAML can also start with a brace.
+  }
+  return undefined;
+}
+
 export async function createFieldUpdates(
-  github: Octokit, yaml: string, projectOwner: string, projectNumber: number,
+  github: Octokit, input: string, projectOwner: string, projectNumber: number,
 ): Promise<FieldUpdates | undefined> {
-  if (!yaml.trim()) return undefined;
-  const { parse } = await import('yaml');
-  const config: unknown = parse(yaml, { uniqueKeys: true, maxAliasCount: 0 });
+  if (!input.trim()) return undefined;
+  const config = parseCompactFieldUpdates(input) ??
+    (await import('yaml')).parse(input, { uniqueKeys: true, maxAliasCount: 0 });
   validateConfig(config);
   const controller = new FieldController(github);
   return async (itemId, repository, issueNumber) => {
@@ -26,7 +40,7 @@ export async function createFieldUpdates(
 }
 
 function validateConfig(config: unknown): asserts config is FieldConfig {
-  if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('Field updates must be a YAML mapping');
+  if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('Field updates must be a mapping');
   for (const [scope, fields] of Object.entries(config)) {
     if (scope === 'force') {
       if (typeof fields !== 'boolean') throw new Error('Field updates force must be boolean');

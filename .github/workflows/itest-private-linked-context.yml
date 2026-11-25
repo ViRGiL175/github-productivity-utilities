@@ -1,0 +1,41 @@
+name: Sandbox private linked context
+
+on:
+  workflow_call:
+    inputs:
+      auth_mode:
+        required: true
+        type: string
+    secrets:
+      pat_token:
+        required: false
+      app_id:
+        required: false
+      app_private_key:
+        required: false
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  collect:
+    uses: ./.github/workflows/collect-linked-context.yml
+    with:
+      text: 'Backlog: ViRGiL-GH-Productivity/scrum-test-backlog#1'
+      auth_mode: ${{ inputs.auth_mode }}
+      installation_owner: ViRGiL-GH-Productivity
+    secrets:
+      pat_token: ${{ secrets.pat_token }}
+      app_id: ${{ secrets.app_id }}
+      app_private_key: ${{ secrets.app_private_key }}
+
+  assert-issue:
+    needs: collect
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify private issue was fetched
+        env:
+          ACTUAL: ${{ needs.collect.outputs.value }}
+        run: grep -Fq 'scrum-test-backlog#1' <<< "$ACTUAL"

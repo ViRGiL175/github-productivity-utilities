@@ -122,56 +122,15 @@ jobs:
               ;;
           esac
 
-      - name: Normalize GitHub App private key
-        if: ${{ env.DIRECT_TOKEN == '' && env.AUTH_MODE == 'app' }}
-        id: normalize-key
-        shell: bash
-        run: |
-          NORMALIZED_KEY=$(printf '%b' "$APP_PRIVATE_KEY")
-          while IFS= read -r line; do
-            printf '::add-mask::%s\n' "$line"
-          done <<< "$NORMALIZED_KEY"
-          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
-
       - name: Create GitHub App installation token
         if: ${{ env.DIRECT_TOKEN == '' && env.AUTH_MODE == 'app' }}
         id: app-token
         uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.app_id }}
-          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          private-key: ${{ secrets.app_private_key }}
           owner: ${{ inputs.installation_owner }}
           skip-token-revoke: true
-
-      - name: Resolve workflow auth token
-        id: auth
-        shell: bash
-        env:
-          APP_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          if [ -n "$DIRECT_TOKEN" ]; then
-            TOKEN="$DIRECT_TOKEN"
-          else
-            case "$AUTH_MODE" in
-              pat)
-                TOKEN="$PAT_TOKEN"
-                ;;
-              app)
-                TOKEN="$APP_TOKEN"
-                ;;
-              *)
-                echo "Unsupported auth_mode: $AUTH_MODE" >&2
-                exit 1
-                ;;
-            esac
-          fi
-
-          if [ -z "$TOKEN" ]; then
-            echo "Resolved token is empty" >&2
-            exit 1
-          fi
-
-          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Checkout automation implementation
         uses: actions/checkout@v7
@@ -180,10 +139,12 @@ jobs:
           ref: ${{ job.workflow_sha }}
           path: .github-productivity-utilities-runtime
 
-      - name: Install optional field updates parser
+      - name: Prepare field updates parser
         if: inputs.field_updates != ''
         working-directory: .github-productivity-utilities-runtime
-        run: npm ci --omit=dev --ignore-scripts
+        env:
+          FIELD_UPDATES: ${{ inputs.field_updates }}
+        run: node scripts/prepare-field-parser.mjs
 
       - name: Reconcile Dependabot PR project links
         uses: actions/github-script@v9
@@ -201,7 +162,7 @@ jobs:
           MAX_PULL_REQUESTS_PER_REPO: ${{ inputs.max_pull_requests_per_repo }}
           CLOSED_LOOKBACK_DAYS: ${{ inputs.closed_lookback_days }}
         with:
-          github-token: ${{ steps.auth.outputs.token }}
+          github-token: ${{ env.DIRECT_TOKEN || (env.AUTH_MODE == 'pat' && env.PAT_TOKEN) || steps.app-token.outputs.token }}
           script: |
             const { run } = await import(`${process.env.GITHUB_WORKSPACE}/.github-productivity-utilities-runtime/src/scripts/safe-dependabot-pr-link.ts`)
             await run(github)

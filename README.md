@@ -10,9 +10,9 @@
 
 | Workflow-файл | Описание |
 | --- | --- |
+| [`nightly-project.yml`](./.github/workflows/nightly-project.yml) | За один запуск импортирует PR Dependabot, сверяет спринты открытых PR, заполняет пустой Horizon и обновляет напоминание. |
 | [`./.github/workflows/ensure-next-iteration-reminder.yml`](./.github/workflows/ensure-next-iteration-reminder.yml) | Создаёт следующую итерацию, если её ещё нет, и поддерживает reminder draft в целевой итерации. |
 | [`./.github/workflows/ai-label-issue.yml`](./.github/workflows/ai-label-issue.yml) | **Deprecated.** Сохранён только для обратной совместимости; новые подключения не поддерживаются. |
-| [`./.github/workflows/ai-scrum-review-issue.yml`](./.github/workflows/ai-scrum-review-issue.yml) | **Deprecated.** Сохранён только для обратной совместимости; новые подключения не поддерживаются. |
 | [`./.github/workflows/link-pr-to-project.yml`](./.github/workflows/link-pr-to-project.yml) | Добавляет PR в Project V2, копирует sprint и assignee из связанной issue и ставит статус Done при закрытии. При `pull_request: synchronize` переводит PR и все открытые closing issues из Todo или пустого статуса в In progress, сохраняя более поздние статусы. Когда все открытые связанные PR уже в статусе ревью, переводит и backlog issue в этот статус, не меняя её ответственных. После запроса изменений человеком возвращает PR и связанную issue в Todo. Режим `action: reconcile_sprints` сверяет Sprint открытых PR из списка `repositories`, не меняя их Status, assignee и описание. Для синхронизации assignee токену нужны права на запись в issues PR-репозитория. |
 | [`./.github/workflows/safe-dependabot-pr-link.yml`](./.github/workflows/safe-dependabot-pr-link.yml) | Синхронизирует PR от Dependabot по списку репозиториев: принимает многострочный `repositories`, ставит стартовый статус только новым PR или PR без статуса, закрытым — финальный. |
 | [`./.github/workflows/sync-sub-issue-sprint.yml`](./.github/workflows/sync-sub-issue-sprint.yml) | Наследует sprint/iteration-метаданные из родительской issue в её sub-issue. `action: reconcile` сверяет уже существующие sub-issues после изменения Sprint родителя; поддерживает `dry_run`. |
@@ -22,7 +22,7 @@
 
 ## TypeScript-реализации
 
-Публичным интерфейсом автоматизаций остаются reusable workflow в `.github/workflows`. Каждый workflow загружает исходный TypeScript из `src/scripts` и запускает его через `actions/github-script@v9` с авторизованным GitHub-клиентом. Сборки `dist` нет. Без `field_updates` установка npm-зависимостей при запуске не нужна; при непустой настройке устанавливается runtime YAML-парсер. В YAML остаются события, permissions, secrets, авторизация и оркестрация jobs.
+Публичным интерфейсом автоматизаций остаются reusable workflow в `.github/workflows`. Каждый workflow загружает исходный TypeScript из `src/scripts` и запускает его через `actions/github-script@v9` с авторизованным GitHub-клиентом. Сборки `dist` нет. Node.js читает компактный JSON в `field_updates` без установки зависимостей. Для остальных форм записи workflow устанавливает YAML-парсер. В YAML остаются события, permissions, secrets, авторизация и оркестрация jobs.
 
 Все прежние inputs, secrets, defaults и правила обработки сохранены. В каждом reusable workflow checkout реализации использует `job.workflow_sha`: тесты выполняют исходный код из проверяемого коммита, а вызов workflow через `@tag` — код из коммита этого тега. Внешним репозиториям не нужно отдельно выбирать ref реализации.
 
@@ -32,7 +32,7 @@
 
 Чтобы новые коммиты переводили PR и его открытые closing issues в In progress, caller должен вызывать `link-pr-to-project.yml` на `pull_request: synchronize` и передавать `status_in_progress_value` с точным названием статуса Project V2. Статусы Need review, Done и другие значения, отличные от Todo, сохраняются.
 
-Изменение Sprint связанной issue в Project V2 не вызывает событие PR. Для периодической сверки открытых PR вызывайте `link-pr-to-project.yml` по расписанию или вручную с `action: reconcile_sprints` и многострочным списком `repositories`. Режим пропускает PR вне проекта и не меняет их Status, assignee или описание.
+Изменение Sprint связанной issue в Project V2 не вызывает событие PR. Подключите `nightly-project.yml` к одному ночному расписанию на проект. Передайте `repositories` для импорта Dependabot и `backlog_repo` для сверки Sprint по тому же списку репозиториев. Названия поля и вариантов статуса должны совпадать с настройками проекта. Параметры `reminder_title` и `iteration_field_name` определяют напоминание. Каждый шаг пишет результат отдельно. Ошибка одного шага позволяет выполнить остальные и помечает весь запуск как неуспешный. Для отдельной сверки доступен `link-pr-to-project.yml` с `action: reconcile_sprints`.
 
 Локальные проверки TypeScript:
 
@@ -41,21 +41,29 @@ npm ci
 npm run check
 ```
 
-TypeScript используется в форме, которую Node.js 24 запускает напрямую. `npm` используется для проверки типов и unit-тестов, а также для установки YAML-парсера при подключённом `field_updates`.
+TypeScript используется в форме, которую Node.js 24 запускает напрямую. `npm` используется для проверки типов и unit-тестов, а также для установки парсера многострочного YAML.
 
-## Поля после добавления PR
+## Ночное заполнение Horizon
 
-`link-pr-to-project.yml` и `safe-dependabot-pr-link.yml` принимают необязательный YAML input `field_updates`. Поля назначаются после добавления PR и повторно при обработке уже добавленного PR. Пустой input сохраняет прежнее поведение; настройку у потребителя нужно подключить отдельно.
-
-Пример для обоих reusable workflow:
+В ночном вызове `nightly-project.yml` укажите вариант, который уже существует в поле проекта:
 
 ```yaml
 with:
-  field_updates: |
-    project:
-      Horizon: Inbox
-    force: false
+  horizon_default: '📥 Inbox'
 ```
+
+Раз в сутки workflow выбирает из проекта обычные задачи и PR с пустым `Horizon`, включая закрытые. Перед записью он повторно читает поле и отправляет изменения группами до 20 элементов. Черновики и архив проекта пропускаются. После подключения уберите `Horizon` из `field_updates` у обработчиков PR и импорта Dependabot. Если пользователь очистит поле, ближайший ночной запуск снова его заполнит.
+
+## Поля после добавления PR
+
+Для репозитория-потребителя задайте поля в `field_updates`. Этот вход поддерживают обычные PR, импорт Dependabot и ночное обслуживание проекта. При добавлении и повторной обработке PR пустое поле получит значение по умолчанию.
+
+```yaml
+with:
+  field_updates: '{"project":{"Horizon":"Inbox"}}'
+```
+
+Используйте компактную запись из примера, чтобы пропустить установку npm-пакетов. Многострочный YAML поддерживается через тот же вход.
 
 `project` и `issue` — отдельные словари «точное имя поля: значение». По умолчанию `force: false` сохраняет заполненное, включая ноль; `force: true` заменяет указанные поля. Совпадающие значения пропускаются. Очистка не поддерживается: значения — непустые строки или конечные числа.
 
@@ -63,7 +71,7 @@ with:
 
 Обе секции проверяются перед записью. Каждый scope записывается одним запросом: Project REST PATCH, затем native REST POST; пустой POST и заменяющий все поля PUT не отправляются. Общей транзакции нет; проверка пустоты не защищена от параллельной ручной правки. При ошибке item остаётся в проекте, `FieldUpdateError.report.applied` содержит подтверждённые записи, `uncertain` — поля с неизвестным результатом. Перед их повторной записью нужно прочитать состояние.
 
-Используются существующие права Projects/Issues и доступ к Issue Fields организации. При непустом input workflow устанавливает runtime YAML-парсер. `test-field-updates.yml` проверяет оба API и оба пути добавления PR через штатный App в sandbox без моков. Регулярная проверка импортера использует App fixture с настроенным bot-login. Fixtures закрываются, items и ветки сохраняются.
+Используются существующие права Projects/Issues и доступ к Issue Fields организации. `test-field-updates.yml` проверяет оба API и оба пути добавления PR через штатный App в sandbox без моков. Регулярная проверка импортера использует App fixture с настроенным bot-login. Fixtures закрываются, items и ветки сохраняются.
 
 ## Создание следующей итерации
 
@@ -90,20 +98,17 @@ ensure-next-iteration-reminder.yml добавляет одну следующу�
 3. Для режима `pat` заполнить `CI_SANDBOX_TOKEN`; старые AI workflow используют отдельный `ORG_PROJECT_TOKEN`.
 4. Для режима `app` заполнить `ORG_AUTOMATION_APP_ID` и `ORG_AUTOMATION_APP_PRIVATE_KEY`.
 
-Автоматические интеграционные проверки используют `CI_SANDBOX_TOKEN` — fine-grained PAT владельца `ViRGiL-GH-Productivity`, ограниченный репозиториями `scrum-test-backlog` и `test-client`. Нужны repository permissions `Contents: write`, `Issues: write`, `Pull requests: write`, `Metadata: read` и organization permissions `Projects: write`, `Issue Fields: read`. Право Projects распространяется на все проекты тестовой организации, а не только на проект № 1.
+В режиме PAT интеграционные проверки используют `CI_SANDBOX_TOKEN` — fine-grained PAT владельца `ViRGiL-GH-Productivity`, ограниченный репозиториями `scrum-test-backlog` и `test-client`. Нужны repository permissions `Contents: write`, `Issues: write`, `Pull requests: write`, `Metadata: read` и organization permissions `Projects: write`, `Issue Fields: read`. Право Projects распространяется на все проекты тестовой организации, а не только на проект № 1.
 
 В GitHub одноимённый секрет нужен в **Actions** и **Dependabot**: PR Dependabot не получает Actions secrets. У PAT есть срок действия; заменяйте его в обоих хранилищах до истечения срока. Значение токена не следует сохранять в репозитории или логах.
 
-Проверки, изменяющие общий тестовый Project, и analytics E2E используют одну concurrency-группу с `queue: max`. Они ждут друг друга без отмены ожидающих запусков, чтобы параллельные изменения не ломали снимки analytics и выбор тестовых PR. Публичные read-only проверки и unit-тесты могут работать параллельно.
+Проверки, изменяющие общий тестовый Project, используют одну очередь `integration-org-sandbox`. Аналитика запускается параллельно на временной копии полей проекта. Для неё выделена очередь `analytics-org-webhook`, поскольку в организации одновременно работает один обработчик тестовых вебхуков.
 
-`test-sync-sub-issue-sprint`, `test-link-pr-to-project`, `test-safe-dependabot-pr-link`, `test-ensure-next-iteration-reminder` и `test-field-updates` работают с проектом `ViRGiL-GH-Productivity#1` в двух режимах:
+`test-sync-sub-issue-sprint`, `test-link-pr-to-project`, `test-safe-dependabot-pr-link`, `test-ensure-next-iteration-reminder` и `test-field-updates` проверяют проект `ViRGiL-GH-Productivity#1`. В PR автора с ролью Owner, Member или Collaborator из этого репозитория каждый сценарий проходит дважды, с `CI_SANDBOX_TOKEN` и с GitHub App. Матрица запускает по одному режиму за раз и продолжает работу при падении первого. В PR Dependabot используется только PAT. В PR из форков проверки с секретами пропускаются. При ручном запуске параметр `auth_mode` выбирает один режим.
 
-- `pat` — автоматический режим с `CI_SANDBOX_TOKEN`; issue создаются в backlog, PR — в client;
-- `app` — отдельный ручной запуск с `ORG_AUTOMATION_APP_ID` и `ORG_AUTOMATION_APP_PRIVATE_KEY`. Успешный PAT-прогон не заменяет проверку App.
+`test-collect-linked-context` проверяет публичные ссылки один раз с `GITHUB_TOKEN`, а чтение приватной issue — в тех же режимах, что и остальные интеграционные тесты. Analytics E2E использует GitHub App. Для Gemini нужен отдельный `GEMINI_API_KEY`.
 
-`test-collect-linked-context` использует `GITHUB_TOKEN` для публичных примеров и `CI_SANDBOX_TOKEN` для отдельной проверки PAT на приватной issue sandbox. App-сценарий запускается вручную. Analytics E2E проверяет именно App-аутентификацию и не запускается от Dependabot; Gemini требует отдельного `GEMINI_API_KEY`. Пропущенные сценарии не считаются проверенными — перед слиянием затрагивающих их обновлений нужен отдельный прогон проверенного коммита.
-
-Устаревшие AI workflow сохраняют прежний `ORG_PROJECT_TOKEN` и `USER_COPILOT_FGPAT`; sandbox PAT не даёт доступа к личным Projects и Copilot. Для локального `act` App key можно передать с литералами `\n` между строками ключа.
+Устаревший `ai-label-issue.yml` использует прежний `ORG_PROJECT_TOKEN` и `USER_COPILOT_FGPAT`; sandbox PAT не даёт доступа к личным Projects и Copilot. Для локального `act` App key можно передать с литералами `\n` между строками ключа.
 
 `act` подставляет эти значения из secret-file. `.env` для этого набора workflow не нужен.
 
@@ -112,7 +117,6 @@ ensure-next-iteration-reminder.yml добавляет одну следующу�
 Поддерживаются test workflow-файлы:
 
 - `test-ai-label-issue.yml`
-- `test-ai-scrum-review-issue.yml`
 - `test-copilot-generate-text.yml`
 - `test-ensure-next-iteration-reminder.yml`
 - `test-link-pr-to-project.yml`

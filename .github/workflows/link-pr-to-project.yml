@@ -126,56 +126,8 @@ on:
         required: false
 
 jobs:
-  preflight:
-    name: Preflight auth and skip check
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      issues: read
-      pull-requests: read
-    outputs:
-      should_skip: ${{ steps.skip-check.outputs.should_skip }}
-    env:
-      AUTH_MODE: ${{ inputs.auth_mode }}
-      INSTALLATION_OWNER: ${{ inputs.installation_owner }}
-      DIRECT_TOKEN: ${{ secrets.project_token }}
-      PAT_TOKEN: ${{ secrets.pat_token }}
-      APP_ID: ${{ secrets.app_id }}
-      APP_PRIVATE_KEY: ${{ secrets.app_private_key }}
-      PULL_REQUEST_AUTHOR_LOGIN: ${{ inputs.pull_request_author_login || github.event.pull_request.user.login || '' }}
-
-    steps:
-      - name: Detect Dependabot PR without available auth
-        id: skip-check
-        shell: bash
-        run: |
-          SHOULD_SKIP=false
-
-          case "$AUTH_MODE" in
-            pat)
-              if [ -z "$DIRECT_TOKEN" ] && [ -z "$PAT_TOKEN" ] && [ "$PULL_REQUEST_AUTHOR_LOGIN" = "dependabot[bot]" ]; then
-                SHOULD_SKIP=true
-              fi
-              ;;
-            app)
-              if [ -z "$DIRECT_TOKEN" ] && { [ -z "$APP_ID" ] || [ -z "$APP_PRIVATE_KEY" ] || [ -z "$INSTALLATION_OWNER" ]; } && [ "$PULL_REQUEST_AUTHOR_LOGIN" = "dependabot[bot]" ]; then
-                SHOULD_SKIP=true
-              fi
-              ;;
-          esac
-
-          echo "should_skip=$SHOULD_SKIP" >> "$GITHUB_OUTPUT"
-
-      - name: Explain skipped Dependabot project sync
-        if: ${{ steps.skip-check.outputs.should_skip == 'true' }}
-        shell: bash
-        run: |
-          echo "Skipping project sync for Dependabot PR because the required token secrets are unavailable in this run."
-
   sync-pr-with-project:
     name: Sync PR with project
-    needs: preflight
-    if: ${{ needs.preflight.outputs.should_skip != 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -190,96 +142,59 @@ jobs:
       APP_PRIVATE_KEY: ${{ secrets.app_private_key }}
 
     steps:
-      - name: Validate workflow auth configuration
+      - name: Check workflow credentials
+        id: credentials
         shell: bash
+        env:
+          PR_AUTHOR: ${{ inputs.pull_request_author_login || github.event.pull_request.user.login }}
         run: |
-          if [ -n "$DIRECT_TOKEN" ]; then
-            exit 0
-          fi
-
+          if [[ -n "$DIRECT_TOKEN" ]]; then exit 0; fi
           case "$AUTH_MODE" in
             pat)
-              if [ -z "$PAT_TOKEN" ]; then
-                echo "pat_token secret is required when auth_mode=pat and project_token is not provided" >&2
-                exit 1
-              fi
+              if [[ -n "$PAT_TOKEN" ]]; then exit 0; fi
+              missing="pat_token"
               ;;
             app)
-              if [ -z "$APP_ID" ] || [ -z "$APP_PRIVATE_KEY" ] || [ -z "$INSTALLATION_OWNER" ]; then
-                echo "app_id, app_private_key, and installation_owner are required when auth_mode=app and project_token is not provided" >&2
-                exit 1
-              fi
+              if [[ -n "$APP_ID" && -n "$APP_PRIVATE_KEY" && -n "$INSTALLATION_OWNER" ]]; then exit 0; fi
+              missing="app_id, app_private_key and installation_owner"
               ;;
-            *)
-              echo "Unsupported auth_mode: $AUTH_MODE" >&2
-              exit 1
-              ;;
+            *) echo "::error::Unsupported auth mode"; exit 1 ;;
           esac
-
-      - name: Normalize GitHub App private key
-        if: ${{ env.DIRECT_TOKEN == '' && env.AUTH_MODE == 'app' }}
-        id: normalize-key
-        shell: bash
-        run: |
-          NORMALIZED_KEY=$(printf '%b' "$APP_PRIVATE_KEY")
-          while IFS= read -r line; do
-            printf '::add-mask::%s\n' "$line"
-          done <<< "$NORMALIZED_KEY"
-          printf 'private_key<<EOF\n%s\nEOF\n' "$NORMALIZED_KEY" >> "$GITHUB_OUTPUT"
+          if [[ "$PR_AUTHOR" == 'dependabot[bot]' ]]; then
+            echo "Skipping Dependabot PR without credentials."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Missing $missing for auth_mode=$AUTH_MODE"
+            exit 1
+          fi
 
       - name: Create GitHub App installation token
-        if: ${{ env.DIRECT_TOKEN == '' && env.AUTH_MODE == 'app' }}
+        if: steps.credentials.outputs.skip != 'true' && env.DIRECT_TOKEN == '' && env.AUTH_MODE == 'app'
         id: app-token
         uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.app_id }}
-          private-key: ${{ steps.normalize-key.outputs.private_key }}
+          private-key: ${{ secrets.app_private_key }}
           owner: ${{ inputs.installation_owner }}
           skip-token-revoke: true
 
-      - name: Resolve workflow auth token
-        id: auth
-        shell: bash
-        env:
-          APP_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          if [ -n "$DIRECT_TOKEN" ]; then
-            TOKEN="$DIRECT_TOKEN"
-          else
-            case "$AUTH_MODE" in
-              pat)
-                TOKEN="$PAT_TOKEN"
-                ;;
-              app)
-                TOKEN="$APP_TOKEN"
-                ;;
-              *)
-                echo "Unsupported auth_mode: $AUTH_MODE" >&2
-                exit 1
-                ;;
-            esac
-          fi
-
-          if [ -z "$TOKEN" ]; then
-            echo "Resolved token is empty" >&2
-            exit 1
-          fi
-
-          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
-
       - name: Checkout automation implementation
+        if: &run-sync steps.credentials.outputs.skip != 'true'
         uses: actions/checkout@v7
         with:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
           path: .github-productivity-utilities-runtime
 
-      - name: Install optional field updates parser
-        if: inputs.field_updates != ''
+      - name: Prepare field updates parser
+        if: steps.credentials.outputs.skip != 'true' && inputs.field_updates != ''
         working-directory: .github-productivity-utilities-runtime
-        run: npm ci --omit=dev --ignore-scripts
+        env:
+          FIELD_UPDATES: ${{ inputs.field_updates }}
+        run: node scripts/prepare-field-parser.mjs
 
       - name: Sync PR metadata with project
+        if: *run-sync
         uses: actions/github-script@v9
         env:
           FIELD_UPDATES: ${{ inputs.field_updates }}
@@ -308,7 +223,7 @@ jobs:
           REVIEW_ACTOR_TYPE: ${{ inputs.review_actor_type || github.event.requested_reviewer.type || github.event.review.user.type || '' }}
           REQUESTED_REVIEWERS_JSON: ${{ inputs.requested_reviewers_json || toJSON(github.event.pull_request.requested_reviewers) }}
         with:
-          github-token: ${{ steps.auth.outputs.token }}
+          github-token: ${{ env.DIRECT_TOKEN || (env.AUTH_MODE == 'pat' && env.PAT_TOKEN) || steps.app-token.outputs.token }}
           script: |
             const scriptName = process.env.ACTION === 'reconcile_sprints'
               ? 'reconcile-open-pr-sprints.ts'

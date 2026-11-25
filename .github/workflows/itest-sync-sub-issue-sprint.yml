@@ -1,0 +1,573 @@
+name: Sandbox sync-sub-issue-sprint
+
+on:
+  workflow_call:
+    inputs:
+      auth_mode:
+        required: true
+        type: string
+    secrets:
+      pat_token:
+        required: false
+      app_id:
+        required: false
+      app_private_key:
+        required: false
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+env:
+  AUTH_MODE: ${{ inputs.auth_mode }}
+  INSTALLATION_OWNER: ViRGiL-GH-Productivity
+  PROJECT_OWNER: ViRGiL-GH-Productivity
+  PROJECT_NUMBER: 1
+  ITERATION_FIELD_NAME: Iteration
+  REPO_OWNER: ViRGiL-GH-Productivity
+  REPO_NAME: scrum-test-backlog
+
+jobs:
+  resolve-auth:
+    name: Validate integration auth configuration
+    uses: ./.github/workflows/resolve-integration-test-token.yml
+    with:
+      auth_mode: ${{ inputs.auth_mode }}
+      installation_owner: ViRGiL-GH-Productivity
+    secrets:
+      pat_token: ${{ secrets.pat_token }}
+      app_id: ${{ secrets.app_id }}
+      app_private_key: ${{ secrets.app_private_key }}
+
+  prepare-sync-scenario:
+    name: Prepare sub-issue sync scenario
+    runs-on: ubuntu-latest
+    needs: resolve-auth
+    outputs:
+      project_id: ${{ steps.prepare.outputs.project_id }}
+      target_iteration_id: ${{ steps.prepare.outputs.target_iteration_id }}
+      alternative_iteration_id: ${{ steps.prepare.outputs.alternative_iteration_id }}
+      parent_number: ${{ steps.prepare.outputs.parent_number }}
+      parent_node_id: ${{ steps.prepare.outputs.parent_node_id }}
+      child_number: ${{ steps.prepare.outputs.child_number }}
+      child_node_id: ${{ steps.prepare.outputs.child_node_id }}
+      child_id: ${{ steps.prepare.outputs.child_id }}
+    steps:
+      - &app-token-step
+        name: Create GitHub App installation token
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.app_id }}
+          private-key: ${{ secrets.app_private_key }}
+          owner: ${{ env.INSTALLATION_OWNER }}
+          skip-token-revoke: true
+
+      - &resolve-token-step
+        name: Resolve job auth token
+        id: auth
+        shell: bash
+        env:
+          DIRECT_TOKEN: ${{ secrets.pat_token }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          case "$AUTH_MODE" in
+            pat)
+              TOKEN="$DIRECT_TOKEN"
+              ;;
+            app)
+              TOKEN="$APP_TOKEN"
+              ;;
+            *)
+              echo "Unsupported auth mode: $AUTH_MODE" >&2
+              exit 1
+              ;;
+          esac
+
+          if [ -z "$TOKEN" ]; then
+            echo "Resolved token is empty for auth_mode=$AUTH_MODE" >&2
+            exit 1
+          fi
+
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Create parent and child issues
+        id: prepare
+        uses: actions/github-script@v9
+        env:
+          PROJECT_OWNER: ${{ env.PROJECT_OWNER }}
+          PROJECT_NUMBER: ${{ env.PROJECT_NUMBER }}
+          ITERATION_FIELD_NAME: ${{ env.ITERATION_FIELD_NAME }}
+          REPO_OWNER: ${{ env.REPO_OWNER }}
+          REPO_NAME: ${{ env.REPO_NAME }}
+          PARENT_TITLE: ITEST-${{ github.run_id }}-${{ inputs.auth_mode }} parent issue
+          CHILD_TITLE: ITEST-${{ github.run_id }}-${{ inputs.auth_mode }} child issue
+        with:
+          github-token: ${{ steps.auth.outputs.token }}
+          script: |
+            const projectOwner = process.env.PROJECT_OWNER;
+            const projectNumber = Number(process.env.PROJECT_NUMBER);
+            const iterationFieldName = process.env.ITERATION_FIELD_NAME;
+            const owner = process.env.REPO_OWNER;
+            const repo = process.env.REPO_NAME;
+            const parentTitle = process.env.PARENT_TITLE;
+            const childTitle = process.env.CHILD_TITLE;
+
+            const headers = {
+              accept: 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+            };
+
+            const { ProjectV2Repository } = await import(`${process.env.GITHUB_WORKSPACE}/src/github/ProjectV2Repository.ts`);
+            const projects = new ProjectV2Repository(github);
+            const project = await projects.getIterationMetadata(projectOwner, projectNumber, iterationFieldName);
+            const iterations = project.iterations.filter(iteration => iteration.startDate);
+            if (iterations.length < 2) {
+              throw new Error('Need at least two iterations in the sandbox project to run sync-sub-issue-sprint integration tests.');
+            }
+            const targetIterationId = iterations[0].id;
+            // Keep interior iterations free for the concurrent empty-reminder scenario.
+            const alternativeIterationId = iterations.at(-1).id;
+
+            async function ensureParentItem(nodeId) {
+              const findItem = () => projects.getIssueProjectItem(nodeId, project.projectId, iterationFieldName);
+              const existing = await findItem();
+              if (existing) return existing.id;
+              try {
+                return await projects.addIssueToProject(project.projectId, nodeId);
+              } catch (error) {
+                // Auto-add can win the race between the lookup and mutation.
+                if (error.errors?.some(entry => entry.message === 'Content already exists in this project')) {
+                  const added = await findItem();
+                  if (added) return added.id;
+                }
+                throw error;
+              }
+            }
+
+            core.setOutput('project_id', project.projectId);
+
+            const parentResponse = await github.request('POST /repos/{owner}/{repo}/issues', {
+              owner,
+              repo,
+              title: parentTitle,
+              body: `ITEST run ${context.runId} for sync-sub-issue-sprint parent`,
+              headers,
+            });
+            const parentIssue = parentResponse.data;
+            core.setOutput('parent_number', String(parentIssue.number));
+            core.setOutput('parent_node_id', parentIssue.node_id);
+
+            const childResponse = await github.request('POST /repos/{owner}/{repo}/issues', {
+              owner,
+              repo,
+              title: childTitle,
+              body: `ITEST run ${context.runId} for sync-sub-issue-sprint child`,
+              headers,
+            });
+            const childIssue = childResponse.data;
+            core.setOutput('child_number', String(childIssue.number));
+            core.setOutput('child_node_id', childIssue.node_id);
+            core.setOutput('child_id', String(childIssue.id));
+
+            const parentProjectItemId = await ensureParentItem(parentIssue.node_id);
+            await projects.setIteration(project.projectId, parentProjectItemId, project.iterationFieldId, targetIterationId);
+
+            await github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues', {
+              owner,
+              repo,
+              issue_number: parentIssue.number,
+              sub_issue_id: childIssue.id,
+              headers,
+            });
+
+            core.setOutput('target_iteration_id', targetIterationId);
+            core.setOutput('alternative_iteration_id', alternativeIterationId);
+
+  run-sync-scenario:
+    name: Run sub-issue sync scenario
+    needs:
+      - resolve-auth
+      - prepare-sync-scenario
+    uses: ./.github/workflows/sync-sub-issue-sprint.yml
+    with:
+      project_owner: ViRGiL-GH-Productivity
+      project_number: 1
+      iteration_field_name: Iteration
+      issue_number: ${{ needs.prepare-sync-scenario.outputs.child_number }}
+      repo_owner: ViRGiL-GH-Productivity
+      repo_name: scrum-test-backlog
+      action: opened
+      auth_mode: ${{ inputs.auth_mode }}
+      installation_owner: ViRGiL-GH-Productivity
+    secrets:
+      pat_token: ${{ secrets.pat_token }}
+      app_id: ${{ secrets.app_id }}
+      app_private_key: ${{ secrets.app_private_key }}
+
+  assert-initial-sync-scenario:
+    name: Assert initial sub-issue sync scenario
+    needs:
+      - resolve-auth
+      - prepare-sync-scenario
+      - run-sync-scenario
+    runs-on: ubuntu-latest
+    steps:
+      - *app-token-step
+
+      - *resolve-token-step
+
+      - name: Assert child issue inherited sprint
+        uses: actions/github-script@v9
+        env:
+          PROJECT_ID: ${{ needs.prepare-sync-scenario.outputs.project_id }}
+          ITERATION_FIELD_NAME: ${{ env.ITERATION_FIELD_NAME }}
+          TARGET_ITERATION_ID: ${{ needs.prepare-sync-scenario.outputs.target_iteration_id }}
+          CHILD_NODE_ID: ${{ needs.prepare-sync-scenario.outputs.child_node_id }}
+        with:
+          github-token: ${{ steps.auth.outputs.token }}
+          script: |
+            const projectId = process.env.PROJECT_ID;
+            const iterationFieldName = process.env.ITERATION_FIELD_NAME;
+            const targetIterationId = process.env.TARGET_ITERATION_ID;
+            const childNodeId = process.env.CHILD_NODE_ID;
+
+            const ISSUE_PROJECT_ITEMS_QUERY = `
+              query($issueId: ID!, $fieldName: String!) {
+                node(id: $issueId) {
+                  ... on Issue {
+                    projectItems(first: 100) {
+                      nodes {
+                        id
+                        project {
+                          id
+                        }
+                        fieldValueByName(name: $fieldName) {
+                          ... on ProjectV2ItemFieldIterationValue {
+                            iterationId
+                            title
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const data = await github.graphql(ISSUE_PROJECT_ITEMS_QUERY, {
+              issueId: childNodeId,
+              fieldName: iterationFieldName,
+            });
+
+            const projectItem = data.node?.projectItems?.nodes?.find((item) => item.project?.id === projectId) ?? null;
+            if (!projectItem) {
+              throw new Error('Child issue was not added to the project.');
+            }
+
+            const iterationId = projectItem.fieldValueByName?.iterationId ?? null;
+            if (iterationId !== targetIterationId) {
+              throw new Error(`Expected child issue iteration ${targetIterationId}, got ${iterationId || 'none'}.`);
+            }
+
+            core.info(`Child issue project item ${projectItem.id} inherited iteration ${targetIterationId}.`);
+
+      - uses: actions/checkout@v7
+
+      - name: Reconcile an existing child after the parent Sprint changes
+        uses: actions/github-script@v9
+        env:
+          PROJECT_ID: ${{ needs.prepare-sync-scenario.outputs.project_id }}
+          ALTERNATIVE_ITERATION_ID: ${{ needs.prepare-sync-scenario.outputs.alternative_iteration_id }}
+          PARENT_NUMBER: ${{ needs.prepare-sync-scenario.outputs.parent_number }}
+          PARENT_NODE_ID: ${{ needs.prepare-sync-scenario.outputs.parent_node_id }}
+          FIRST_CHILD_NODE_ID: ${{ needs.prepare-sync-scenario.outputs.child_node_id }}
+        with:
+          github-token: ${{ steps.auth.outputs.token }}
+          script: |
+            const owner = process.env.REPO_OWNER;
+            const repo = process.env.REPO_NAME;
+            const parentNumber = Number(process.env.PARENT_NUMBER);
+            const projectId = process.env.PROJECT_ID;
+            const alternative = process.env.ALTERNATIVE_ITERATION_ID;
+            const headers = { accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
+            const { ProjectV2Repository } = await import(`${process.env.GITHUB_WORKSPACE}/src/github/ProjectV2Repository.ts`);
+            const { run } = await import(`${process.env.GITHUB_WORKSPACE}/src/scripts/sync-sub-issue-sprint.ts`);
+            const projects = new ProjectV2Repository(github);
+            let secondChild;
+            let childItemId;
+            try {
+              secondChild = (await github.request('POST /repos/{owner}/{repo}/issues', {
+                owner, repo, title: `ITEST ${context.runId} existing sub-issue`, headers,
+              })).data;
+              const metadata = await projects.getProjectMetadata(process.env.PROJECT_OWNER, Number(process.env.PROJECT_NUMBER), process.env.ITERATION_FIELD_NAME);
+              const parentItem = await projects.getIssueProjectItem(process.env.PARENT_NODE_ID, projectId, process.env.ITERATION_FIELD_NAME);
+              if (!parentItem) throw new Error('Parent project item is missing.');
+              await projects.setIteration(projectId, parentItem.id, metadata.iterationFieldId, alternative);
+              await github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues', {
+                owner, repo, issue_number: parentNumber, sub_issue_id: secondChild.id, headers,
+              });
+              process.env.ACTION = 'reconcile';
+              process.env.ISSUE_NUMBER = String(parentNumber);
+              process.env.DRY_RUN = 'true';
+              await run(github);
+              process.env.DRY_RUN = 'false';
+              for (let attempt = 0; attempt < 6; attempt += 1) {
+                await run(github);
+                const first = await projects.getIssueProjectItem(process.env.FIRST_CHILD_NODE_ID, projectId, process.env.ITERATION_FIELD_NAME);
+                const second = await projects.getIssueProjectItem(secondChild.node_id, projectId, process.env.ITERATION_FIELD_NAME);
+                if (first?.iterationId === alternative && second?.iterationId === alternative) {
+                  childItemId = second.id;
+                  break;
+                }
+                await new Promise((resolve) => setTimeout(resolve, 2000));
+              }
+              if (!childItemId) throw new Error('Reconciliation did not update both children to the new Sprint.');
+              await run(github);
+              core.info('Existing child was added, both children followed the changed parent Sprint, and rerun was idempotent.');
+            } finally {
+              if (secondChild) {
+                try { await github.request('DELETE /repos/{owner}/{repo}/issues/{issue_number}/sub_issue', {
+                  owner, repo, issue_number: parentNumber, sub_issue_id: secondChild.id, headers,
+                }); } catch (error) { if (error.status !== 404) core.warning(error.message); }
+                const item = childItemId || (await projects.getIssueProjectItem(secondChild.node_id, projectId, process.env.ITERATION_FIELD_NAME))?.id;
+                if (item) await projects.deleteProjectItem(projectId, item);
+                await github.request('PATCH /repos/{owner}/{repo}/issues/{issue_number}', {
+                  owner, repo, issue_number: secondChild.number, state: 'closed', headers,
+                });
+              }
+            }
+
+  rerun-sync-scenario:
+    name: Rerun sub-issue sync scenario
+    needs:
+      - resolve-auth
+      - prepare-sync-scenario
+      - run-sync-scenario
+      - assert-initial-sync-scenario
+    uses: ./.github/workflows/sync-sub-issue-sprint.yml
+    with:
+      project_owner: ViRGiL-GH-Productivity
+      project_number: 1
+      iteration_field_name: Iteration
+      issue_number: ${{ needs.prepare-sync-scenario.outputs.child_number }}
+      repo_owner: ViRGiL-GH-Productivity
+      repo_name: scrum-test-backlog
+      action: opened
+      auth_mode: ${{ inputs.auth_mode }}
+      installation_owner: ViRGiL-GH-Productivity
+    secrets:
+      pat_token: ${{ secrets.pat_token }}
+      app_id: ${{ secrets.app_id }}
+      app_private_key: ${{ secrets.app_private_key }}
+
+  assert-sync-scenario:
+    name: Assert sub-issue sync scenario
+    needs:
+      - resolve-auth
+      - prepare-sync-scenario
+      - rerun-sync-scenario
+    runs-on: ubuntu-latest
+    steps:
+      - *app-token-step
+
+      - *resolve-token-step
+
+      - name: Assert child issue inherited sprint
+        uses: actions/github-script@v9
+        env:
+          PROJECT_ID: ${{ needs.prepare-sync-scenario.outputs.project_id }}
+          ITERATION_FIELD_NAME: ${{ env.ITERATION_FIELD_NAME }}
+          TARGET_ITERATION_ID: ${{ needs.prepare-sync-scenario.outputs.alternative_iteration_id }}
+          CHILD_NODE_ID: ${{ needs.prepare-sync-scenario.outputs.child_node_id }}
+        with:
+          github-token: ${{ steps.auth.outputs.token }}
+          script: |
+            const projectId = process.env.PROJECT_ID;
+            const iterationFieldName = process.env.ITERATION_FIELD_NAME;
+            const targetIterationId = process.env.TARGET_ITERATION_ID;
+            const childNodeId = process.env.CHILD_NODE_ID;
+
+            const ISSUE_PROJECT_ITEMS_QUERY = `
+              query($issueId: ID!, $fieldName: String!) {
+                node(id: $issueId) {
+                  ... on Issue {
+                    projectItems(first: 100) {
+                      nodes {
+                        id
+                        project {
+                          id
+                        }
+                        fieldValueByName(name: $fieldName) {
+                          ... on ProjectV2ItemFieldIterationValue {
+                            iterationId
+                            title
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const data = await github.graphql(ISSUE_PROJECT_ITEMS_QUERY, {
+              issueId: childNodeId,
+              fieldName: iterationFieldName,
+            });
+
+            const projectItem = data.node?.projectItems?.nodes?.find((item) => item.project?.id === projectId) ?? null;
+            if (!projectItem) {
+              throw new Error('Child issue was not added to the project.');
+            }
+
+            const iterationId = projectItem.fieldValueByName?.iterationId ?? null;
+            if (iterationId !== targetIterationId) {
+              throw new Error(`Expected child issue iteration ${targetIterationId}, got ${iterationId || 'none'}.`);
+            }
+
+            core.info(`Child issue project item ${projectItem.id} inherited iteration ${targetIterationId}.`);
+
+  cleanup-sync-scenario:
+    name: Cleanup sub-issue sync scenario
+    if: ${{ always() && needs.prepare-sync-scenario.outputs.parent_number != '' }}
+    needs:
+      - resolve-auth
+      - prepare-sync-scenario
+      - run-sync-scenario
+      - rerun-sync-scenario
+      - assert-initial-sync-scenario
+      - assert-sync-scenario
+    runs-on: ubuntu-latest
+    steps:
+      - *app-token-step
+
+      - *resolve-token-step
+
+      - name: Archive project items and close issues
+        uses: actions/github-script@v9
+        env:
+          PROJECT_ID: ${{ needs.prepare-sync-scenario.outputs.project_id }}
+          ITERATION_FIELD_NAME: ${{ env.ITERATION_FIELD_NAME }}
+          REPO_OWNER: ${{ env.REPO_OWNER }}
+          REPO_NAME: ${{ env.REPO_NAME }}
+          PARENT_NUMBER: ${{ needs.prepare-sync-scenario.outputs.parent_number }}
+          PARENT_NODE_ID: ${{ needs.prepare-sync-scenario.outputs.parent_node_id }}
+          CHILD_NUMBER: ${{ needs.prepare-sync-scenario.outputs.child_number }}
+          CHILD_NODE_ID: ${{ needs.prepare-sync-scenario.outputs.child_node_id }}
+          CHILD_ID: ${{ needs.prepare-sync-scenario.outputs.child_id }}
+        with:
+          github-token: ${{ steps.auth.outputs.token }}
+          script: |
+            const projectId = process.env.PROJECT_ID;
+            const owner = process.env.REPO_OWNER;
+            const repo = process.env.REPO_NAME;
+            const parentNumber = Number(process.env.PARENT_NUMBER);
+            const parentNodeId = process.env.PARENT_NODE_ID;
+            const childNumber = Number(process.env.CHILD_NUMBER);
+            const childNodeId = process.env.CHILD_NODE_ID;
+            const childId = Number(process.env.CHILD_ID);
+            const iterationFieldName = process.env.ITERATION_FIELD_NAME;
+            const headers = {
+              accept: 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+            };
+
+            const ISSUE_PROJECT_ITEMS_QUERY = `
+              query($issueId: ID!, $fieldName: String!) {
+                node(id: $issueId) {
+                  ... on Issue {
+                    projectItems(first: 100) {
+                      nodes {
+                        id
+                        project {
+                          id
+                        }
+                        fieldValueByName(name: $fieldName) {
+                          ... on ProjectV2ItemFieldIterationValue {
+                            iterationId
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const ARCHIVE_ITEM_MUTATION = `
+              mutation($input: ArchiveProjectV2ItemInput!) {
+                archiveProjectV2Item(input: $input) {
+                  item { id }
+                }
+              }
+            `;
+
+            async function archiveProjectItemForNode(nodeId) {
+              if (!nodeId || !projectId) {
+                return;
+              }
+
+              const data = await github.graphql(ISSUE_PROJECT_ITEMS_QUERY, {
+                issueId: nodeId,
+                fieldName: iterationFieldName,
+              });
+
+              const item = data.node?.projectItems?.nodes?.find((projectItem) => projectItem.project?.id === projectId) ?? null;
+              if (!item) {
+                return;
+              }
+
+              await github.graphql(ARCHIVE_ITEM_MUTATION, {
+                input: {
+                  projectId,
+                  itemId: item.id,
+                },
+              });
+            }
+
+            if (parentNumber > 0 && childId > 0) {
+              try {
+                await github.request('DELETE /repos/{owner}/{repo}/issues/{issue_number}/sub_issue', {
+                  owner,
+                  repo,
+                  issue_number: parentNumber,
+                  sub_issue_id: childId,
+                  headers,
+                });
+              } catch (error) {
+                if (error.status !== 404) {
+                  throw error;
+                }
+                core.info('Sub-issue relation is already absent.');
+              }
+            }
+
+            await archiveProjectItemForNode(childNodeId);
+            await archiveProjectItemForNode(parentNodeId);
+
+            if (childNumber > 0) {
+              await github.request('PATCH /repos/{owner}/{repo}/issues/{issue_number}', {
+                owner,
+                repo,
+                issue_number: childNumber,
+                state: 'closed',
+                headers,
+              });
+            }
+
+            if (parentNumber > 0) {
+              await github.request('PATCH /repos/{owner}/{repo}/issues/{issue_number}', {
+                owner,
+                repo,
+                issue_number: parentNumber,
+                state: 'closed',
+                headers,
+              });
+            }

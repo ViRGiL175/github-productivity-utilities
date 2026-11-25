@@ -1,0 +1,339 @@
+name: Sandbox ensure-next-iteration-reminder
+
+on:
+  workflow_call:
+    inputs:
+      auth_mode:
+        required: true
+        type: string
+    secrets:
+      pat_token:
+        required: false
+      app_id:
+        required: false
+      app_private_key:
+        required: false
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+env:
+  AUTH_MODE: ${{ inputs.auth_mode }}
+  INSTALLATION_OWNER: ViRGiL-GH-Productivity
+  PROJECT_OWNER: ViRGiL-GH-Productivity
+  PROJECT_NUMBER: 1
+  ITERATION_FIELD_NAME: Iteration
+
+jobs:
+  resolve-auth:
+    name: Validate integration auth configuration
+    uses: ./.github/workflows/resolve-integration-test-token.yml
+    with:
+      auth_mode: ${{ inputs.auth_mode }}
+      installation_owner: ViRGiL-GH-Productivity
+    secrets:
+      pat_token: ${{ secrets.pat_token }}
+      app_id: ${{ secrets.app_id }}
+      app_private_key: ${{ secrets.app_private_key }}
+
+  create-next-iteration-scenario:
+    name: Create next iteration and preserve history
+    needs: resolve-auth
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tested implementation
+        uses: actions/checkout@v7
+
+      - &app-token-step
+        name: Create GitHub App installation token
+        if: ${{ env.AUTH_MODE == 'app' }}
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.app_id }}
+          private-key: ${{ secrets.app_private_key }}
+          owner: ${{ env.INSTALLATION_OWNER }}
+          skip-token-revoke: true
+
+      - &resolve-token-step
+        name: Resolve job auth token
+        id: auth
+        shell: bash
+        env:
+          DIRECT_TOKEN: ${{ secrets.pat_token }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          case "$AUTH_MODE" in
+            pat)
+              TOKEN="$DIRECT_TOKEN"
+              ;;
+            app)
+              TOKEN="$APP_TOKEN"
+              ;;
+            *)
+              echo "Unsupported auth mode: $AUTH_MODE" >&2
+              exit 1
+              ;;
+          esac
+
+          if [ -z "$TOKEN" ]; then
+            echo "Resolved token is empty for auth_mode=$AUTH_MODE" >&2
+            exit 1
+          fi
+
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Create next iteration, repeat and verify preserved bindings
+        uses: actions/github-script@v9
+        with:
+          github-token: ${{ steps.auth.outputs.token }}
+          script: |
+            const { run } = await import(`${process.env.GITHUB_WORKSPACE}/itest/create-next-iteration.ts`)
+            await run(github, core)
+
+  prepare-reminder-create-scenario:
+    name: Prepare reminder create scenario before current iteration starts
+    runs-on: ubuntu-latest
+    needs: [resolve-auth, create-next-iteration-scenario]
+    outputs:
+      reminder_title: ${{ steps.prepare.outputs.reminder_title }}
+      current_date_override: ${{ steps.prepare.outputs.current_date_override }}
+      target_iteration_id: ${{ steps.prepare.outputs.target_iteration_id }}
+      project_id: ${{ steps.prepare.outputs.project_id }}
+    steps:
+      - uses: actions/checkout@v7
+      - *app-token-step
+
+      - *resolve-token-step
+
+      - name: Prepare reminder fixtures for create scenario
+        id: prepare
+        uses: actions/github-script@v9
+        env:
+          PROJECT_OWNER: ${{ env.PROJECT_OWNER }}
+          PROJECT_NUMBER: ${{ env.PROJECT_NUMBER }}
+          ITERATION_FIELD_NAME: ${{ env.ITERATION_FIELD_NAME }}
+          REMINDER_TITLE: ITEST-${{ github.run_id }}-${{ inputs.auth_mode }}-create-reminder
+        with:
+          github-token: ${{ steps.auth.outputs.token }}
+          script: |
+            const { prepareReminder } = await import(`${process.env.GITHUB_WORKSPACE}/itest/reminder-fixtures.ts`);
+            await prepareReminder(github, core, 'before-first');
+
+  run-reminder-create-scenario:
+    name: Run reminder create scenario
+    needs:
+      - resolve-auth
+      - prepare-reminder-create-scenario
+    uses: ./.github/workflows/ensure-next-iteration-reminder.yml
+    with:
+      project_owner: ViRGiL-GH-Productivity
+      project_number: 1
+      iteration_field_name: Iteration
+      reminder_title: ${{ needs.prepare-reminder-create-scenario.outputs.reminder_title }}
+      current_date_override: ${{ needs.prepare-reminder-create-scenario.outputs.current_date_override }}
+      auth_mode: ${{ inputs.auth_mode }}
+      installation_owner: ViRGiL-GH-Productivity
+    secrets:
+      pat_token: ${{ secrets.pat_token }}
+      app_id: ${{ secrets.app_id }}
+      app_private_key: ${{ secrets.app_private_key }}
+
+  assert-reminder-create-scenario:
+    name: Assert reminder create scenario
+    needs:
+      - resolve-auth
+      - prepare-reminder-create-scenario
+      - run-reminder-create-scenario
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - *app-token-step
+
+      - *resolve-token-step
+
+      - name: Assert exactly one reminder draft exists in first future iteration
+        uses: actions/github-script@v9
+        env:
+          PROJECT_ID: ${{ needs.prepare-reminder-create-scenario.outputs.project_id }}
+          REMINDER_TITLE: ${{ needs.prepare-reminder-create-scenario.outputs.reminder_title }}
+          TARGET_ITERATION_ID: ${{ needs.prepare-reminder-create-scenario.outputs.target_iteration_id }}
+        with:
+          github-token: ${{ steps.auth.outputs.token }}
+          script: |
+            const { assertReminder } = await import(`${process.env.GITHUB_WORKSPACE}/itest/reminder-fixtures.ts`);
+            await assertReminder(github, 12);
+
+  rerun-reminder-create-scenario:
+    name: Rerun reminder create scenario for idempotency
+    needs:
+      - resolve-auth
+      - prepare-reminder-create-scenario
+      - assert-reminder-create-scenario
+    uses: ./.github/workflows/ensure-next-iteration-reminder.yml
+    with:
+      project_owner: ViRGiL-GH-Productivity
+      project_number: 1
+      iteration_field_name: Iteration
+      reminder_title: ${{ needs.prepare-reminder-create-scenario.outputs.reminder_title }}
+      current_date_override: ${{ needs.prepare-reminder-create-scenario.outputs.current_date_override }}
+      auth_mode: ${{ inputs.auth_mode }}
+      installation_owner: ViRGiL-GH-Productivity
+    secrets:
+      pat_token: ${{ secrets.pat_token }}
+      app_id: ${{ secrets.app_id }}
+      app_private_key: ${{ secrets.app_private_key }}
+
+  assert-reminder-idempotency-scenario:
+    name: Assert reminder idempotency scenario
+    needs:
+      - resolve-auth
+      - prepare-reminder-create-scenario
+      - rerun-reminder-create-scenario
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - *app-token-step
+
+      - *resolve-token-step
+
+      - name: Assert rerun did not create duplicates before current iteration starts
+        uses: actions/github-script@v9
+        env:
+          PROJECT_ID: ${{ needs.prepare-reminder-create-scenario.outputs.project_id }}
+          REMINDER_TITLE: ${{ needs.prepare-reminder-create-scenario.outputs.reminder_title }}
+          TARGET_ITERATION_ID: ${{ needs.prepare-reminder-create-scenario.outputs.target_iteration_id }}
+        with:
+          github-token: ${{ steps.auth.outputs.token }}
+          script: |
+            const { assertReminder } = await import(`${process.env.GITHUB_WORKSPACE}/itest/reminder-fixtures.ts`);
+            await assertReminder(github);
+
+  prepare-reminder-empty-current-scenario:
+    name: Prepare reminder empty current scenario
+    runs-on: ubuntu-latest
+    needs: [resolve-auth, cleanup-reminder-scenarios]
+    outputs:
+      reminder_title: ${{ steps.prepare.outputs.reminder_title }}
+      current_date_override: ${{ steps.prepare.outputs.current_date_override }}
+      target_iteration_id: ${{ steps.prepare.outputs.target_iteration_id }}
+      project_id: ${{ steps.prepare.outputs.project_id }}
+    steps:
+      - uses: actions/checkout@v7
+      - *app-token-step
+
+      - *resolve-token-step
+
+      - name: Prepare reminder fixture in empty current iteration
+        id: prepare
+        uses: actions/github-script@v9
+        env:
+          PROJECT_OWNER: ${{ env.PROJECT_OWNER }}
+          PROJECT_NUMBER: ${{ env.PROJECT_NUMBER }}
+          ITERATION_FIELD_NAME: ${{ env.ITERATION_FIELD_NAME }}
+          REMINDER_TITLE: ITEST-${{ github.run_id }}-${{ inputs.auth_mode }}-empty-current-reminder
+        with:
+          github-token: ${{ steps.auth.outputs.token }}
+          script: |
+            const { prepareReminder } = await import(`${process.env.GITHUB_WORKSPACE}/itest/reminder-fixtures.ts`);
+            await prepareReminder(github, core, 'empty-current');
+
+  run-reminder-empty-current-scenario:
+    name: Run reminder empty current scenario
+    needs:
+      - resolve-auth
+      - prepare-reminder-empty-current-scenario
+    uses: ./.github/workflows/ensure-next-iteration-reminder.yml
+    with:
+      project_owner: ViRGiL-GH-Productivity
+      project_number: 1
+      iteration_field_name: Iteration
+      reminder_title: ${{ needs.prepare-reminder-empty-current-scenario.outputs.reminder_title }}
+      current_date_override: ${{ needs.prepare-reminder-empty-current-scenario.outputs.current_date_override }}
+      auth_mode: ${{ inputs.auth_mode }}
+      installation_owner: ViRGiL-GH-Productivity
+    secrets:
+      pat_token: ${{ secrets.pat_token }}
+      app_id: ${{ secrets.app_id }}
+      app_private_key: ${{ secrets.app_private_key }}
+
+  assert-reminder-empty-current-scenario:
+    name: Assert reminder empty current scenario
+    needs:
+      - resolve-auth
+      - prepare-reminder-empty-current-scenario
+      - run-reminder-empty-current-scenario
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - *app-token-step
+
+      - *resolve-token-step
+
+      - name: Assert reminder stayed in empty current iteration
+        uses: actions/github-script@v9
+        env:
+          PROJECT_ID: ${{ needs.prepare-reminder-empty-current-scenario.outputs.project_id }}
+          REMINDER_TITLE: ${{ needs.prepare-reminder-empty-current-scenario.outputs.reminder_title }}
+          TARGET_ITERATION_ID: ${{ needs.prepare-reminder-empty-current-scenario.outputs.target_iteration_id }}
+        with:
+          github-token: ${{ steps.auth.outputs.token }}
+          script: |
+            const { assertReminder } = await import(`${process.env.GITHUB_WORKSPACE}/itest/reminder-fixtures.ts`);
+            await assertReminder(github);
+
+  cleanup-reminder-scenarios:
+    name: Cleanup reminder scenarios
+    if: ${{ always() && needs.prepare-reminder-create-scenario.outputs.project_id != '' }}
+    needs:
+      - resolve-auth
+      - prepare-reminder-create-scenario
+      - run-reminder-create-scenario
+      - assert-reminder-create-scenario
+      - rerun-reminder-create-scenario
+      - assert-reminder-idempotency-scenario
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - *app-token-step
+
+      - *resolve-token-step
+
+      - name: Delete reminder drafts created by this run
+        uses: actions/github-script@v9
+        env:
+          PROJECT_ID: ${{ needs.prepare-reminder-create-scenario.outputs.project_id }}
+          REMINDER_TITLE: ${{ needs.prepare-reminder-create-scenario.outputs.reminder_title }}
+        with:
+          github-token: ${{ steps.auth.outputs.token }}
+          script: |
+            const { cleanReminders } = await import(`${process.env.GITHUB_WORKSPACE}/itest/reminder-fixtures.ts`);
+            await cleanReminders(github);
+
+  cleanup-reminder-empty-current-scenario:
+    name: Cleanup reminder empty current scenario
+    if: ${{ always() && needs.prepare-reminder-empty-current-scenario.outputs.project_id != '' }}
+    needs:
+      - resolve-auth
+      - prepare-reminder-empty-current-scenario
+      - run-reminder-empty-current-scenario
+      - assert-reminder-empty-current-scenario
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - *app-token-step
+
+      - *resolve-token-step
+
+      - name: Delete reminder draft created for empty current scenario
+        uses: actions/github-script@v9
+        env:
+          PROJECT_ID: ${{ needs.prepare-reminder-empty-current-scenario.outputs.project_id }}
+          REMINDER_TITLE: ${{ needs.prepare-reminder-empty-current-scenario.outputs.reminder_title }}
+        with:
+          github-token: ${{ steps.auth.outputs.token }}
+          script: |
+            const { cleanReminders } = await import(`${process.env.GITHUB_WORKSPACE}/itest/reminder-fixtures.ts`);
+            await cleanReminders(github);

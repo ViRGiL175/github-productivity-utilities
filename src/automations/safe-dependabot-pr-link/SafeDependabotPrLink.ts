@@ -90,20 +90,10 @@ async function listDependabotPullRequests(
     const result: PullRequestRecord[] = [];
     const perPage = Math.min(100, input.maxPullRequestsPerRepo);
 
-    for (let page = 1; result.length < input.maxPullRequestsPerRepo; page += 1) {
-      const pageItems = await pullRequests.listPullRequests(repository, state, page, perPage);
-      if (pageItems.length === 0) break;
-      let reachedCutoff = false;
-
-      for (const pullRequest of pageItems) {
-        if (state === 'closed' && cutoff && new Date(pullRequest.updatedAt) < cutoff) {
-          reachedCutoff = true;
-          break;
-        }
-        if (pullRequest.authorLogin === input.dependabotLogin) result.push(pullRequest);
-        if (result.length >= input.maxPullRequestsPerRepo) break;
-      }
-      if (pageItems.length < perPage || reachedCutoff) break;
+    for await (const pullRequest of pullRequests.listPullRequests(repository, state, perPage)) {
+      if (cutoff && new Date(pullRequest.updatedAt) < cutoff) break;
+      if (pullRequest.authorLogin === input.dependabotLogin) result.push(pullRequest);
+      if (result.length === input.maxPullRequestsPerRepo) break;
     }
     return result;
 }

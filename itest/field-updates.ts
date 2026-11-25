@@ -26,7 +26,7 @@ export async function run({ github, context, core }: {
 }): Promise<void> {
   const owner = 'ViRGiL-GH-Productivity';
   const projectId = 'PVT_kwDOD_pocM4BRshl';
-  const suffix = `${context.runId}-${process.env.GITHUB_RUN_ATTEMPT}`;
+  const suffix = `${context.runId}-${process.env.GITHUB_RUN_ATTEMPT}-${process.env.AUTH_MODE}`;
   const projects = new ProjectV2Repository(github);
   const issues = new IssueRepository(github);
   const pulls = new PullRequestRepository(github);
@@ -107,12 +107,14 @@ export async function run({ github, context, core }: {
       assert.equal((await projects.getContentProjectItem(unconfigured.node_id, projectId, 'Horizon diagnostic 2026-10-28'))?.statusName, null);
     });
     const bot = await makePr('safe-import');
-    await check('Safe Dependabot importer path invokes the same posthook', async () => {
+    await check('Safe Dependabot importer applies JSON defaults', async () => {
+      const json = JSON.stringify({ project: { 'Horizon diagnostic 2026-10-28': 'Inbox', Priority: 'P0' } });
+      const botUpdates = await createFieldUpdates(github, json, owner, 1);
       // Existing integration convention: the App's fixture PR stands in for the configured bot.
       // Restrict to the newest open PR; the future cutoff excludes all closed fixtures.
       const safeInput = { projectOwner: owner, projectNumber: 1, repositories: `${owner}/test-client`, repositoriesJson: '', defaultRepositoryOwner: owner,
         statusFieldName: 'Status', statusStartValue: 'To do', statusFinalValue: 'Done', dependabotLogin: bot.user.login, maxPullRequestsPerRepo: 1,
-        closedLookbackDays: 0, fieldUpdates: updates };
+        closedLookbackDays: 0, fieldUpdates: botUpdates };
       await safeDependabotPrLink(safeInput, pulls, projects, logger, () => new Date('2100-01-01'));
       await safeDependabotPrLink(safeInput, pulls, projects, logger, () => new Date('2100-01-01'));
       assert.equal((await projects.getContentProjectItem(bot.node_id, projectId, 'Horizon diagnostic 2026-10-28'))?.statusName, 'Inbox');

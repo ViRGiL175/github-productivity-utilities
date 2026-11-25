@@ -1,0 +1,36 @@
+name: Select sandbox authentication modes
+
+on:
+  workflow_call:
+    inputs:
+      requested_mode:
+        type: string
+    outputs:
+      modes:
+        value: ${{ jobs.select.outputs.modes }}
+
+permissions: {}
+
+jobs:
+  select:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    outputs:
+      modes: ${{ steps.select.outputs.modes }}
+    steps:
+      - id: select
+        env:
+          REQUESTED_MODE: ${{ inputs.requested_mode }}
+          TRUSTED_PR: >-
+            ${{ github.event_name == 'pull_request' &&
+                github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' &&
+                contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association) }}
+        run: |
+          case "$REQUESTED_MODE:$TRUSTED_PR" in
+            app:*) modes='["app"]' ;;
+            pat:*) modes='["pat"]' ;;
+            :true) modes='["pat","app"]' ;;
+            :false) modes='["pat"]' ;;
+            *) exit 1 ;;
+          esac
+          echo "modes=$modes" >> "$GITHUB_OUTPUT"
