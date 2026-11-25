@@ -15,6 +15,7 @@ on:
           - app
   pull_request:
     paths:
+      - 'scripts/prepare-field-parser.mjs'
       - 'package*.json'
       - '.github/workflows/safe-dependabot-pr-link.yml'
       - '.github/workflows/test-safe-dependabot-pr-link.yml'

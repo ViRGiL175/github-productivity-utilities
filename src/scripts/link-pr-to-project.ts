@@ -12,9 +12,7 @@ export async function run(github: Octokit): Promise<void> {
   await linkPrToProject({
     projectOwner,
     projectNumber,
-    fieldUpdates: await createFieldUpdates(
-      github, process.env.FIELD_UPDATES ?? '', projectOwner, projectNumber, process.env.FIELD_UPDATES_JSON,
-    ),
+    fieldUpdates: await createFieldUpdates(github, process.env.FIELD_UPDATES ?? '', projectOwner, projectNumber),
     backlogRepository: { owner: required('BACKLOG_REPO_OWNER'), repo: required('BACKLOG_REPO') },
     iterationFieldName: required('ITERATION_FIELD_NAME'),
     statusFieldName: required('STATUS_FIELD_NAME'),

@@ -30,7 +30,7 @@ on:
       status_final_value:
         type: string
         default: Done
-      field_updates_json:
+      field_updates:
         description: Project/issue field defaults for Dependabot PRs
         type: string
       current_date_override:
@@ -127,6 +127,13 @@ jobs:
           ref: ${{ job.workflow_sha }}
           path: .github-productivity-utilities-runtime
 
+      - name: Prepare field updates parser
+        if: inputs.repositories != '' && inputs.field_updates != ''
+        working-directory: .github-productivity-utilities-runtime
+        env:
+          FIELD_UPDATES: ${{ inputs.field_updates }}
+        run: node scripts/prepare-field-parser.mjs
+
       - name: Reconcile Dependabot PR links
         if: inputs.repositories != ''
         uses: actions/github-script@v9
@@ -135,7 +142,7 @@ jobs:
           STATUS_FIELD_NAME: ${{ inputs.status_field_name }}
           STATUS_START_VALUE: ${{ inputs.status_start_value }}
           STATUS_FINAL_VALUE: ${{ inputs.status_final_value }}
-          FIELD_UPDATES_JSON: ${{ inputs.field_updates_json }}
+          FIELD_UPDATES: ${{ inputs.field_updates }}
         with:
           github-token: &token ${{ env.DIRECT_TOKEN || (env.AUTH_MODE == 'pat' && env.PAT_TOKEN) || steps.app-token.outputs.token }}
           script: |

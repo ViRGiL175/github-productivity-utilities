@@ -109,7 +109,7 @@ export async function run({ github, context, core }: {
     const bot = await makePr('safe-import');
     await check('Safe Dependabot importer applies JSON defaults', async () => {
       const json = JSON.stringify({ project: { 'Horizon diagnostic 2026-10-28': 'Inbox', Priority: 'P0' } });
-      const botUpdates = await createFieldUpdates(github, '', owner, 1, json);
+      const botUpdates = await createFieldUpdates(github, json, owner, 1);
       // Existing integration convention: the App's fixture PR stands in for the configured bot.
       // Restrict to the newest open PR; the future cutoff excludes all closed fixtures.
       const safeInput = { projectOwner: owner, projectNumber: 1, repositories: `${owner}/test-client`, repositoriesJson: '', defaultRepositoryOwner: owner,

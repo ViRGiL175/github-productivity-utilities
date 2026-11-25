@@ -5,14 +5,26 @@ import type { RepositoryCoordinates } from '../../github/IssueRepository.ts';
 
 export type FieldUpdates = (itemId: string, repository: RepositoryCoordinates, number: number) => Promise<void>;
 
+// Only use the fast path when JSON round-trips exactly. Other YAML, including
+// mappings with duplicate keys, must go through the original strict parser.
+export function parseCompactFieldUpdates(input: string): unknown {
+  const text = input.trim();
+  if (!text.startsWith('{')) return undefined;
+  try {
+    const config: unknown = JSON.parse(text);
+    if (JSON.stringify(config) === text) return config;
+  } catch {
+    // Flow-style YAML can also start with a brace.
+  }
+  return undefined;
+}
+
 export async function createFieldUpdates(
-  github: Octokit, yaml: string, projectOwner: string, projectNumber: number, json = '',
+  github: Octokit, input: string, projectOwner: string, projectNumber: number,
 ): Promise<FieldUpdates | undefined> {
-  if (!yaml.trim() && !json.trim()) return undefined;
-  if (yaml.trim() && json.trim()) throw new Error('Set either field_updates or field_updates_json.');
-  const config: unknown = json.trim()
-    ? JSON.parse(json)
-    : (await import('yaml')).parse(yaml, { uniqueKeys: true, maxAliasCount: 0 });
+  if (!input.trim()) return undefined;
+  const config = parseCompactFieldUpdates(input) ??
+    (await import('yaml')).parse(input, { uniqueKeys: true, maxAliasCount: 0 });
   validateConfig(config);
   const controller = new FieldController(github);
   return async (itemId, repository, issueNumber) => {

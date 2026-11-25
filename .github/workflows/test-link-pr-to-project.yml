@@ -17,6 +17,7 @@ on:
           - app
   pull_request:
     paths:
+      - 'scripts/prepare-field-parser.mjs'
       - '.github/workflows/resolve-integration-test-token.yml'
       - 'package*.json'
       - '.github/workflows/link-pr-to-project.yml'

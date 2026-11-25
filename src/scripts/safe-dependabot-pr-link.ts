@@ -11,9 +11,7 @@ export async function run(github: Octokit): Promise<void> {
   await safeDependabotPrLink({
     projectOwner,
     projectNumber,
-    fieldUpdates: await createFieldUpdates(
-      github, process.env.FIELD_UPDATES ?? '', projectOwner, projectNumber, process.env.FIELD_UPDATES_JSON,
-    ),
+    fieldUpdates: await createFieldUpdates(github, process.env.FIELD_UPDATES ?? '', projectOwner, projectNumber),
     repositories: process.env.REPOSITORIES ?? '',
     repositoriesJson: process.env.REPOSITORIES_JSON ?? '',
     defaultRepositoryOwner: required('REPOSITORY_OWNER'),
