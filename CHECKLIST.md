@@ -16,19 +16,7 @@
 - [x] Шаг: всегда ставить лейбл `ai-label-processed` (в конце, независимо от результата)
 - [x] `permissions`: `issues: write`, `pull-requests: read`, `contents: read`
 
-## Автоскрамер (`ai-scrum-review-issue.yml`)
-
-- [x] `workflow_call` input: `issue_url`
-- [x] `workflow_dispatch` для ручного запуска с `issue_url`
-- [x] Два режима авторизации: `auth_mode=pat` / `auth_mode=app`
-- [x] Секрет `copilot_token` для вызова `copilot-generate-text.yml`
-- [x] Шаг: собрать контекст ишью — title, body, labels
-- [x] Шаг: собрать issue templates вызывающего репозитория из `.github/ISSUE_TEMPLATE*`, чтобы AI учитывал локальные стандарты оформления
-- [x] Шаг: сформировать prompt только для Scrum-ready review и вызвать `copilot-generate-text.yml`
-- [x] Шаг: если история ready — поставить `ai-scrum-processed`
-- [x] Шаг: если история не ready — поставить `ai-scrum-rejected`, `ai-scrum-processed` и оставить комментарий `AI Scrum review`
-
-## Тесты (`test-ai-label-issue.yml`, `test-ai-scrum-review-issue.yml`)
+## Тесты (`test-ai-label-issue.yml`)
 
 - [x] `workflow_dispatch` с выбором `auth_mode` (pat/app)
 - [x] `pull_request` триггер на соответствующие workflow-файлы
@@ -36,8 +24,6 @@
 - [x] Guard `if: github.event.pull_request.head.repo.full_name == github.repository` на всех jobs
 - [x] Label case 1: ишью с достаточным контекстом → issue label + project field выставлены, `ai-label-processed` есть
 - [x] Label case 2: ишью без данных для автолейблинга → `ai-label-rejected` + `ai-label-processed`
-- [x] Scrum case 1: Scrum-ready ишью → `ai-scrum-processed`, без `ai-scrum-rejected`
-- [x] Scrum case 2: плохо оформленная история → `ai-scrum-rejected` + `ai-scrum-processed` + комментарий `AI Scrum review`
 - [x] Cleanup: закрыть тестовые ишью и удалить ProjectV2 items (`if: always()`)
 - [x] Базовая статическая проверка VS Code diagnostics пройдена
 - [ ] `actionlint` не прогнан локально: `actionlint` не установлен

@@ -12,7 +12,6 @@
 | --- | --- |
 | [`./.github/workflows/ensure-next-iteration-reminder.yml`](./.github/workflows/ensure-next-iteration-reminder.yml) | Создаёт следующую итерацию, если её ещё нет, и поддерживает reminder draft в целевой итерации. |
 | [`./.github/workflows/ai-label-issue.yml`](./.github/workflows/ai-label-issue.yml) | **Deprecated.** Сохранён только для обратной совместимости; новые подключения не поддерживаются. |
-| [`./.github/workflows/ai-scrum-review-issue.yml`](./.github/workflows/ai-scrum-review-issue.yml) | **Deprecated.** Сохранён только для обратной совместимости; новые подключения не поддерживаются. |
 | [`./.github/workflows/link-pr-to-project.yml`](./.github/workflows/link-pr-to-project.yml) | Добавляет PR в Project V2, копирует sprint и assignee из связанной issue и ставит статус Done при закрытии. При `pull_request: synchronize` переводит PR и все открытые closing issues из Todo или пустого статуса в In progress, сохраняя более поздние статусы. Когда все открытые связанные PR уже в статусе ревью, переводит и backlog issue в этот статус, не меняя её ответственных. После запроса изменений человеком возвращает PR и связанную issue в Todo. Режим `action: reconcile_sprints` сверяет Sprint открытых PR из списка `repositories`, не меняя их Status, assignee и описание. Для синхронизации assignee токену нужны права на запись в issues PR-репозитория. |
 | [`./.github/workflows/safe-dependabot-pr-link.yml`](./.github/workflows/safe-dependabot-pr-link.yml) | Синхронизирует PR от Dependabot по списку репозиториев: принимает многострочный `repositories`, ставит стартовый статус только новым PR или PR без статуса, закрытым — финальный. |
 | [`./.github/workflows/sync-sub-issue-sprint.yml`](./.github/workflows/sync-sub-issue-sprint.yml) | Наследует sprint/iteration-метаданные из родительской issue в её sub-issue. `action: reconcile` сверяет уже существующие sub-issues после изменения Sprint родителя; поддерживает `dry_run`. |
@@ -100,7 +99,7 @@ ensure-next-iteration-reminder.yml добавляет одну следующу�
 
 `test-collect-linked-context` проверяет публичные ссылки один раз с `GITHUB_TOKEN`, а чтение приватной issue — в тех же режимах, что и остальные интеграционные тесты. Analytics E2E использует GitHub App. Для Gemini нужен отдельный `GEMINI_API_KEY`.
 
-Устаревшие AI workflow сохраняют прежний `ORG_PROJECT_TOKEN` и `USER_COPILOT_FGPAT`; sandbox PAT не даёт доступа к личным Projects и Copilot. Для локального `act` App key можно передать с литералами `\n` между строками ключа.
+Устаревший `ai-label-issue.yml` использует прежний `ORG_PROJECT_TOKEN` и `USER_COPILOT_FGPAT`; sandbox PAT не даёт доступа к личным Projects и Copilot. Для локального `act` App key можно передать с литералами `\n` между строками ключа.
 
 `act` подставляет эти значения из secret-file. `.env` для этого набора workflow не нужен.
 
@@ -109,7 +108,6 @@ ensure-next-iteration-reminder.yml добавляет одну следующу�
 Поддерживаются test workflow-файлы:
 
 - `test-ai-label-issue.yml`
-- `test-ai-scrum-review-issue.yml`
 - `test-copilot-generate-text.yml`
 - `test-ensure-next-iteration-reminder.yml`
 - `test-link-pr-to-project.yml`
